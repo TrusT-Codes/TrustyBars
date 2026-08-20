@@ -1315,11 +1315,32 @@ end
 -------------------------------------------------------------------------
 
 function BTV:DeleteBar(barId)
+	self:EnsureDB()
+
+	barId = tonumber(barId)
+
 	if not barId then
 		return
 	end
 
-	local cfg = BTVanillaDB.bars[barId]
+	-- Find the SavedVariables entry by ID, never by array index - IDs are
+	-- intentionally allowed to have gaps (see AddNewBar's comment in
+	-- Bar.lua: deleting Bar 3 out of 1,2,3,4 leaves 1,2,4, so Bar 4 no
+	-- longer sits at array index 4).
+	local dbIndex = nil
+	local cfg = nil
+
+	local i
+
+	for i = 1, table.getn(BTVanillaDB.bars) do
+		if BTVanillaDB.bars[i] and
+			BTVanillaDB.bars[i].id == barId then
+
+			dbIndex = i
+			cfg = BTVanillaDB.bars[i]
+			break
+		end
+	end
 
 	if not cfg then
 		return
@@ -1327,71 +1348,37 @@ function BTV:DeleteBar(barId)
 
 	-------------------------------------------------------------------------
 	-- Remove live bar
+	--
+	-- Goes through DestroyBarButtons so each button's range-check ticker
+	-- is cancelled and its scripts/events unhooked, not just hidden -
+	-- otherwise the ticker keeps firing against a hidden, orphaned button.
 	-------------------------------------------------------------------------
 
 	local bar = self.bars[barId]
 
 	if bar then
+		self:DestroyBarButtons(bar)
+
 		bar:Hide()
 
-		if bar.buttons then
-			local i
+		bar:SetScript("OnDragStart", nil)
+		bar:SetScript("OnDragStop", nil)
 
-			for i = 1, table.getn(bar.buttons) do
-				local button = bar.buttons[i]
-
-				if button then
-					button:Hide()
-					button:SetParent(nil)
-				end
-			end
-		end
+		bar:UnregisterAllEvents()
 
 		bar:SetParent(nil)
+
+		self.bars[barId] = nil
 	end
 
-	self.bars[barId] = nil
-
 	-------------------------------------------------------------------------
-	-- Remove SavedVariable
-	-------------------------------------------------------------------------
-
-	BTVanillaDB.bars[barId] = nil
-
-	-------------------------------------------------------------------------
-	-- Compact the array WITHOUT changing cfg.id.
+	-- Remove ONLY this configuration.
 	--
-	-- This means:
-	--
-	--   Bar 1
-	--   Bar 2
-	--   Bar 3
-	--   Bar 4
-	--
-	-- deleting Bar 3 becomes:
-	--
-	--   array index 1 -> id 1
-	--   array index 2 -> id 2
-	--   array index 3 -> id 4
-	--
-	-- Therefore IDs and slot assignments remain stable.
+	-- No other configuration is modified, so no other bar's ID or
+	-- action-slot assignment changes.
 	-------------------------------------------------------------------------
 
-	local compacted = {}
-	local i
-
-	for i = 1, table.getn(BTVanillaDB.bars) do
-		local entry = BTVanillaDB.bars[i]
-
-		if entry then
-			table.insert(
-				compacted,
-				entry
-			)
-		end
-	end
-
-	BTVanillaDB.bars = compacted
+	table.remove(BTVanillaDB.bars, dbIndex)
 
 	-------------------------------------------------------------------------
 	-- Remove page

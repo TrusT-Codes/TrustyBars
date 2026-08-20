@@ -78,6 +78,20 @@ function BTVButtonMixin:Init(parent, actionSlot)
 	self.actionSlot = actionSlot
 	self.parentBar = parent
 
+	-- Equipped-item ring, quality-colored. Confirmed from the real XML
+	-- template: "UI-ActionButton-Border" is the correct file. Its anchor
+	-- (CENTER only) implies no size on its own - it relies entirely on
+	-- ApplySize's explicit SetWidth/SetHeight below to get a real size, so
+	-- it MUST exist before the initial ApplySize call runs (a bug fixed
+	-- here: this used to be created after that call, leaving every
+	-- button's ring un-sized - and therefore invisible - until the bar
+	-- happened to be resized a second time after creation).
+	self.equipRing = self:CreateTexture(nil, "OVERLAY")
+	self.equipRing:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
+	self.equipRing:SetBlendMode("ADD")
+	self.equipRing:SetPoint("CENTER", self, "CENTER", 0, 0)
+	self.equipRing:Hide()
+
 	-- Initialize from the parent bar's configured size. New bars can inherit
 	-- a resized buttonSize from the previous bar, so using the global default
 	-- here would make the buttons temporarily/default-sized until a later
@@ -92,17 +106,6 @@ function BTVButtonMixin:Init(parent, actionSlot)
 	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", 2, -2)
 	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -2, 2)
 	self.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
-
-	-- Equipped-item ring, quality-colored. Confirmed from the real XML
-	-- template: "UI-ActionButton-Border" is the correct file. Its size is
-	-- set by ApplySize (called above and whenever the button is
-	-- rescaled), not fixed here, so it keeps the real 62/36 proportions
-	-- at any button size.
-	self.equipRing = self:CreateTexture(nil, "OVERLAY")
-	self.equipRing:SetTexture("Interface\\Buttons\\UI-ActionButton-Border")
-	self.equipRing:SetBlendMode("ADD")
-	self.equipRing:SetPoint("CENTER", self, "CENTER", 0, 0)
-	self.equipRing:Hide()
 
 	-- "Current action" glow. Real vanilla ActionButtonTemplate gets this
 	-- for free via a CheckButton's built-in CheckedTexture, which we're
@@ -204,12 +207,13 @@ end
 -- Resizes the button and everything anchored to it that isn't already
 -- purely anchor-relative. icon/glow/editOverlay auto-track via their
 -- TOPLEFT/BOTTOMRIGHT anchors (see Init) so they need no code here;
--- equipRing is a fixed size relative to the button (real vanilla
--- proportions, see BTV.EQUIP_RING_RATIO in Core.lua) so it's recomputed
--- explicitly. Called once from Init (before equipRing exists yet, hence
--- the nil-check - harmless, Init sets it up afterward at the right
--- size implicitly via this same ratio) and again any time the bar is
--- rescaled (Bar.lua SetBarButtonSize).
+-- equipRing is single-point (CENTER) anchored, so it has no implied size
+-- of its own and is recomputed explicitly here to the real vanilla 62/36
+-- proportions (BTV.EQUIP_RING_RATIO in Core.lua). Called once from Init
+-- (equipRing is created before this first call specifically so it
+-- already exists here - see Init) and again any time the bar is rescaled
+-- (Bar.lua SetBarButtonSize). The nil-check stays as a cheap defensive
+-- guard, not because a real call path skips creating equipRing.
 function BTVButtonMixin:ApplySize(size)
 	self.buttonSize = size
 	self:SetWidth(size)
