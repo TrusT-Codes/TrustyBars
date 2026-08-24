@@ -1,0 +1,146 @@
+<Bindings>
+  <Binding name='TRUSTYBARSBIND1'>
+    TrustyBars_HoverBindFire(1)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND2'>
+    TrustyBars_HoverBindFire(2)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND3'>
+    TrustyBars_HoverBindFire(3)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND4'>
+    TrustyBars_HoverBindFire(4)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND5'>
+    TrustyBars_HoverBindFire(5)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND6'>
+    TrustyBars_HoverBindFire(6)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND7'>
+    TrustyBars_HoverBindFire(7)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND8'>
+    TrustyBars_HoverBindFire(8)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND9'>
+    TrustyBars_HoverBindFire(9)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND10'>
+    TrustyBars_HoverBindFire(10)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND11'>
+    TrustyBars_HoverBindFire(11)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND12'>
+    TrustyBars_HoverBindFire(12)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND13'>
+    TrustyBars_HoverBindFire(13)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND14'>
+    TrustyBars_HoverBindFire(14)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND15'>
+    TrustyBars_HoverBindFire(15)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND16'>
+    TrustyBars_HoverBindFire(16)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND17'>
+    TrustyBars_HoverBindFire(17)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND18'>
+    TrustyBars_HoverBindFire(18)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND19'>
+    TrustyBars_HoverBindFire(19)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND20'>
+    TrustyBars_HoverBindFire(20)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND21'>
+    TrustyBars_HoverBindFire(21)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND22'>
+    TrustyBars_HoverBindFire(22)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND23'>
+    TrustyBars_HoverBindFire(23)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND24'>
+    TrustyBars_HoverBindFire(24)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND25'>
+    TrustyBars_HoverBindFire(25)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND26'>
+    TrustyBars_HoverBindFire(26)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND27'>
+    TrustyBars_HoverBindFire(27)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND28'>
+    TrustyBars_HoverBindFire(28)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND29'>
+    TrustyBars_HoverBindFire(29)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND30'>
+    TrustyBars_HoverBindFire(30)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND31'>
+    TrustyBars_HoverBindFire(31)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND32'>
+    TrustyBars_HoverBindFire(32)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND33'>
+    TrustyBars_HoverBindFire(33)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND34'>
+    TrustyBars_HoverBindFire(34)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND35'>
+    TrustyBars_HoverBindFire(35)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND36'>
+    TrustyBars_HoverBindFire(36)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND37'>
+    TrustyBars_HoverBindFire(37)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND38'>
+    TrustyBars_HoverBindFire(38)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND39'>
+    TrustyBars_HoverBindFire(39)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND40'>
+    TrustyBars_HoverBindFire(40)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND41'>
+    TrustyBars_HoverBindFire(41)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND42'>
+    TrustyBars_HoverBindFire(42)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND43'>
+    TrustyBars_HoverBindFire(43)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND44'>
+    TrustyBars_HoverBindFire(44)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND45'>
+    TrustyBars_HoverBindFire(45)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND46'>
+    TrustyBars_HoverBindFire(46)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND47'>
+    TrustyBars_HoverBindFire(47)
+  </Binding>
+  <Binding name='TRUSTYBARSBIND48'>
+    TrustyBars_HoverBindFire(48)
+  </Binding>
+</Bindings>

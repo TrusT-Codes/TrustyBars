@@ -33,10 +33,26 @@ local function InitializeMenu()
 	UIDropDownMenu_AddButton(info)
 
 	info = {}
-	info.text = "Add New Bar"
-	info.notCheckable = true
-	info.func = function() BTV:AddNewBar() end
+	info.text = "Hoverbind"
+	info.isNotRadio = true
+	info.checked = BTV:IsHoverBindMode()
+	info.func = function() BTV:ToggleHoverBindMode() end
+	info.keepShownOnClick = true
 	UIDropDownMenu_AddButton(info)
+
+	info = {}
+	info.text = "Always Show Action Bars"
+	info.isNotRadio = true
+	info.checked = BTV:IsAlwaysShowMultibars()
+	info.func = function() BTV:ToggleAlwaysShowMultibars() end
+	info.keepShownOnClick = true
+	UIDropDownMenu_AddButton(info)
+
+	-- "Add New Bar" - REMOVED (Stance/Page Bar Assignment feature, Part 1).
+	-- Custom-bar capacity is now fixed at exactly 4 permanent Extra Bars
+	-- (Settings.lua's bar list, ids 6-9), each toggled on/off via its own
+	-- inline checkbox rather than added/removed - see Bar.lua's
+	-- IsExtraBarId/SetExtraBarEnabled and Core.lua's EnsureExtraBars.
 end
 
 UIDropDownMenu_Initialize(BTV.menuFrame, InitializeMenu, "MENU")

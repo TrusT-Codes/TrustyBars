@@ -5,8 +5,11 @@
 ## SavedVariables: BTVanillaDB
 
 Core.lua
+DefaultBars.lua
 Bar.lua
 Button.lua
+HoverBind.lua
 Minimap.lua
 Menu.lua
 Settings.lua
+bindings.xml

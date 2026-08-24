@@ -1,21 +1,29 @@
 -- Settings.lua
--- BTVanilla per-bar settings window.
+-- BTVanilla unified settings window: default bars (1-5, DefaultBars.lua)
+-- and custom bars (6+, Bar.lua) share one bar list and one page layout.
+--
+-- Phase 4 rebuild (§4C of the plan) drops the old Apply-button-gated
+-- model entirely. Every control here is live: moving a slider, clicking
+-- a grid preset, or toggling a checkbox writes straight into
+-- BTVanillaDB and re-applies the affected bar's shape/position/size on
+-- the spot. There is no "pending" value anywhere in this file anymore.
 --
 -- Editable settings:
---   x
---   y
---   buttonSize
---   rows
---   cols
---   slotStart
+--   x / y                    (both bar kinds, live sliders)
+--   buttonSize                (both bar kinds, live slider)
+--   cols / rows                (both bar kinds, live grid-preset swatches)
+--   buttonCount                (custom bars only, live +/- stepper)
+--   enabled                        (default bars 2-5 only, live checkbox)
 --
--- point / relativePoint are intentionally NOT exposed in the UI.
--- Their existing SavedVariable values remain unchanged.
+-- point / relativePoint are intentionally NOT exposed in the UI. Their
+-- existing SavedVariable values remain unchanged.
 --
--- All numeric settings use sliders rather than text input.
+-- slotStart is intentionally NOT exposed either (Phase 4, point 6) -
+-- custom-bar slot assignment is fully internal, computed once at
+-- creation by Bar.lua's GetNextFreeSlotStart.
 --
--- Rows and columns are coupled so every bar always contains exactly
--- 12 buttons:
+-- Grid shape is chosen from exactly 6 literal presets (not free-form
+-- rows/cols sliders anymore):
 --
 --   1 x 12
 --   2 x 6
@@ -35,18 +43,101 @@ local settingsFrame
 -- Constants
 -------------------------------------------------------------------------
 
-local ROW_OPTIONS = {
-	1,
-	2,
-	3,
-	4,
-	6,
-	12,
+-- The 6 fixed grid presets, in display order. Every preset totals
+-- exactly BTV.MAX_BAR_BUTTONS (12) cells, matching the fixed-size button
+-- pool every bar (default or custom) is built around.
+local GRID_PRESETS = {
+	{ rows = 1,  cols = 12 },
+	{ rows = 2,  cols = 6  },
+	{ rows = 3,  cols = 4  },
+	{ rows = 4,  cols = 3  },
+	{ rows = 6,  cols = 2  },
+	{ rows = 12, cols = 1  },
 }
 
 local BUTTON_SIZE_MIN = 16
 local BUTTON_SIZE_MAX = 64
 local BUTTON_SIZE_STEP = 2
+
+-- General tab's hotkey/count text font size sliders (Button.lua's
+-- self.hotkey/self.count FontStrings). 6-24 comfortably brackets vanilla's
+-- own NumberFontNormalSmall/NumberFontNormal template sizes on this
+-- client generation - flagged in the task report as worth a live check,
+-- since the true native size is only knowable by GetFont()'ing a real
+-- FontString (Button.lua's captured BTV.NATIVE_HOTKEY_FONT/NATIVE_COUNT_FONT),
+-- not at this constant's definition time.
+local FONT_SIZE_MIN = 6
+local FONT_SIZE_MAX = 24
+local FONT_SIZE_STEP = 1
+
+-- Shared by both bar kinds' Spacing slider (bug-fix batch Fix 4 added it
+-- to true custom bars 6+ too, alongside default bars 1-5's existing one -
+-- see the spacing slider block below).
+local SPACING_MIN = 0
+local SPACING_MAX = 20
+local SPACING_STEP = 1
+
+-- Friendly names for the 5 fixed default bars (1-5), used in place of
+-- the raw internal barId wherever a default bar's name is shown.
+local DEFAULT_BAR_NAMES = {
+	[1] = "Main Bar",
+	[2] = "Action Bar 1",
+	[3] = "Action Bar 2",
+	[4] = "Right Action Bar 1",
+	[5] = "Right Action Bar 2",
+}
+
+-- Friendly names for the Stance Bar / Bag Bar / Micro Menu (features 2/3)
+-- - these use distinct STRING keys ("stance"/"bagbar"/"micromenu"),
+-- never numeric ids, so they can never collide with the numeric
+-- default-bar (1-5)/custom-bar (6+) id scheme above. Declared here (used
+-- by GetBarDisplayName, CreateBarListRow, and the simple-bar-page system
+-- further below) rather than duplicated per call site.
+local SIMPLE_BAR_NAMES = {
+	stance = "Stance Bar",
+	bagbar = "Bag Bar",
+	micromenu = "Micro Menu",
+	latencybar = "Latency Bar",
+	expbar = "Experience Bar",
+}
+
+-- Populated near the bottom of this file (CreateSimpleBarPage's own
+-- section) once BTV:SetStanceBarPosition/SetBagBarPosition/etc. (all
+-- DefaultBars.lua) are known to exist - declared here (a real Lua 5.0
+-- upvalue, not a global) so CreateBarListRow/GetOrCreateBarPage/
+-- RefreshBarSettingsPage below can all reference the same table via
+-- simpleBarPageConfigs[barId] as their "is this a simple string-keyed
+-- page?" test, regardless of definition order elsewhere in the file.
+local simpleBarPageConfigs = {}
+
+-- Extra Bars start at id 6 (ids 1-5 are reserved for the default bars;
+-- BTV.EXTRA_BAR_ID_START/EXTRA_BAR_COUNT, Core.lua, fix ids 6-9
+-- permanently), but are numbered from 1 for the user rather than showing
+-- the internal id.
+local function GetBarDisplayName(barId, isDefault)
+	if SIMPLE_BAR_NAMES[barId] then
+		return SIMPLE_BAR_NAMES[barId]
+	end
+
+	if isDefault then
+		return DEFAULT_BAR_NAMES[barId] or ("Bar " .. tostring(barId))
+	end
+
+	return "Extra Bar " .. tostring(barId - 5)
+end
+
+-- Layout indent constants, used instead of scattering magic numbers
+-- through every page-building call below.
+local INDENT_SECTION = 18
+local INDENT_CONTROL = 22
+local INDENT_INPUT   = 85
+
+local LIST_ROW_HEIGHT = 24
+local LIST_ROW_GAP    = 4
+
+local SWATCH_SIZE = 46
+local SWATCH_GAP  = 8
+local SWATCH_PAD  = 4
 
 -------------------------------------------------------------------------
 -- Basic helpers
@@ -64,6 +155,36 @@ local function BarListButton_OnClick()
 	BTV:ShowBarPage(this.barId)
 end
 
+local function IsDefaultBarId(barId)
+	return barId ~= nil and barId >= 1 and barId <= 5
+end
+
+-- Finds an Extra Bar's SavedVariables entry by ID (never by array index -
+-- BTVanillaDB.bars is still a plain array under the hood, even though ids
+-- 6-9 are now permanent/fixed - see Core.lua's EnsureExtraBars).
+local function FindCustomBarConfig(barId)
+	local i
+
+	for i = 1, table.getn(BTVanillaDB.bars) do
+		local cfg = BTVanillaDB.bars[i]
+
+		if cfg and cfg.id == barId then
+			return cfg
+		end
+	end
+
+	return nil
+end
+
+-- Returns cfg, isDefault for any bar id (1-5 default, 6+ custom).
+local function GetBarConfig(barId)
+	if IsDefaultBarId(barId) then
+		return BTVanillaDB.defaultBars[barId], true
+	end
+
+	return FindCustomBarConfig(barId), false
+end
+
 -------------------------------------------------------------------------
 -- Slider creation
 -------------------------------------------------------------------------
@@ -76,17 +197,13 @@ local function CreateSettingSlider(parent, name, width)
 		"OptionsSliderTemplate"
 	)
 
-	slider:SetWidth(width or 230)
+	slider:SetWidth(width or 300)
 	slider:SetHeight(17)
 
 	slider:SetOrientation("HORIZONTAL")
 
 	return slider
 end
-
--------------------------------------------------------------------------
--- Slider label
--------------------------------------------------------------------------
 
 local function SetSliderLabel(slider, text)
 	if slider.Text then
@@ -96,6 +213,10 @@ end
 
 -------------------------------------------------------------------------
 -- Screen coordinate ranges
+--
+-- Computed once per page build (point 5), never per-tick - the caption
+-- showing "Position (X: -1024 to 1024)" is a static FontString set at
+-- build time, not recalculated on every OnValueChanged.
 -------------------------------------------------------------------------
 
 local function GetScreenCoordinateRange()
@@ -115,56 +236,143 @@ local function GetScreenCoordinateRange()
 end
 
 -------------------------------------------------------------------------
--- Row/column helpers
+-- Grid preset swatches
+--
+-- Small preview frames built from WHITE8X8-textured squares, matching
+-- the texture idiom already used by Button.lua's editOverlay. Clicking
+-- a swatch is a single deliberate action, so it applies immediately -
+-- no Apply-button gating (point 2).
 -------------------------------------------------------------------------
 
-local function GetColsForRows(rows)
-	if rows == 1 then
-		return 12
-	elseif rows == 2 then
-		return 6
-	elseif rows == 3 then
-		return 4
-	elseif rows == 4 then
-		return 3
-	elseif rows == 6 then
-		return 2
-	elseif rows == 12 then
-		return 1
+local function CreateGridSwatch(parent, preset)
+	local swatch = CreateFrame(
+		"Button",
+		nil,
+		parent
+	)
+
+	swatch:SetWidth(SWATCH_SIZE)
+	swatch:SetHeight(SWATCH_SIZE)
+
+	swatch:SetBackdrop({
+		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = {
+			left = 2,
+			right = 2,
+			top = 2,
+			bottom = 2
+		},
+	})
+
+	swatch:SetBackdropColor(0, 0, 0, 0.35)
+	swatch:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+
+	swatch.rows = preset.rows
+	swatch.cols = preset.cols
+
+	-- Build the tiny cell grid once, scaled to fit inside the swatch.
+	local maxDim = preset.rows
+
+	if preset.cols > maxDim then
+		maxDim = preset.cols
 	end
 
-	-- Should never happen, but keep the function safe.
-	return 12
-end
+	local avail = SWATCH_SIZE - (SWATCH_PAD * 2)
+	local cellSize = math.floor(avail / maxDim)
 
-local function GetRowsForCols(cols)
-	if cols == 12 then
-		return 1
-	elseif cols == 6 then
-		return 2
-	elseif cols == 4 then
-		return 3
-	elseif cols == 3 then
-		return 4
-	elseif cols == 2 then
-		return 6
-	elseif cols == 1 then
-		return 12
+	if cellSize < 1 then
+		cellSize = 1
 	end
 
-	return 1
-end
+	local r
+	local c
 
-local function GetRowIndex(rows)
-	local i
+	for r = 0, preset.rows - 1 do
+		for c = 0, preset.cols - 1 do
+			local tex = swatch:CreateTexture(nil, "ARTWORK")
 
-	for i = 1, table.getn(ROW_OPTIONS) do
-		if ROW_OPTIONS[i] == rows then
-			return i
+			tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+			tex:SetVertexColor(0.8, 0.8, 0.8, 0.9)
+
+			tex:SetWidth(cellSize - 1)
+			tex:SetHeight(cellSize - 1)
+
+			tex:SetPoint(
+				"TOPLEFT",
+				swatch,
+				"TOPLEFT",
+				SWATCH_PAD + (c * cellSize),
+				-(SWATCH_PAD + (r * cellSize))
+			)
 		end
 	end
 
-	return 1
+	local caption = swatch:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	caption:SetPoint(
+		"TOP",
+		swatch,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	caption:SetText(
+		tostring(preset.cols) .. "x" .. tostring(preset.rows)
+	)
+
+	swatch.caption = caption
+
+	return swatch
+end
+
+local function GridSwatch_OnClick()
+	local page = this.page
+
+	if not page then
+		return
+	end
+
+	local barId = page.barId
+
+	if page.isDefault then
+		-- BTV:SetDefaultBarLayout (DefaultBars.lua) owns the bar-1-vs-
+		-- bars-2-5 branch internally now (major architecture migration,
+		-- Phase 1 of 2) - bars 2-5 delegate straight to Bar.lua's own
+		-- SetBarLayout, exactly like a real custom bar (id 6+) below.
+		BTV:SetDefaultBarLayout(barId, this.cols, this.rows)
+	else
+		local bar = BTV.bars[barId]
+
+		if bar then
+			BTV:SetBarLayout(bar, this.cols, this.rows)
+		end
+	end
+
+	BTV:RefreshBarSettingsPage(barId)
+end
+
+-- Highlights whichever swatch matches the bar's current cols/rows.
+local function RefreshGridSwatchSelection(page, cols, rows)
+	local i
+
+	for i = 1, table.getn(page.gridSwatches) do
+		local swatch = page.gridSwatches[i]
+
+		if swatch.cols == cols and swatch.rows == rows then
+			swatch:SetBackdropBorderColor(1, 0.82, 0, 1)
+		else
+			swatch:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+		end
+	end
 end
 
 -------------------------------------------------------------------------
@@ -178,9 +386,11 @@ local function CreateSettingsFrame()
 		UIParent
 	)
 
-	-- Larger window to accommodate proper sliders.
-	f:SetWidth(620)
-	f:SetHeight(520)
+	-- Enlarged from the original 640x560 (Phase C point 1) - the content
+	-- panel's grid swatches, sliders, and stepper/delete controls were
+	-- clipping against the bottom/right edges at the old size.
+	f:SetWidth(780)
+	f:SetHeight(680)
 
 	f:SetPoint(
 		"CENTER",
@@ -268,6 +478,76 @@ local function CreateSettingsFrame()
 	)
 
 	-------------------------------------------------------------------------
+	-- Top-level view tabs ("Bars" / "General")
+	--
+	-- Only two views exist, so this is a plain two-button switch rather
+	-- than a general-purpose tab system - ShowBarPage/ShowGeneralView
+	-- below own which panels are shown, mirroring the same show/hide-one-
+	-- page-at-a-time pattern GetOrCreateBarPage/ShowBarPage already use
+	-- for individual bar pages.
+	-------------------------------------------------------------------------
+
+	f.currentView = "bars"
+
+	local tabBarsButton = CreateFrame(
+		"Button",
+		nil,
+		f,
+		"UIPanelButtonTemplate"
+	)
+
+	tabBarsButton:SetWidth(90)
+	tabBarsButton:SetHeight(20)
+
+	tabBarsButton:SetPoint(
+		"TOPLEFT",
+		f,
+		"TOPLEFT",
+		18,
+		-34
+	)
+
+	tabBarsButton:SetText("Bars")
+
+	tabBarsButton:SetScript(
+		"OnClick",
+		function()
+			BTV:ShowBarsView()
+		end
+	)
+
+	f.tabBarsButton = tabBarsButton
+
+	local tabGeneralButton = CreateFrame(
+		"Button",
+		nil,
+		f,
+		"UIPanelButtonTemplate"
+	)
+
+	tabGeneralButton:SetWidth(90)
+	tabGeneralButton:SetHeight(20)
+
+	tabGeneralButton:SetPoint(
+		"LEFT",
+		tabBarsButton,
+		"RIGHT",
+		6,
+		0
+	)
+
+	tabGeneralButton:SetText("General")
+
+	tabGeneralButton:SetScript(
+		"OnClick",
+		function()
+			BTV:ShowGeneralView()
+		end
+	)
+
+	f.tabGeneralButton = tabGeneralButton
+
+	-------------------------------------------------------------------------
 	-- Left bar list
 	-------------------------------------------------------------------------
 
@@ -277,8 +557,8 @@ local function CreateSettingsFrame()
 		f
 	)
 
-	f.listPanel:SetWidth(125)
-	f.listPanel:SetHeight(420)
+	f.listPanel:SetWidth(140)
+	f.listPanel:SetHeight(610)
 
 	f.listPanel:SetPoint(
 		"TOPLEFT",
@@ -316,8 +596,8 @@ local function CreateSettingsFrame()
 		f
 	)
 
-	f.contentPanel:SetWidth(430)
-	f.contentPanel:SetHeight(420)
+	f.contentPanel:SetWidth(580)
+	f.contentPanel:SetHeight(610)
 
 	f.contentPanel:SetPoint(
 		"TOPRIGHT",
@@ -357,6 +637,12 @@ end
 
 -------------------------------------------------------------------------
 -- Create a bar settings page
+--
+-- Shared between default bars (1-5) and custom bars (6+). The controls
+-- that don't apply to one kind (enable checkbox for bar 1 / default
+-- bars 2-5 only, button-count stepper and Delete Bar for custom bars
+-- only) are simply not created for the other kind, rather than
+-- maintaining two parallel page builders.
 -------------------------------------------------------------------------
 
 function BTV:GetOrCreateBarPage(barId)
@@ -364,9 +650,20 @@ function BTV:GetOrCreateBarPage(barId)
 		CreateSettingsFrame()
 	end
 
+	-- Stance Bar / Bag Bar / Micro Menu (features 2/3): dispatched out to
+	-- the shared "simple" page builder further down this file (Position +
+	-- optional Enable + Reset only) rather than through the full grid/
+	-- spacing/button-size/buttonCount/delete page builder below - none of
+	-- these three elements is a TrustyBars-owned button grid.
+	if simpleBarPageConfigs[barId] then
+		return self:GetOrCreateSimpleBarPage(barId)
+	end
+
 	if settingsFrame.pages[barId] then
 		return settingsFrame.pages[barId]
 	end
+
+	local isDefault = IsDefaultBarId(barId)
 
 	local page = CreateFrame(
 		"Frame",
@@ -379,6 +676,7 @@ function BTV:GetOrCreateBarPage(barId)
 	)
 
 	page.barId = barId
+	page.isDefault = isDefault
 
 	-------------------------------------------------------------------------
 	-- Title
@@ -394,35 +692,127 @@ function BTV:GetOrCreateBarPage(barId)
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		18,
+		INDENT_SECTION,
 		-14
 	)
 
-	title:SetText(
-		"Bar " .. tostring(barId) .. " Settings"
-	)
+	local titleText = GetBarDisplayName(barId, isDefault) .. " Settings"
+
+	if isDefault then
+		titleText = titleText .. " (Default)"
+	end
+
+	title:SetText(titleText)
 
 	page.title = title
 
+	-- Extra Bars (ids 6-9, Stance/Page Bar Assignment feature, Part 1):
+	-- get the exact same "Enabled" checkbox default bars 2-5 get, since
+	-- they now follow the same always-exists-toggle-only lifecycle -
+	-- see BTV:IsExtraBarId/SetExtraBarEnabled (Bar.lua).
+	local isExtraBar = BTV:IsExtraBarId(barId)
+	local hasEnableCheckbox = (isDefault and barId ~= 1) or isExtraBar
+
+	-------------------------------------------------------------------------
+	-- Vertical layout cursor
+	--
+	-- Recomputed from scratch (fix-up batch) after two changes cascaded
+	-- through the whole page: the static Position range caption is gone
+	-- (freeing the space it used to occupy), and the enable checkbox
+	-- (bars 2-5 only) moved from an off-to-the-right TOPRIGHT anchor to
+	-- being the first control on the page, above the Position section.
+	-- Every offset below is derived from deltas rather than independent
+	-- magic numbers, so this whole block is the single place to retune
+	-- spacing instead of hunting through every control's SetPoint.
+	-------------------------------------------------------------------------
+
+	local checkboxY = -44
+
+	-- Position section starts right under the title, or - on bars 2-5 -
+	-- right under the enable checkbox block (checkbox height + the gap
+	-- reserved before Position begins).
+	local positionStartY = -46
+
+	if hasEnableCheckbox then
+		positionStartY = checkboxY - 24 - 14
+	end
+
+	local xLabelY = positionStartY
+	local xSliderY = xLabelY + 4
+	local yLabelY = xSliderY - 40
+	local ySliderY = yLabelY + 4
+	local sizeLayoutTitleY = ySliderY - 36
+	local buttonSizeSliderY = sizeLayoutTitleY - 26
+
+	-------------------------------------------------------------------------
+	-- Enable checkbox (default bars 2-5 only - bar 1 always active)
+	--
+	-- Now the very first control on the page (fix-up batch) - previously
+	-- TOPRIGHT-anchored to the page's top-right corner, which pushed it
+	-- outside the window's visible bounds. Re-anchored TOPLEFT like every
+	-- other control so it participates in the normal top-down flow.
+	-------------------------------------------------------------------------
+
+	if hasEnableCheckbox then
+		local enableCheckbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaDefaultBar" .. tostring(barId) .. "EnableCheckbox",
+			page,
+			"UICheckButtonTemplate"
+		)
+
+		enableCheckbox:SetWidth(24)
+		enableCheckbox:SetHeight(24)
+
+		enableCheckbox:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			checkboxY
+		)
+
+		enableCheckbox.barId = barId
+
+		enableCheckbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				if isDefault then
+					BTV:SetDefaultBarEnabled(this.barId, checked)
+				else
+					BTV:SetExtraBarEnabled(this.barId, checked)
+				end
+			end
+		)
+
+		-- UICheckButtonTemplate auto-creates $parentText, anchored to the
+		-- checkbox's own right side - the same "Enabled" label pattern
+		-- already used by the General tab's "Use Default Blizzard Layout"
+		-- checkbox.
+		local enableLabel = getglobal(enableCheckbox:GetName() .. "Text")
+
+		if enableLabel then
+			enableLabel:SetText("Enabled")
+		end
+
+		page.enableCheckbox = enableCheckbox
+	end
+
 	-------------------------------------------------------------------------
 	-- Position section
+	--
+	-- The static "Position (X: ... to ..., Y: ... to ...)" range caption
+	-- (fix-up batch) is gone entirely - GetScreenCoordinateRange's min/max
+	-- are still needed for the sliders' SetMinMaxValues below, just no
+	-- longer echoed back as a page caption. The live current X/Y values
+	-- are now shown the same way Button Size shows its own live value:
+	-- a centered FontString under each slider (see xValueText/yValueText).
 	-------------------------------------------------------------------------
 
-	local positionTitle = page:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontNormal"
-	)
-
-	positionTitle:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		18,
-		-52
-	)
-
-	positionTitle:SetText("Position")
+	local minX, maxX, minY, maxY =
+		GetScreenCoordinateRange()
 
 	-------------------------------------------------------------------------
 	-- X slider
@@ -438,8 +828,8 @@ function BTV:GetOrCreateBarPage(barId)
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		22,
-		-82
+		INDENT_CONTROL,
+		xLabelY
 	)
 
 	xLabel:SetText("X")
@@ -447,19 +837,16 @@ function BTV:GetOrCreateBarPage(barId)
 	local xSlider = CreateSettingSlider(
 		page,
 		"BTVanillaBar" .. tostring(barId) .. "XSlider",
-		300
+		290
 	)
 
 	xSlider:SetPoint(
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		85,
-		-78
+		INDENT_INPUT,
+		xSliderY
 	)
-
-	local minX, maxX, minY, maxY =
-		GetScreenCoordinateRange()
 
 	xSlider:SetMinMaxValues(
 		minX,
@@ -468,10 +855,38 @@ function BTV:GetOrCreateBarPage(barId)
 
 	xSlider:SetValueStep(1)
 
+	-- The slider's own built-in label just names the control now (matches
+	-- the Button Size slider's pattern) - the live numeric value lives in
+	-- xValueText below instead.
 	SetSliderLabel(
 		xSlider,
-		"X: 0"
+		"X"
 	)
+
+	-- Live numeric readout, centered below the slider (fix-up batch,
+	-- Change 2) - bare number only, same pattern as buttonSizeValueText.
+	-- Placeholder only: RefreshBarSettingsPage (called immediately after
+	-- GetOrCreateBarPage by ShowBarPage) overwrites this with the real
+	-- %.2f-formatted value from cfg.x before this page is ever shown.
+	local xValueText = page:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	xValueText:SetPoint(
+		"TOP",
+		xSlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	xValueText:SetText(
+		string.format("%.2f", 0)
+	)
+
+	page.xValueText = xValueText
 
 	xSlider:SetScript(
 		"OnValueChanged",
@@ -482,12 +897,18 @@ function BTV:GetOrCreateBarPage(barId)
 				return
 			end
 
-			value = math.floor(value + 0.5)
-
-			SetSliderLabel(
-				this,
-				"X: " .. tostring(value)
+			-- Display-only rounding (Phase C point 2) - the slider's raw
+			-- GetValue() keeps full precision, which ApplyLiveBarPosition
+			-- below still reads directly and passes straight through to
+			-- SetBarPosition/SetDefaultBarPosition unrounded.
+			xValueText:SetText(
+				string.format("%.2f", value)
 			)
+
+			-- Live: applied on every tick, not gated behind Apply.
+			if not this.suppressApply then
+				BTV:ApplyLiveBarPosition(page)
+			end
 		end
 	)
 
@@ -507,8 +928,8 @@ function BTV:GetOrCreateBarPage(barId)
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		22,
-		-122
+		INDENT_CONTROL,
+		yLabelY
 	)
 
 	yLabel:SetText("Y")
@@ -516,15 +937,15 @@ function BTV:GetOrCreateBarPage(barId)
 	local ySlider = CreateSettingSlider(
 		page,
 		"BTVanillaBar" .. tostring(barId) .. "YSlider",
-		300
+		290
 	)
 
 	ySlider:SetPoint(
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		85,
-		-118
+		INDENT_INPUT,
+		ySliderY
 	)
 
 	ySlider:SetMinMaxValues(
@@ -534,10 +955,34 @@ function BTV:GetOrCreateBarPage(barId)
 
 	ySlider:SetValueStep(1)
 
+	-- The slider's own built-in label just names the control now - see the
+	-- X slider's matching comment above.
 	SetSliderLabel(
 		ySlider,
-		"Y: 0"
+		"Y"
 	)
+
+	-- Live numeric readout, centered below the slider - see the X slider's
+	-- matching xValueText above.
+	local yValueText = page:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	yValueText:SetPoint(
+		"TOP",
+		ySlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	yValueText:SetText(
+		string.format("%.2f", 0)
+	)
+
+	page.yValueText = yValueText
 
 	ySlider:SetScript(
 		"OnValueChanged",
@@ -548,19 +993,32 @@ function BTV:GetOrCreateBarPage(barId)
 				return
 			end
 
-			value = math.floor(value + 0.5)
-
-			SetSliderLabel(
-				this,
-				"Y: " .. tostring(value)
+			-- Display-only rounding (Phase C point 2) - see the X slider's
+			-- OnValueChanged comment above.
+			yValueText:SetText(
+				string.format("%.2f", value)
 			)
+
+			if not this.suppressApply then
+				BTV:ApplyLiveBarPosition(page)
+			end
 		end
 	)
 
 	page.ySlider = ySlider
 
+	-- Reset to Blizzard Default (default bars only) now lives below the
+	-- Spacing slider, just above Grid Layout - see that block further
+	-- down, after the Spacing section, for its creation.
+
 	-------------------------------------------------------------------------
 	-- Size & Layout
+	--
+	-- sizeLayoutTitleY/buttonSizeSliderY were computed up in the vertical
+	-- layout cursor block above (cascading from the Y slider's own value
+	-- text), so both bar kinds - and both the checkbox/no-checkbox default
+	-- bar variants - derive from the same delta chain instead of separate
+	-- hand-tuned constants.
 	-------------------------------------------------------------------------
 
 	local layoutTitle = page:CreateFontString(
@@ -573,44 +1031,31 @@ function BTV:GetOrCreateBarPage(barId)
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		18,
-		-166
+		INDENT_SECTION,
+		sizeLayoutTitleY
 	)
 
-	layoutTitle:SetText("Size & Layout")
+	layoutTitle:SetText(
+		"Button Size (" .. tostring(BUTTON_SIZE_MIN) ..
+		" to " .. tostring(BUTTON_SIZE_MAX) .. ")"
+	)
 
 	-------------------------------------------------------------------------
 	-- Button Size
 	-------------------------------------------------------------------------
 
-	local buttonSizeLabel = page:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontNormalSmall"
-	)
-
-	buttonSizeLabel:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		22,
-		-196
-	)
-
-	buttonSizeLabel:SetText("Button Size")
-
 	local buttonSizeSlider = CreateSettingSlider(
 		page,
 		"BTVanillaBar" .. tostring(barId) .. "ButtonSizeSlider",
-		300
+		290
 	)
 
 	buttonSizeSlider:SetPoint(
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		85,
-		-192
+		INDENT_INPUT,
+		buttonSizeSliderY
 	)
 
 	buttonSizeSlider:SetMinMaxValues(
@@ -623,10 +1068,56 @@ function BTV:GetOrCreateBarPage(barId)
 		BUTTON_SIZE_STEP
 	)
 
+	-- The slider's own built-in label just names the control - the live
+	-- numeric value lives in buttonSizeValueText below instead (point 5).
 	SetSliderLabel(
 		buttonSizeSlider,
-		"Button Size: " .. tostring(BTV.BUTTON_SIZE)
+		"Button Size"
 	)
+
+	-- min/max end captions (point 6) - UISliderTemplate/OptionsSliderTemplate
+	-- creates these as $parentLow/$parentHigh, defaulting to "Low"/"High".
+	local buttonSizeSliderLow = getglobal(
+		buttonSizeSlider:GetName() .. "Low"
+	)
+
+	if buttonSizeSliderLow then
+		buttonSizeSliderLow:SetText(
+			tostring(BUTTON_SIZE_MIN)
+		)
+	end
+
+	local buttonSizeSliderHigh = getglobal(
+		buttonSizeSlider:GetName() .. "High"
+	)
+
+	if buttonSizeSliderHigh then
+		buttonSizeSliderHigh:SetText(
+			tostring(BUTTON_SIZE_MAX)
+		)
+	end
+
+	-- Live numeric readout, centered below the slider (point 5) - bare
+	-- number only, no "Button Size:" prefix.
+	local buttonSizeValueText = page:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	buttonSizeValueText:SetPoint(
+		"TOP",
+		buttonSizeSlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	buttonSizeValueText:SetText(
+		tostring(BTV.BUTTON_SIZE)
+	)
+
+	page.buttonSizeValueText = buttonSizeValueText
 
 	buttonSizeSlider:SetScript(
 		"OnValueChanged",
@@ -641,476 +1132,595 @@ function BTV:GetOrCreateBarPage(barId)
 				(value / BUTTON_SIZE_STEP) + 0.5
 			) * BUTTON_SIZE_STEP
 
-			SetSliderLabel(
-				this,
-				"Button Size: " .. tostring(value)
+			buttonSizeValueText:SetText(
+				tostring(value)
 			)
+
+			if not this.suppressApply then
+				if page.isDefault then
+					BTV:SetDefaultBarButtonSize(page.barId, value)
+				else
+					local bar = BTV.bars[page.barId]
+
+					if bar then
+						BTV:SetBarButtonSize(bar, value)
+					end
+				end
+			end
 		end
 	)
 
 	page.buttonSizeSlider = buttonSizeSlider
 
 	-------------------------------------------------------------------------
-	-- Rows
+	-- Spacing (bug-fix batch Fix 4: every bar kind now gets this control,
+	-- default bars 1-5 AND true custom bars 6+ - see the SPACING_MIN/MAX
+	-- comment above, now stale on the "custom bars don't get this" point
+	-- but still accurate on the shared min/max/step constants). Mirrors
+	-- the Button Size slider's own live-value-label/min-max-end-label
+	-- pattern exactly.
 	-------------------------------------------------------------------------
 
-	local rowsLabel = page:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontNormalSmall"
-	)
+	local gridTitleY
+	local swatchY
 
-	rowsLabel:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		22,
-		-240
-	)
+	-- Spacing now exists for EVERY bar, default (1-5, bug-fix batch Fix 2)
+	-- AND true custom (6+, bug-fix batch Fix 4) - Bar.lua's LayoutButtons/
+	-- BarFrameSize already honor cfg.spacing generically for any bar that
+	-- has one, and every bar (default or custom) is now guaranteed to have
+	-- a real cfg.spacing field from creation (Core.lua's
+	-- CaptureNativeSpacing/seedDefaultBars for default bars; Bar.lua's
+	-- AddNewBar explicitly writing spacing = 0 for new custom bars). The
+	-- OnValueChanged handler below branches to whichever setter the bar
+	-- kind actually needs - BTV:SetDefaultBarSpacing (which itself further
+	-- branches bar-1-direct-cfg-write vs. bars-2-5-delegate-to-Bar.lua
+	-- internally) for default bars, BTV:SetBarSpacing for true custom bars.
+	do
+		local spacingTitleY = buttonSizeSliderY - 36
+		local spacingSliderY = spacingTitleY - 26
 
-	rowsLabel:SetText("Rows")
+		local spacingTitle = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormal"
+		)
 
-	local rowsSlider = CreateSettingSlider(
-		page,
-		"BTVanillaBar" .. tostring(barId) .. "RowsSlider",
-		300
-	)
+		spacingTitle:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			spacingTitleY
+		)
 
-	rowsSlider:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		85,
-		-236
-	)
+		spacingTitle:SetText(
+			"Spacing (" .. tostring(SPACING_MIN) ..
+			" to " .. tostring(SPACING_MAX) .. ")"
+		)
 
-	-- The slider value is an index into ROW_OPTIONS:
-	--
-	-- 1 = 1 row
-	-- 2 = 2 rows
-	-- 3 = 3 rows
-	-- 4 = 4 rows
-	-- 5 = 6 rows
-	-- 6 = 12 rows
-	rowsSlider:SetMinMaxValues(
-		1,
-		table.getn(ROW_OPTIONS)
-	)
+		local spacingSlider = CreateSettingSlider(
+			page,
+			"BTVanillaBar" .. tostring(barId) .. "SpacingSlider",
+			290
+		)
 
-	rowsSlider:SetValueStep(1)
+		spacingSlider:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_INPUT,
+			spacingSliderY
+		)
 
-	SetSliderLabel(
-		rowsSlider,
-		"Rows: 1"
-	)
+		spacingSlider:SetMinMaxValues(
+			SPACING_MIN,
+			SPACING_MAX
+		)
 
-	rowsSlider:SetScript(
-		"OnValueChanged",
-		function()
-			local index = math.floor(
-				(this:GetValue() or 1) + 0.5
+		spacingSlider:SetValueStep(
+			SPACING_STEP
+		)
+
+		SetSliderLabel(
+			spacingSlider,
+			"Spacing"
+		)
+
+		local spacingSliderLow = getglobal(
+			spacingSlider:GetName() .. "Low"
+		)
+
+		if spacingSliderLow then
+			spacingSliderLow:SetText(
+				tostring(SPACING_MIN)
 			)
+		end
 
-			if index < 1 then
-				index = 1
-			end
+		local spacingSliderHigh = getglobal(
+			spacingSlider:GetName() .. "High"
+		)
 
-			if index > table.getn(ROW_OPTIONS) then
-				index = table.getn(ROW_OPTIONS)
-			end
-
-			local rows = ROW_OPTIONS[index]
-			local cols = GetColsForRows(rows)
-
-			SetSliderLabel(
-				this,
-				"Rows: " .. tostring(rows) ..
-				" / Cols: " .. tostring(cols)
+		if spacingSliderHigh then
+			spacingSliderHigh:SetText(
+				tostring(SPACING_MAX)
 			)
+		end
 
-			-- Keep the columns slider synchronized.
-			if page.colsSlider then
-				page.colsSlider:SetValue(
-					GetRowIndex(rows)
+		local spacingValueText = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormalSmall"
+		)
+
+		spacingValueText:SetPoint(
+			"TOP",
+			spacingSlider,
+			"BOTTOM",
+			0,
+			-2
+		)
+
+		-- Placeholder only - RefreshBarSettingsPage (called immediately
+		-- after GetOrCreateBarPage by ShowBarPage) sets the real value
+		-- from cfg.spacing before this page is ever shown.
+		spacingValueText:SetText("0")
+
+		page.spacingValueText = spacingValueText
+
+		spacingSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor(value + 0.5)
+
+				spacingValueText:SetText(
+					tostring(value)
 				)
+
+				if not this.suppressApply then
+					if page.isDefault then
+						BTV:SetDefaultBarSpacing(page.barId, value)
+					else
+						local bar = BTV.bars[page.barId]
+
+						if bar then
+							BTV:SetBarSpacing(bar, value)
+						end
+					end
+				end
 			end
+		)
+
+		page.spacingSlider = spacingSlider
+
+		if isDefault then
+			-------------------------------------------------------------------------
+			-- Reset to Blizzard default position (default bars only - custom
+			-- bars have no native Blizzard anchor to reset to, see
+			-- DefaultBars.lua's ResetDefaultBarLayout/nativeAnchor). Lives
+			-- below the Spacing slider and above Grid Layout.
+			-------------------------------------------------------------------------
+
+			local resetButtonY = spacingSliderY - 36
+
+			local resetPositionButton = CreateFrame(
+				"Button",
+				nil,
+				page,
+				"UIPanelButtonTemplate"
+			)
+
+			resetPositionButton:SetWidth(200)
+			resetPositionButton:SetHeight(22)
+
+			resetPositionButton:SetPoint(
+				"TOPLEFT",
+				page,
+				"TOPLEFT",
+				INDENT_INPUT,
+				resetButtonY
+			)
+
+			resetPositionButton:SetText("Reset to Blizzard Default")
+
+			resetPositionButton:SetScript(
+				"OnClick",
+				function()
+					-- Renamed from ResetDefaultBarPosition (bug-fix batch,
+					-- Issue 3): now also restores cols/rows/buttonSize back
+					-- to their native defaults, not just position/spacing.
+					BTV:ResetDefaultBarLayout(page.barId)
+
+					-- Same pattern as GridSwatch_OnClick: re-sync every
+					-- control's displayed value from the saved config after
+					-- an external (non-slider) write, rather than trusting
+					-- pre-reset values. RefreshBarSettingsPage already
+					-- re-syncs the X/Y sliders, the Button Size slider/
+					-- value text, AND the grid-swatch selection
+					-- (RefreshGridSwatchSelection) in one call, so nothing
+					-- else needs to be called separately here for
+					-- cols/rows/buttonSize to catch up too.
+					BTV:RefreshBarSettingsPage(page.barId)
+				end
+			)
+
+			page.resetPositionButton = resetPositionButton
+
+			-- Grid Layout shifts down to make room for the Spacing section
+			-- plus the Reset button above it.
+			gridTitleY = resetButtonY - 34
+			swatchY = gridTitleY - 26
+		else
+			-- True custom bars (6+): no Reset-to-Blizzard-Default concept
+			-- (Fix 4 - they have no native baseline to reset to), so Grid
+			-- Layout follows directly under the Spacing slider using the
+			-- same title/slider delta (36/26) used everywhere else in this
+			-- cascade.
+			gridTitleY = spacingSliderY - 36
+			swatchY = gridTitleY - 26
 		end
-	)
-
-	page.rowsSlider = rowsSlider
+	end
 
 	-------------------------------------------------------------------------
-	-- Columns
-	--
-	-- This is intentionally another slider because the user requested
-	-- sliders for all numeric settings.
-	--
-	-- It is coupled to Rows. Changing Columns changes Rows automatically
-	-- so the product is ALWAYS 12.
+	-- Grid layout presets
 	-------------------------------------------------------------------------
 
-	local colsLabel = page:CreateFontString(
+	local gridTitle = page:CreateFontString(
 		nil,
 		"OVERLAY",
-		"GameFontNormalSmall"
+		"GameFontNormal"
 	)
 
-	colsLabel:SetPoint(
+	gridTitle:SetPoint(
 		"TOPLEFT",
 		page,
 		"TOPLEFT",
-		22,
-		-284
+		INDENT_SECTION,
+		gridTitleY
 	)
 
-	colsLabel:SetText("Columns")
+	gridTitle:SetText("Grid Layout")
 
-	local colsSlider = CreateSettingSlider(
-		page,
-		"BTVanillaBar" .. tostring(barId) .. "ColsSlider",
-		300
-	)
+	page.gridSwatches = {}
 
-	colsSlider:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		85,
-		-280
-	)
+	local i
+	local xOffset = INDENT_CONTROL
 
-	colsSlider:SetMinMaxValues(
-		1,
-		table.getn(ROW_OPTIONS)
-	)
+	for i = 1, table.getn(GRID_PRESETS) do
+		local preset = GRID_PRESETS[i]
 
-	colsSlider:SetValueStep(1)
+		local swatch = CreateGridSwatch(page, preset)
 
-	SetSliderLabel(
-		colsSlider,
-		"Cols: 12"
-	)
+		swatch:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			xOffset,
+			swatchY
+		)
 
-	colsSlider:SetScript(
-		"OnValueChanged",
-		function()
-			local index = math.floor(
-				(this:GetValue() or 1) + 0.5
-			)
+		swatch.page = page
 
-			if index < 1 then
-				index = 1
-			end
+		swatch:SetScript(
+			"OnClick",
+			GridSwatch_OnClick
+		)
 
-			if index > table.getn(ROW_OPTIONS) then
-				index = table.getn(ROW_OPTIONS)
-			end
+		page.gridSwatches[i] = swatch
 
-			local cols = GetColsForRows(
-				ROW_OPTIONS[index]
-			)
-
-			local rows = GetRowsForCols(cols)
-
-			SetSliderLabel(
-				this,
-				"Cols: " .. tostring(cols) ..
-				" / Rows: " .. tostring(rows)
-			)
-
-			-- Keep Rows synchronized.
-			if page.rowsSlider then
-				page.rowsSlider:SetValue(
-					GetRowIndex(rows)
-				)
-			end
-		end
-	)
-
-	page.colsSlider = colsSlider
+		xOffset = xOffset + SWATCH_SIZE + SWATCH_GAP
+	end
 
 	-------------------------------------------------------------------------
-	-- Slot Start
-	-------------------------------------------------------------------------
-
-	local slotLabel = page:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontNormalSmall"
-	)
-
-	slotLabel:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		22,
-		-328
-	)
-
-	slotLabel:SetText("Slot Start")
-
-	local slotSlider = CreateSettingSlider(
-		page,
-		"BTVanillaBar" .. tostring(barId) .. "SlotSlider",
-		300
-	)
-
-	slotSlider:SetPoint(
-		"TOPLEFT",
-		page,
-		"TOPLEFT",
-		85,
-		-324
-	)
-
-	-- A 12-button bar needs 12 consecutive slots.
+	-- Button count stepper (custom bars only)
 	--
-	-- Therefore the last valid starting slot is:
-	--
-	-- ACTION_SLOT_END - 12 + 1
-	--
-	-- which is 109 with the current 73-120 pool.
-	slotSlider:SetMinMaxValues(
-		BTV.ACTION_SLOT_START,
-		BTV.ACTION_SLOT_END - 11
-	)
-
-	slotSlider:SetValueStep(1)
-
-	SetSliderLabel(
-		slotSlider,
-		"Slot Start: " .. tostring(BTV.ACTION_SLOT_START)
-	)
-
-	slotSlider:SetScript(
-		"OnValueChanged",
-		function()
-			local value = this:GetValue()
-
-			if not value then
-				return
-			end
-
-			value = math.floor(value + 0.5)
-
-			SetSliderLabel(
-				this,
-				"Slot Start: " .. tostring(value)
-			)
-		end
-	)
-
-	page.slotSlider = slotSlider
-
-	-------------------------------------------------------------------------
-	-- Apply
+	-- Default bars always show all 12 Blizzard buttons - Phase 1
+	-- explicitly decided default bars don't need buttonCount.
 	-------------------------------------------------------------------------
 
-	local applyButton = CreateFrame(
-		"Button",
-		nil,
-		page,
-		"UIPanelButtonTemplate"
-	)
+	if not isDefault then
+		-- Derived from swatchY (fix-up batch) rather than a hand-tuned
+		-- constant: the swatch grid is SWATCH_SIZE tall plus its own
+		-- caption line below it, then a 14px gap before this section's
+		-- label, then a 28px label-to-row gap (matches the same delta
+		-- used by every other section-title-to-control step above).
+		local buttonCountLabelY = swatchY - SWATCH_SIZE - 14 - 14
+		local buttonCountRowY = buttonCountLabelY - 28
 
-	applyButton:SetWidth(120)
-	applyButton:SetHeight(24)
+		local buttonCountLabel = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormal"
+		)
 
-	applyButton:SetPoint(
-		"BOTTOMRIGHT",
-		page,
-		"BOTTOMRIGHT",
-		-18,
-		12
-	)
+		buttonCountLabel:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			buttonCountLabelY
+		)
 
-	applyButton:SetText("Apply")
+		buttonCountLabel:SetText("Buttons Shown")
 
-	applyButton.barId = barId
+		local buttonCountMinus = CreateFrame(
+			"Button",
+			"BTVanillaBar" .. tostring(barId) .. "ButtonCountMinus",
+			page,
+			"UIPanelButtonTemplate"
+		)
 
-	applyButton:SetScript(
-		"OnClick",
-		function()
-			local id = this.barId
-			local cfg = BTVanillaDB.bars[id]
+		buttonCountMinus:SetWidth(24)
+		buttonCountMinus:SetHeight(22)
+
+		buttonCountMinus:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_INPUT,
+			buttonCountRowY
+		)
+
+		buttonCountMinus:SetText("-")
+
+		local buttonCountValueText = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormalSmall"
+		)
+
+		buttonCountValueText:SetPoint(
+			"LEFT",
+			buttonCountMinus,
+			"RIGHT",
+			8,
+			0
+		)
+
+		buttonCountValueText:SetWidth(24)
+		buttonCountValueText:SetJustifyH("CENTER")
+		buttonCountValueText:SetText("12")
+
+		local buttonCountPlus = CreateFrame(
+			"Button",
+			"BTVanillaBar" .. tostring(barId) .. "ButtonCountPlus",
+			page,
+			"UIPanelButtonTemplate"
+		)
+
+		buttonCountPlus:SetWidth(24)
+		buttonCountPlus:SetHeight(22)
+
+		buttonCountPlus:SetPoint(
+			"LEFT",
+			buttonCountValueText,
+			"RIGHT",
+			8,
+			0
+		)
+
+		buttonCountPlus:SetText("+")
+
+		-- Live now (Phase 4 point 3): reads/writes cfg.buttonCount
+		-- directly through SetBarButtonCount on every click, no pending
+		-- page-local value anymore.
+		local function RefreshButtonCountStepperVisual()
+			local cfg = FindCustomBarConfig(page.barId)
 
 			if not cfg then
 				return
 			end
 
-			-------------------------------------------------------------------------
-			-- X/Y
-			-------------------------------------------------------------------------
+			local maxButtons = (cfg.cols or 1) * (cfg.rows or 1)
+			local count = cfg.buttonCount or maxButtons
 
-			local x = page.xSlider:GetValue()
-			local y = page.ySlider:GetValue()
-
-			if x then
-				cfg.x = math.floor(x + 0.5)
-			end
-
-			if y then
-				cfg.y = math.floor(y + 0.5)
-			end
-
-			-------------------------------------------------------------------------
-			-- Button size
-			-------------------------------------------------------------------------
-
-			local buttonSize = page.buttonSizeSlider:GetValue()
-
-			if buttonSize then
-				buttonSize =
-					math.floor(
-						(buttonSize / BUTTON_SIZE_STEP) + 0.5
-					) * BUTTON_SIZE_STEP
-
-				if buttonSize < BUTTON_SIZE_MIN then
-					buttonSize = BUTTON_SIZE_MIN
-				end
-
-				if buttonSize > BUTTON_SIZE_MAX then
-					buttonSize = BUTTON_SIZE_MAX
-				end
-
-				cfg.buttonSize = buttonSize
-			end
-
-			-------------------------------------------------------------------------
-			-- Rows / Columns
-			-------------------------------------------------------------------------
-
-			local rowIndex = math.floor(
-				(page.rowsSlider:GetValue() or 1) + 0.5
+			buttonCountValueText:SetText(
+				tostring(count)
 			)
 
-			if rowIndex < 1 then
-				rowIndex = 1
+			if count <= 1 then
+				buttonCountMinus:Disable()
+			else
+				buttonCountMinus:Enable()
 			end
 
-			if rowIndex > table.getn(ROW_OPTIONS) then
-				rowIndex = table.getn(ROW_OPTIONS)
+			if count >= maxButtons then
+				buttonCountPlus:Disable()
+			else
+				buttonCountPlus:Enable()
 			end
-
-			cfg.rows = ROW_OPTIONS[rowIndex]
-			cfg.cols = GetColsForRows(cfg.rows)
-
-			-------------------------------------------------------------------------
-			-- Slot Start
-			-------------------------------------------------------------------------
-
-			local slotStart = page.slotSlider:GetValue()
-
-			if slotStart then
-				slotStart = math.floor(
-					slotStart + 0.5
-				)
-
-				if slotStart < BTV.ACTION_SLOT_START then
-					slotStart = BTV.ACTION_SLOT_START
-				end
-
-				if slotStart > BTV.ACTION_SLOT_END - 11 then
-					slotStart = BTV.ACTION_SLOT_END - 11
-				end
-
-				cfg.slotStart = slotStart
-			end
-
-			-------------------------------------------------------------------------
-			-- Apply position
-			-------------------------------------------------------------------------
-
-			local bar = BTV.bars[id]
-
-			if bar then
-				BTV:ApplyBarPosition(bar)
-
-				-------------------------------------------------------------------------
-				-- Button size
-				-------------------------------------------------------------------------
-
-				BTV:SetBarButtonSize(
-					bar,
-					cfg.buttonSize
-				)
-
-				-------------------------------------------------------------------------
-				-- Grid
-				-------------------------------------------------------------------------
-				--
-				-- Changing rows/columns changes the number of buttons.
-				-- The Bar.lua implementation should rebuild the buttons
-				-- when this function is available.
-				-------------------------------------------------------------------------
-
-				if BTV.RebuildBarButtons then
-					BTV:RebuildBarButtons(bar)
-				else
-					BTV:LayoutButtons(bar)
-				end
-			end
-
-			self:RefreshBarSettingsPage(id)
-
-			BTV:Print(
-				"Bar " .. tostring(id) ..
-				" settings applied."
-			)
 		end
-	)
 
-	page.applyButton = applyButton
+		buttonCountMinus:SetScript(
+			"OnClick",
+			function()
+				local cfg = FindCustomBarConfig(page.barId)
+				local bar = BTV.bars[page.barId]
 
-	-------------------------------------------------------------------------
-	-- Delete
-	-------------------------------------------------------------------------
+				if not cfg or not bar then
+					return
+				end
 
-	local deleteButton = CreateFrame(
-		"Button",
-		nil,
-		page,
-		"UIPanelButtonTemplate"
-	)
+				local count = (cfg.buttonCount or (cfg.cols * cfg.rows)) - 1
 
-	deleteButton:SetWidth(120)
-	deleteButton:SetHeight(24)
+				BTV:SetBarButtonCount(bar, count)
 
-	deleteButton:SetPoint(
-		"BOTTOMLEFT",
-		page,
-		"BOTTOMLEFT",
-		18,
-		12
-	)
-
-	deleteButton:SetText("Delete Bar")
-
-	deleteButton.barId = barId
-
-	-- Keep the actual Blizzard button artwork, only make the text red.
-	local deleteText = deleteButton:GetFontString()
-
-	if deleteText then
-		deleteText:SetTextColor(
-			1.0,
-			0.2,
-			0.2
+				RefreshButtonCountStepperVisual()
+			end
 		)
+
+		buttonCountPlus:SetScript(
+			"OnClick",
+			function()
+				local cfg = FindCustomBarConfig(page.barId)
+				local bar = BTV.bars[page.barId]
+
+				if not cfg or not bar then
+					return
+				end
+
+				local count = (cfg.buttonCount or (cfg.cols * cfg.rows)) + 1
+
+				BTV:SetBarButtonCount(bar, count)
+
+				RefreshButtonCountStepperVisual()
+			end
+		)
+
+		page.buttonCountMinus = buttonCountMinus
+		page.buttonCountPlus = buttonCountPlus
+		page.buttonCountValueText = buttonCountValueText
+		page.RefreshButtonCountStepperVisual = RefreshButtonCountStepperVisual
 	end
 
-	deleteButton:SetScript(
-		"OnClick",
-		function()
-			local id = this.barId
+	-- "Delete Bar" - REMOVED (Stance/Page Bar Assignment feature, Part 1).
+	-- Every non-default bar id (6-9) is now a permanent Extra Bar with a
+	-- fixed lifecycle (always exists, toggled via the Enabled checkbox
+	-- above) rather than a freely add/removable custom bar - there is no
+	-- longer any bar this button could ever legally apply to. See
+	-- Bar.lua's IsExtraBarId/SetExtraBarEnabled and Core.lua's
+	-- EnsureExtraBars for the replacement lifecycle.
 
-			if BTV.DeleteBar then
-				BTV:DeleteBar(id)
+	-------------------------------------------------------------------------
+	-- Page Indicator Scale (Main Bar only - Stance/Page Bar Assignment
+	-- feature, Part 4)
+	--
+	-- Position is drag-only (this element's own EnsureContainerOverlay in
+	-- DefaultBars.lua handles that, exactly like Bag Bar/Micro Menu/Stance
+	-- Bar/Latency Bar/Key Ring) - only Scale is exposed here, mirroring
+	-- every other chain-anchored container's Scale slider structure.
+	-- Reuses the button-count stepper's own Y-offset formula (swatchY-
+	-- derived) since that stepper never exists on bar 1 (default bars have
+	-- no buttonCount concept), so this shares its vertical slot instead of
+	-- needing a new one.
+	--
+	-- Shown/hidden live by BTV:RefreshMainBarPageIndicatorControlsVisibility
+	-- (gated on BTVanillaDB.mainBarPaginationEnabled) - called both here at
+	-- build time (via RefreshBarSettingsPage, right after ShowBarPage) and
+	-- from the General panel's own pagination checkbox handler, so toggling
+	-- that checkbox immediately shows/hides this slider even while this
+	-- page is already open.
+	-------------------------------------------------------------------------
+
+	if barId == 1 then
+		local pageIndicatorTitleY = swatchY - SWATCH_SIZE - 14 - 14
+		local pageIndicatorSliderY = pageIndicatorTitleY - 28
+
+		local pageIndicatorTitle = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormal"
+		)
+
+		pageIndicatorTitle:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			pageIndicatorTitleY
+		)
+
+		pageIndicatorTitle:SetText("Page Indicator Scale")
+
+		local pageIndicatorSlider = CreateSettingSlider(
+			page,
+			"BTVanillaMainBarPageIndicatorScaleSlider",
+			290
+		)
+
+		pageIndicatorSlider:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_INPUT,
+			pageIndicatorSliderY
+		)
+
+		pageIndicatorSlider:SetMinMaxValues(0.5, 2.0)
+		pageIndicatorSlider:SetValueStep(0.1)
+
+		SetSliderLabel(pageIndicatorSlider, "Scale")
+
+		local pageIndicatorValueText = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormalSmall"
+		)
+
+		pageIndicatorValueText:SetPoint(
+			"TOP",
+			pageIndicatorSlider,
+			"BOTTOM",
+			0,
+			-2
+		)
+
+		pageIndicatorValueText:SetText("1.0")
+
+		pageIndicatorSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor((value * 10) + 0.5) / 10
+
+				pageIndicatorValueText:SetText(
+					string.format("%.1f", value)
+				)
+
+				if not this.suppressApply then
+					BTV:SetPageIndicatorScale(value)
+				end
 			end
-		end
-	)
+		)
 
-	page.deleteButton = deleteButton
+		page.pageIndicatorTitle = pageIndicatorTitle
+		page.pageIndicatorSlider = pageIndicatorSlider
+		page.pageIndicatorValueText = pageIndicatorValueText
+
+		-------------------------------------------------------------------------
+		-- Stance / Page Bar Assignment (Part 2) - RELOCATED here from the
+		-- General tab (bug-fix batch round 4, Issue 5): these settings are
+		-- specific to bar 1's own pagination/stance-swap behavior (the two
+		-- checkboxes that gate them still live on the General tab), so they
+		-- belong on bar 1's own page next to its other pagination-related
+		-- control (Page Indicator Scale above), not on the general panel.
+		--
+		-- Empty placeholder container only - BTV:RebuildMainBarAssignmentRows
+		-- (Settings.lua, defined further below in this file) populates the
+		-- actual rows, exactly mirroring how the old General-tab version
+		-- worked: a fixed-position, dynamically-HEIGHTED container that
+		-- collapses to nothing when neither stance-swap nor pagination is
+		-- enabled, called from RefreshBarSettingsPage(1) below, from both
+		-- checkboxes' own OnClick handlers, and from DefaultBars.lua's
+		-- UPDATE_SHAPESHIFT_FORMS handler.
+		-------------------------------------------------------------------------
+
+		local assignmentContainer = CreateFrame("Frame", nil, page)
+
+		assignmentContainer:SetPoint(
+			"TOPLEFT",
+			pageIndicatorValueText,
+			"BOTTOMLEFT",
+			-4,
+			-14
+		)
+
+		assignmentContainer:SetWidth(500)
+		assignmentContainer:SetHeight(1)
+
+		page.assignmentContainer = assignmentContainer
+		page.assignmentRows = {}
+	end
 
 	-------------------------------------------------------------------------
 	-- Hide until selected
@@ -1124,6 +1734,944 @@ function BTV:GetOrCreateBarPage(barId)
 end
 
 -------------------------------------------------------------------------
+-- Apply X/Y position live from a page's sliders
+--
+-- Shared by both slider OnValueChanged handlers above so the "which bar
+-- kind gets which setter" branch only lives in one place.
+-------------------------------------------------------------------------
+
+function BTV:ApplyLiveBarPosition(page)
+	local x = page.xSlider:GetValue()
+	local y = page.ySlider:GetValue()
+
+	if not x or not y then
+		return
+	end
+
+	-- Full precision passed through untouched (Phase C point 2) - only
+	-- the sliders' displayed text is rounded to 2 decimals, not the
+	-- value actually written to BTVanillaDB / applied to the bar.
+	if page.isDefault then
+		self:SetDefaultBarPosition(page.barId, x, y)
+	else
+		local bar = self.bars[page.barId]
+
+		if bar then
+			self:SetBarPosition(bar, x, y)
+		end
+	end
+end
+
+-------------------------------------------------------------------------
+-- Default-layout gating (General tab's "Use Default Blizzard Layout")
+--
+-- EnableMouse(false) is used rather than Slider/Button-specific
+-- Enable()/Disable() calls: it's a universal Frame method guaranteed to
+-- work on every widget type touched here (sliders AND the plain,
+-- template-less grid swatch buttons), whereas Disable() only reliably
+-- changes appearance/behavior on templated Button widgets. Controls stay
+-- visible and keep showing their current value either way (point 3 of
+-- the spec) - only interactivity is gated. Only default bars (1-5) ever
+-- call this; custom bars' pages never have it applied, so they're always
+-- fully interactive regardless of BTVanillaDB.useDefaultLayout.
+-------------------------------------------------------------------------
+
+local function ApplyDefaultLayoutGating(page, interactive)
+	local alpha = interactive and 1 or 0.5
+
+	if page.xSlider then
+		page.xSlider:EnableMouse(interactive)
+		page.xSlider:SetAlpha(alpha)
+	end
+
+	if page.ySlider then
+		page.ySlider:EnableMouse(interactive)
+		page.ySlider:SetAlpha(alpha)
+	end
+
+	if page.buttonSizeSlider then
+		page.buttonSizeSlider:EnableMouse(interactive)
+		page.buttonSizeSlider:SetAlpha(alpha)
+	end
+
+	if page.spacingSlider then
+		page.spacingSlider:EnableMouse(interactive)
+		page.spacingSlider:SetAlpha(alpha)
+	end
+
+	if page.gridSwatches then
+		local i
+
+		for i = 1, table.getn(page.gridSwatches) do
+			local swatch = page.gridSwatches[i]
+
+			swatch:EnableMouse(interactive)
+			swatch:SetAlpha(alpha)
+		end
+	end
+end
+
+-- Re-applies gating to every currently-built default-bar page (1-5) -
+-- called whenever the General tab's checkbox changes, so any page
+-- already open/cached updates immediately without needing to close and
+-- reopen Settings.
+function BTV:RefreshDefaultLayoutGatingOnAllPages()
+	if not settingsFrame then
+		return
+	end
+
+	local id
+
+	for id = 1, 5 do
+		if settingsFrame.pages[id] then
+			self:RefreshBarSettingsPage(id)
+		end
+	end
+
+	-- Stance Bar / Bag Bar / Micro Menu / Latency Bar / Experience Bar
+	-- (features 2/3, round 16 part 2) are also gated on useDefaultLayout
+	-- (RefreshSimpleBarPage below), so their pages need the same live
+	-- refresh if already built/cached.
+	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar" }
+	local si
+
+	for si = 1, table.getn(specialKeys) do
+		if settingsFrame.pages[specialKeys[si]] then
+			self:RefreshBarSettingsPage(specialKeys[si])
+		end
+	end
+end
+
+-------------------------------------------------------------------------
+-- Simple bar pages (Stance Bar / Bag Bar / Micro Menu, features 2/3)
+--
+-- Shares one builder, parameterized via simpleBarPageConfigs, rather than
+-- three near-identical page builders - Position (X/Y sliders, live) +
+-- an optional Enable checkbox (Bag Bar/Micro Menu only - the Stance
+-- Bar's shape/button-count is native, class/talent-driven, so it has no
+-- meaningful enable/disable) + a "Reset to Blizzard Default" button.
+-- Deliberately has NO grid/spacing/button-size/buttonCount/Delete
+-- controls at all - none of these three elements is a TrustyBars-owned
+-- button grid the way default bars (1-5) or custom bars (6+) are.
+-------------------------------------------------------------------------
+
+local function CreateSimpleBarPage(key)
+	local config = simpleBarPageConfigs[key]
+
+	if not config then
+		return nil
+	end
+
+	local page = CreateFrame(
+		"Frame",
+		nil,
+		settingsFrame.contentPanel
+	)
+
+	page:SetAllPoints(settingsFrame.contentPanel)
+
+	page.barId = key
+	page.isDefault = true
+	page.isSimple = true
+
+	local title = page:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalLarge"
+	)
+
+	title:SetPoint(
+		"TOPLEFT",
+		page,
+		"TOPLEFT",
+		INDENT_SECTION,
+		-14
+	)
+
+	title:SetText(config.title .. " Settings (Default)")
+
+	page.title = title
+
+	local topY = -46
+
+	if config.hasEnable then
+		local enableCheckbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaSimplePage" .. key .. "EnableCheckbox",
+			page,
+			"UICheckButtonTemplate"
+		)
+
+		enableCheckbox:SetWidth(24)
+		enableCheckbox:SetHeight(24)
+
+		enableCheckbox:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			-44
+		)
+
+		enableCheckbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				config.setEnabled(checked)
+			end
+		)
+
+		local enableLabel = getglobal(enableCheckbox:GetName() .. "Text")
+
+		if enableLabel then
+			enableLabel:SetText("Enabled")
+		end
+
+		page.enableCheckbox = enableCheckbox
+
+		topY = -44 - 24 - 14
+	end
+
+	local minX, maxX, minY, maxY = GetScreenCoordinateRange()
+
+	local xLabelY = topY
+	local xSliderY = xLabelY + 4
+	local yLabelY = xSliderY - 40
+	local ySliderY = yLabelY + 4
+
+	-------------------------------------------------------------------------
+	-- X slider
+	-------------------------------------------------------------------------
+
+	local xLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	xLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, xLabelY)
+	xLabel:SetText("X")
+
+	local xSlider = CreateSettingSlider(
+		page,
+		"BTVanillaSimplePage" .. key .. "XSlider",
+		290
+	)
+
+	xSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, xSliderY)
+	xSlider:SetMinMaxValues(minX, maxX)
+	xSlider:SetValueStep(1)
+
+	SetSliderLabel(xSlider, "X")
+
+	local xValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	xValueText:SetPoint("TOP", xSlider, "BOTTOM", 0, -2)
+	xValueText:SetText(string.format("%.2f", 0))
+
+	page.xValueText = xValueText
+
+	xSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			xValueText:SetText(string.format("%.2f", value))
+
+			if not this.suppressApply then
+				local y = page.ySlider:GetValue()
+
+				config.setPosition(value, y)
+			end
+		end
+	)
+
+	page.xSlider = xSlider
+
+	-------------------------------------------------------------------------
+	-- Y slider
+	-------------------------------------------------------------------------
+
+	local yLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	yLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, yLabelY)
+	yLabel:SetText("Y")
+
+	local ySlider = CreateSettingSlider(
+		page,
+		"BTVanillaSimplePage" .. key .. "YSlider",
+		290
+	)
+
+	ySlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, ySliderY)
+	ySlider:SetMinMaxValues(minY, maxY)
+	ySlider:SetValueStep(1)
+
+	SetSliderLabel(ySlider, "Y")
+
+	local yValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	yValueText:SetPoint("TOP", ySlider, "BOTTOM", 0, -2)
+	yValueText:SetText(string.format("%.2f", 0))
+
+	page.yValueText = yValueText
+
+	ySlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			yValueText:SetText(string.format("%.2f", value))
+
+			if not this.suppressApply then
+				local x = page.xSlider:GetValue()
+
+				config.setPosition(x, value)
+			end
+		end
+	)
+
+	page.ySlider = ySlider
+
+	-- Cursor for whichever of Spacing/Scale/Orientation this element
+	-- actually has (bug-fix batch Fix 4) - cascades exactly like
+	-- CreateBarPage's own section-to-section deltas (36px title gap, 26px
+	-- title-to-slider gap), so the Reset button (and the window's own
+	-- dynamic height-fit, FitSettingsWindowToBarPage) always lands
+	-- correctly below however many of these three optional sections this
+	-- config actually enables.
+	local cursorY = ySliderY - 36
+
+	-------------------------------------------------------------------------
+	-- Spacing (Bag Bar/Micro Menu only - config.hasSpacing) - reuses the
+	-- default-bar page's own Spacing slider block structure/styling
+	-- exactly (title, slider, live value label, min/max end labels).
+	-------------------------------------------------------------------------
+
+	if config.hasSpacing then
+		local spacingTitleY = cursorY
+		local spacingSliderY = spacingTitleY - 26
+
+		local spacingTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+
+		spacingTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, spacingTitleY)
+		spacingTitle:SetText(
+			"Spacing (" .. tostring(SPACING_MIN) .. " to " .. tostring(SPACING_MAX) .. ")"
+		)
+
+		local spacingSlider = CreateSettingSlider(
+			page,
+			"BTVanillaSimplePage" .. key .. "SpacingSlider",
+			290
+		)
+
+		spacingSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, spacingSliderY)
+		spacingSlider:SetMinMaxValues(SPACING_MIN, SPACING_MAX)
+		spacingSlider:SetValueStep(SPACING_STEP)
+
+		SetSliderLabel(spacingSlider, "Spacing")
+
+		local spacingSliderLow = getglobal(spacingSlider:GetName() .. "Low")
+
+		if spacingSliderLow then
+			spacingSliderLow:SetText(tostring(SPACING_MIN))
+		end
+
+		local spacingSliderHigh = getglobal(spacingSlider:GetName() .. "High")
+
+		if spacingSliderHigh then
+			spacingSliderHigh:SetText(tostring(SPACING_MAX))
+		end
+
+		local spacingValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		spacingValueText:SetPoint("TOP", spacingSlider, "BOTTOM", 0, -2)
+		spacingValueText:SetText("0")
+
+		page.spacingValueText = spacingValueText
+
+		spacingSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor(value + 0.5)
+
+				spacingValueText:SetText(tostring(value))
+
+				if not this.suppressApply then
+					config.setSpacing(value)
+				end
+			end
+		)
+
+		page.spacingSlider = spacingSlider
+
+		cursorY = spacingSliderY - 36
+	end
+
+	-------------------------------------------------------------------------
+	-- Scale (all three simple pages that have one - config.hasScale). Range
+	-- 0.5 to 2.0, step 0.1 - a proportional container/frame SetScale, not a
+	-- pixel quantity, so the live value label shows one decimal place
+	-- rather than an integer.
+	-------------------------------------------------------------------------
+
+	if config.hasScale then
+		local scaleTitleY = cursorY
+		local scaleSliderY = scaleTitleY - 26
+
+		local scaleTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+
+		scaleTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, scaleTitleY)
+		scaleTitle:SetText("Scale (0.5 to 2.0)")
+
+		local scaleSlider = CreateSettingSlider(
+			page,
+			"BTVanillaSimplePage" .. key .. "ScaleSlider",
+			290
+		)
+
+		scaleSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, scaleSliderY)
+		scaleSlider:SetMinMaxValues(0.5, 2.0)
+		scaleSlider:SetValueStep(0.1)
+
+		SetSliderLabel(scaleSlider, "Scale")
+
+		local scaleSliderLow = getglobal(scaleSlider:GetName() .. "Low")
+
+		if scaleSliderLow then
+			scaleSliderLow:SetText("0.5")
+		end
+
+		local scaleSliderHigh = getglobal(scaleSlider:GetName() .. "High")
+
+		if scaleSliderHigh then
+			scaleSliderHigh:SetText("2.0")
+		end
+
+		local scaleValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		scaleValueText:SetPoint("TOP", scaleSlider, "BOTTOM", 0, -2)
+		scaleValueText:SetText("1.0")
+
+		page.scaleValueText = scaleValueText
+
+		scaleSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor((value * 10) + 0.5) / 10
+
+				scaleValueText:SetText(string.format("%.1f", value))
+
+				if not this.suppressApply then
+					config.setScale(value)
+				end
+			end
+		)
+
+		page.scaleSlider = scaleSlider
+
+		cursorY = scaleSliderY - 36
+	end
+
+	-------------------------------------------------------------------------
+	-- Orientation (Bag Bar/Micro Menu only - config.hasOrientation). A
+	-- simple "Vertical Layout" checkbox rather than the 6-preset grid
+	-- swatch picker real bars use - these clusters have a fixed button
+	-- count and only two possible layouts (horizontal/vertical), so a
+	-- checkbox is the right control here.
+	-------------------------------------------------------------------------
+
+	if config.hasOrientation then
+		local orientationCheckbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaSimplePage" .. key .. "OrientationCheckbox",
+			page,
+			"UICheckButtonTemplate"
+		)
+
+		orientationCheckbox:SetWidth(24)
+		orientationCheckbox:SetHeight(24)
+
+		orientationCheckbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, cursorY)
+
+		orientationCheckbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				config.setOrientation(checked)
+			end
+		)
+
+		local orientationLabel = getglobal(orientationCheckbox:GetName() .. "Text")
+
+		if orientationLabel then
+			orientationLabel:SetText("Vertical Layout")
+		end
+
+		page.orientationCheckbox = orientationCheckbox
+
+		cursorY = cursorY - 24 - 14
+	end
+
+	-------------------------------------------------------------------------
+	-- Show Key Ring (Bag Bar page only, bug-fix batch Fix 2) - KeyRingButton
+	-- is independently toggleable/positionable (DefaultBars.lua's
+	-- BTV:SetKeyRingEnabled/SetKeyRingPosition), but the user explicitly
+	-- asked for its enable checkbox to live on the Bag Bar's own settings
+	-- page rather than a dedicated page/bar-list entry - it isn't a
+	-- TrustyBars-owned chain member, just a lone native button toggled from
+	-- here. Dragging KeyRingButton itself is still done directly on the
+	-- button (its own overlay, right-click also routes back to this same
+	-- page - see DefaultBars.lua's ApplyKeyRingPosition), this checkbox is
+	-- purely show/hide.
+	-------------------------------------------------------------------------
+
+	if key == "bagbar" then
+		local keyRingCheckbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaSimplePageBagBarKeyRingCheckbox",
+			page,
+			"UICheckButtonTemplate"
+		)
+
+		keyRingCheckbox:SetWidth(24)
+		keyRingCheckbox:SetHeight(24)
+
+		keyRingCheckbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, cursorY)
+
+		keyRingCheckbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				BTV:SetKeyRingEnabled(checked)
+			end
+		)
+
+		local keyRingLabel = getglobal(keyRingCheckbox:GetName() .. "Text")
+
+		if keyRingLabel then
+			keyRingLabel:SetText("Show Key Ring")
+		end
+
+		page.keyRingCheckbox = keyRingCheckbox
+
+		cursorY = cursorY - 24 - 14
+
+		-------------------------------------------------------------------------
+		-- Key Ring Scale (bug-fix batch round 2, Issue B) - a second, small
+		-- labeled section beneath the checkbox above, mirroring the shared
+		-- Scale slider block earlier in this function (config.hasScale)
+		-- exactly, just standalone rather than config-driven: Key Ring has
+		-- no simpleBarPageConfigs entry of its own (it lives on the Bag
+		-- Bar's page per the task's own placement decision, not as a
+		-- separate page/bar-list entry), so this can't just add
+		-- hasScale/getScale/setScale to simpleBarPageConfigs["bagbar"]
+		-- without that also (incorrectly) driving the Bag Bar's OWN scale
+		-- slider above. Writes directly through BTV:SetKeyRingScale.
+		-------------------------------------------------------------------------
+
+		local keyRingScaleTitleY = cursorY
+		local keyRingScaleSliderY = keyRingScaleTitleY - 26
+
+		local keyRingScaleTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+
+		keyRingScaleTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, keyRingScaleTitleY)
+		keyRingScaleTitle:SetText("Key Ring Scale (0.5 to 2.0)")
+
+		local keyRingScaleSlider = CreateSettingSlider(
+			page,
+			"BTVanillaSimplePageBagBarKeyRingScaleSlider",
+			290
+		)
+
+		keyRingScaleSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, keyRingScaleSliderY)
+		keyRingScaleSlider:SetMinMaxValues(0.5, 2.0)
+		keyRingScaleSlider:SetValueStep(0.1)
+
+		SetSliderLabel(keyRingScaleSlider, "Key Ring Scale")
+
+		local keyRingScaleSliderLow = getglobal(keyRingScaleSlider:GetName() .. "Low")
+
+		if keyRingScaleSliderLow then
+			keyRingScaleSliderLow:SetText("0.5")
+		end
+
+		local keyRingScaleSliderHigh = getglobal(keyRingScaleSlider:GetName() .. "High")
+
+		if keyRingScaleSliderHigh then
+			keyRingScaleSliderHigh:SetText("2.0")
+		end
+
+		local keyRingScaleValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		keyRingScaleValueText:SetPoint("TOP", keyRingScaleSlider, "BOTTOM", 0, -2)
+		keyRingScaleValueText:SetText("1.0")
+
+		page.keyRingScaleValueText = keyRingScaleValueText
+
+		keyRingScaleSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor((value * 10) + 0.5) / 10
+
+				keyRingScaleValueText:SetText(string.format("%.1f", value))
+
+				if not this.suppressApply then
+					BTV:SetKeyRingScale(value)
+				end
+			end
+		)
+
+		page.keyRingScaleSlider = keyRingScaleSlider
+
+		cursorY = keyRingScaleSliderY - 36
+	end
+
+	local resetY = cursorY
+
+	-------------------------------------------------------------------------
+	-- Reset to Blizzard Default
+	-------------------------------------------------------------------------
+
+	local resetButton = CreateFrame(
+		"Button",
+		nil,
+		page,
+		"UIPanelButtonTemplate"
+	)
+
+	resetButton:SetWidth(200)
+	resetButton:SetHeight(22)
+
+	resetButton:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, resetY)
+	resetButton:SetText("Reset to Blizzard Default")
+
+	resetButton:SetScript(
+		"OnClick",
+		function()
+			config.reset()
+
+			BTV:RefreshBarSettingsPage(key)
+		end
+	)
+
+	page.resetPositionButton = resetButton
+
+	page:Hide()
+
+	settingsFrame.pages[key] = page
+
+	return page
+end
+
+function BTV:GetOrCreateSimpleBarPage(key)
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	if settingsFrame.pages[key] then
+		return settingsFrame.pages[key]
+	end
+
+	return CreateSimpleBarPage(key)
+end
+
+function BTV:RefreshSimpleBarPage(key)
+	if not settingsFrame then
+		return
+	end
+
+	local page = settingsFrame.pages[key]
+	local config = simpleBarPageConfigs[key]
+
+	if not page or not config then
+		return
+	end
+
+	local pos = config.getPosition() or { x = 0, y = 0 }
+
+	page.xSlider.suppressApply = true
+	page.ySlider.suppressApply = true
+
+	page.xSlider:SetValue(pos.x or 0)
+	page.ySlider:SetValue(pos.y or 0)
+
+	page.xValueText:SetText(string.format("%.2f", pos.x or 0))
+	page.yValueText:SetText(string.format("%.2f", pos.y or 0))
+
+	page.xSlider.suppressApply = nil
+	page.ySlider.suppressApply = nil
+
+	if page.enableCheckbox and config.getEnabled then
+		page.enableCheckbox:SetChecked(config.getEnabled() ~= false)
+	end
+
+	-- Show Key Ring (bug-fix batch Fix 2, Bag Bar page only) - independent
+	-- of config.getEnabled above (that's the Bag Bar's OWN enable flag),
+	-- reads BTVanillaDB.keyRingEnabled directly since it has no
+	-- simpleBarPageConfigs entry of its own.
+	if page.keyRingCheckbox then
+		page.keyRingCheckbox:SetChecked(BTVanillaDB.keyRingEnabled ~= false)
+	end
+
+	-- Key Ring Scale (bug-fix batch round 2, Issue B) - same standalone
+	-- (non-config-driven) treatment as the checkbox above.
+	if page.keyRingScaleSlider then
+		local keyRingScale = BTVanillaDB.keyRingScale or 1
+
+		if keyRingScale < 0.5 then
+			keyRingScale = 0.5
+		end
+
+		if keyRingScale > 2.0 then
+			keyRingScale = 2.0
+		end
+
+		page.keyRingScaleSlider.suppressApply = true
+		page.keyRingScaleSlider:SetValue(keyRingScale)
+		page.keyRingScaleSlider.suppressApply = nil
+
+		if page.keyRingScaleValueText then
+			page.keyRingScaleValueText:SetText(string.format("%.1f", keyRingScale))
+		end
+	end
+
+	-------------------------------------------------------------------------
+	-- Spacing/Scale/Orientation (bug-fix batch Fix 4) - each optional per
+	-- config.hasSpacing/hasScale/hasOrientation, mirroring the enable
+	-- checkbox's own presence check above.
+	-------------------------------------------------------------------------
+
+	if page.spacingSlider and config.getSpacing then
+		local spacing = config.getSpacing() or 0
+
+		if spacing < SPACING_MIN then
+			spacing = SPACING_MIN
+		end
+
+		if spacing > SPACING_MAX then
+			spacing = SPACING_MAX
+		end
+
+		page.spacingSlider.suppressApply = true
+		page.spacingSlider:SetValue(spacing)
+		page.spacingSlider.suppressApply = nil
+
+		if page.spacingValueText then
+			page.spacingValueText:SetText(tostring(spacing))
+		end
+	end
+
+	if page.scaleSlider and config.getScale then
+		local scale = config.getScale() or 1
+
+		if scale < 0.5 then
+			scale = 0.5
+		end
+
+		if scale > 2.0 then
+			scale = 2.0
+		end
+
+		page.scaleSlider.suppressApply = true
+		page.scaleSlider:SetValue(scale)
+		page.scaleSlider.suppressApply = nil
+
+		if page.scaleValueText then
+			page.scaleValueText:SetText(string.format("%.1f", scale))
+		end
+	end
+
+	if page.orientationCheckbox and config.getOrientation then
+		page.orientationCheckbox:SetChecked(config.getOrientation() == true)
+	end
+
+	-- Same gating window as bar 1 (CanDragDefaultLayout's underlying
+	-- rule) - the enable checkbox and Reset button are deliberately
+	-- excluded, mirroring ApplyDefaultLayoutGating's own established
+	-- rule for bar 1 (they stay fully functional regardless of
+	-- useDefaultLayout).
+	ApplyDefaultLayoutGating(page, BTVanillaDB.useDefaultLayout ~= true)
+end
+
+-- Config table for each simple page - populated here (rather than at
+-- each DefaultBars.lua setter's own definition site) so this file stays
+-- the single place that knows how Settings.lua's UI maps onto
+-- DefaultBars.lua's BTV:Set*/Reset*/Get* API. Referenced by
+-- CreateBarListRow above (via the simpleBarPageConfigs upvalue declared
+-- near SIMPLE_BAR_NAMES) and GetOrCreateBarPage/RefreshBarSettingsPage's
+-- dispatch checks.
+-- Bug-fix batch Fix 3: Stance Bar now gets an enable checkbox too, matching
+-- Bag Bar/Micro Menu (BTV:SetStanceBarEnabled mirrors SetBagBarEnabled's
+-- exact structure - DefaultBars.lua).
+--
+-- Chain-anchored container migration: Stance Bar now gets the exact same
+-- Spacing/Scale/Orientation controls as Bag Bar/Micro Menu, since it's
+-- built from the exact same BuildChainAnchoredContainer/
+-- ApplyChainAnchoredShape machinery (DefaultBars.lua) rather than wrapping
+-- ShapeshiftBarFrame's own native layout directly - mirrors the Bag Bar
+-- config below exactly, just against the Stance Bar's own Set*/Reset*/Get*
+-- API.
+simpleBarPageConfigs["stance"] = {
+	title = "Stance Bar",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.stanceBarPosition end,
+	setPosition = function(x, y) BTV:SetStanceBarPosition(x, y) end,
+	reset = function()
+		BTV:ResetStanceBarPosition()
+		BTV:ResetStanceBarLayout()
+	end,
+	getEnabled = function() return BTVanillaDB.stanceBarEnabled end,
+	setEnabled = function(v) BTV:SetStanceBarEnabled(v) end,
+	hasSpacing = true,
+	getSpacing = function() return BTVanillaDB.stanceBarSpacing end,
+	setSpacing = function(v) BTV:SetStanceBarSpacing(v) end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.stanceBarScale end,
+	setScale = function(v) BTV:SetStanceBarScale(v) end,
+	hasOrientation = true,
+	getOrientation = function() return BTVanillaDB.stanceBarOrientation end,
+	setOrientation = function(v) BTV:SetStanceBarOrientation(v) end,
+}
+
+-- Bug-fix batch Fix 4: Spacing/Scale/Orientation, since Bag Bar's
+-- synthetic container IS a TrustyBars-owned chain-anchored layout
+-- (BuildChainAnchoredContainer/ApplyChainAnchoredShape - DefaultBars.lua),
+-- unlike the Stance Bar above.
+simpleBarPageConfigs["bagbar"] = {
+	title = "Bag Bar",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.bagBarPosition end,
+	setPosition = function(x, y) BTV:SetBagBarPosition(x, y) end,
+	reset = function()
+		BTV:ResetBagBarPosition()
+		BTV:ResetBagBarLayout()
+
+		-- Key Ring (bug-fix batch round 2, Issue B): lives on this same
+		-- page (see CreateSimpleBarPage's `if key == "bagbar"` block), so
+		-- its own "Reset to Blizzard Default" button restoring only the
+		-- Bag Bar itself and silently leaving Key Ring untouched would be
+		-- surprising - bundled in here, mirroring how the "Use Default
+		-- Blizzard Layout" re-enable flow already calls
+		-- BTV:ResetKeyRingPosition() independently (Settings.lua's General
+		-- tab handler).
+		if BTV.ResetKeyRingPosition then
+			BTV:ResetKeyRingPosition()
+		end
+	end,
+	getEnabled = function() return BTVanillaDB.bagBarEnabled end,
+	setEnabled = function(v) BTV:SetBagBarEnabled(v) end,
+	hasSpacing = true,
+	getSpacing = function() return BTVanillaDB.bagBarSpacing end,
+	setSpacing = function(v) BTV:SetBagBarSpacing(v) end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.bagBarScale end,
+	setScale = function(v) BTV:SetBagBarScale(v) end,
+	hasOrientation = true,
+	getOrientation = function() return BTVanillaDB.bagBarOrientation end,
+	setOrientation = function(v) BTV:SetBagBarOrientation(v) end,
+}
+
+-- Bug-fix batch Fix 3: Scale only, same reasoning as the Stance Bar's own
+-- config above - Blizzard owns MainMenuBarPerformanceBarFrame's own
+-- internal layout entirely (it's a single self-contained frame, not a
+-- TrustyBars-owned chain), so Spacing/Orientation have nothing real to
+-- drive.
+simpleBarPageConfigs["latencybar"] = {
+	title = "Latency Bar",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.latencyBarPosition end,
+	setPosition = function(x, y) BTV:SetLatencyBarPosition(x, y) end,
+	reset = function()
+		BTV:ResetLatencyBarLayout()
+	end,
+	getEnabled = function() return BTVanillaDB.latencyBarEnabled end,
+	setEnabled = function(v) BTV:SetLatencyBarEnabled(v) end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.latencyBarScale end,
+	setScale = function(v) BTV:SetLatencyBarScale(v) end,
+}
+
+-- Experience Bar (round 16 part 2, Part A): Scale only, same reasoning as
+-- the Latency Bar's own config above - MainMenuExpBar is a single self-
+-- contained native frame, not a TrustyBars-owned chain, so Spacing/
+-- Orientation have nothing real to drive. This page's controls are
+-- entirely independent of Part B's "Enable Better Experience Bar" General-
+-- tab checkbox (BTVanillaDB.betterExpBarEnabled) - the two features are
+-- deliberately separate per this feature's own spec.
+simpleBarPageConfigs["expbar"] = {
+	title = "Experience Bar",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.expBarPosition end,
+	setPosition = function(x, y) BTV:SetExpBarPosition(x, y) end,
+	reset = function()
+		BTV:ResetExpBarLayout()
+	end,
+	getEnabled = function() return BTVanillaDB.expBarEnabled end,
+	setEnabled = function(v) BTV:SetExpBarEnabled(v) end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.expBarScale end,
+	setScale = function(v) BTV:SetExpBarScale(v) end,
+}
+
+simpleBarPageConfigs["micromenu"] = {
+	title = "Micro Menu",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.microMenuPosition end,
+	setPosition = function(x, y) BTV:SetMicroMenuPosition(x, y) end,
+	reset = function()
+		BTV:ResetMicroMenuPosition()
+		BTV:ResetMicroMenuLayout()
+	end,
+	getEnabled = function() return BTVanillaDB.microMenuEnabled end,
+	setEnabled = function(v) BTV:SetMicroMenuEnabled(v) end,
+	hasSpacing = true,
+	getSpacing = function() return BTVanillaDB.microMenuSpacing end,
+	setSpacing = function(v) BTV:SetMicroMenuSpacing(v) end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.microMenuScale end,
+	setScale = function(v) BTV:SetMicroMenuScale(v) end,
+	hasOrientation = true,
+	getOrientation = function() return BTVanillaDB.microMenuOrientation end,
+	setOrientation = function(v) BTV:SetMicroMenuOrientation(v) end,
+}
+
+-- Shared right-click-to-settings entry point for any string-keyed simple
+-- page - DefaultBars.lua's Stance Bar/Bag Bar/Micro Menu/Key Ring/Latency
+-- Bar overlays all call this directly (EnsureContainerOverlay) rather than
+-- needing their own OpenXSettings wrapper apiece, mirroring
+-- OpenDefaultBarSettings' role for the numeric default bars (1-5) below.
+function BTV:OpenBarSettingsByKey(key)
+	self:ShowSettingsFrame()
+	self:ShowBarPage(key)
+end
+
+-------------------------------------------------------------------------
 -- Refresh values shown by a bar page
 -------------------------------------------------------------------------
 
@@ -1132,9 +2680,8 @@ function BTV:RefreshBarSettingsPage(barId)
 		return
 	end
 
-	local cfg = BTVanillaDB.bars[barId]
-
-	if not cfg then
+	if simpleBarPageConfigs[barId] then
+		self:RefreshSimpleBarPage(barId)
 		return
 	end
 
@@ -1144,28 +2691,52 @@ function BTV:RefreshBarSettingsPage(barId)
 		return
 	end
 
+	local cfg, isDefault = GetBarConfig(barId)
+
+	if not cfg then
+		return
+	end
+
+	-------------------------------------------------------------------------
+	-- Suppress OnValueChanged re-application while we're just syncing the
+	-- sliders' visual state FROM the saved config - only user-driven
+	-- ticks should write back to the config.
+	-------------------------------------------------------------------------
+
+	page.xSlider.suppressApply = true
+	page.ySlider.suppressApply = true
+	page.buttonSizeSlider.suppressApply = true
+
+	if page.spacingSlider then
+		page.spacingSlider.suppressApply = true
+	end
+
 	-------------------------------------------------------------------------
 	-- X/Y
 	-------------------------------------------------------------------------
-
-	local minX, maxX, minY, maxY =
-		GetScreenCoordinateRange()
-
-	page.xSlider:SetMinMaxValues(
-		minX,
-		maxX
-	)
-
-	page.ySlider:SetMinMaxValues(
-		minY,
-		maxY
-	)
 
 	local x = cfg.x or 0
 	local y = cfg.y or 0
 
 	page.xSlider:SetValue(x)
 	page.ySlider:SetValue(y)
+
+	-- SetValue only fires OnValueChanged (and therefore the %.2f-formatted
+	-- value-text update in each slider's own handler) when the value
+	-- actually CHANGES - if cfg.x/y equals whatever the slider was already
+	-- sitting at (e.g. the page's initial unformatted "0.00" placeholder
+	-- text from GetOrCreateBarPage, or a value unchanged since the last
+	-- refresh), that handler never runs and xValueText/yValueText would
+	-- keep showing stale/unrounded text. Setting them explicitly here
+	-- guarantees the same %.2f formatting on every refresh regardless of
+	-- whether the value changed.
+	page.xValueText:SetText(
+		string.format("%.2f", x)
+	)
+
+	page.yValueText:SetText(
+		string.format("%.2f", y)
+	)
 
 	-------------------------------------------------------------------------
 	-- Button size
@@ -1186,44 +2757,369 @@ function BTV:RefreshBarSettingsPage(barId)
 	)
 
 	-------------------------------------------------------------------------
-	-- Rows
+	-- Spacing (default bars only)
 	-------------------------------------------------------------------------
 
-	local rows = cfg.rows or 1
-	local rowIndex = GetRowIndex(rows)
+	if page.spacingSlider then
+		local spacing = cfg.spacing or 0
 
-	page.rowsSlider:SetValue(
-		rowIndex
-	)
+		if spacing < SPACING_MIN then
+			spacing = SPACING_MIN
+		end
 
-	-------------------------------------------------------------------------
-	-- Columns
-	-------------------------------------------------------------------------
+		if spacing > SPACING_MAX then
+			spacing = SPACING_MAX
+		end
 
-	page.colsSlider:SetValue(
-		rowIndex
-	)
+		page.spacingSlider:SetValue(spacing)
 
-	-------------------------------------------------------------------------
-	-- Slot start
-	-------------------------------------------------------------------------
-
-	local slotStart = cfg.slotStart or BTV.ACTION_SLOT_START
-
-	local minSlot = BTV.ACTION_SLOT_START
-	local maxSlot = BTV.ACTION_SLOT_END - 11
-
-	if slotStart < minSlot then
-		slotStart = minSlot
+		if page.spacingValueText then
+			page.spacingValueText:SetText(tostring(spacing))
+		end
 	end
 
-	if slotStart > maxSlot then
-		slotStart = maxSlot
+	page.xSlider.suppressApply = nil
+	page.ySlider.suppressApply = nil
+	page.buttonSizeSlider.suppressApply = nil
+
+	if page.spacingSlider then
+		page.spacingSlider.suppressApply = nil
 	end
 
-	page.slotSlider:SetValue(
-		slotStart
+	-------------------------------------------------------------------------
+	-- Grid preset selection
+	-------------------------------------------------------------------------
+
+	RefreshGridSwatchSelection(
+		page,
+		cfg.cols or 12,
+		cfg.rows or 1
 	)
+
+	-------------------------------------------------------------------------
+	-- Button count (custom bars only)
+	-------------------------------------------------------------------------
+
+	if page.RefreshButtonCountStepperVisual then
+		page.RefreshButtonCountStepperVisual()
+	end
+
+	-------------------------------------------------------------------------
+	-- Enable checkbox (default bars 2-5 AND Extra Bars 6-9)
+	--
+	-- Major architecture migration, Phase 1 of 2: reconciliation from the
+	-- live native SHOW_MULTI_ACTIONBAR_* globals (via the now-removed
+	-- IsDefaultBarNativelyShown) is gone - bars 2-5's real Blizzard
+	-- buttons are permanently hidden regardless of those globals, so
+	-- cfg.enabled (our own saved flag) is now the sole source of truth.
+	-- Extra Bars (Stance/Page Bar Assignment feature, Part 1) follow the
+	-- exact same rule - see Bar.lua's SetExtraBarEnabled.
+	-------------------------------------------------------------------------
+
+	if page.enableCheckbox and ((isDefault and barId ~= 1) or BTV:IsExtraBarId(barId)) then
+		page.enableCheckbox:SetChecked(
+			cfg.enabled == true
+		)
+	end
+
+	-------------------------------------------------------------------------
+	-- Page Indicator Scale (Main Bar only - Part 4)
+	-------------------------------------------------------------------------
+
+	if barId == 1 and page.pageIndicatorSlider then
+		local scale = BTVanillaDB.mainBarPageIndicatorScale or 1
+
+		page.pageIndicatorSlider.suppressApply = true
+		page.pageIndicatorSlider:SetValue(scale)
+		page.pageIndicatorValueText:SetText(string.format("%.1f", scale))
+		page.pageIndicatorSlider.suppressApply = nil
+
+		BTV:RefreshMainBarPageIndicatorControlsVisibility()
+
+		-- Stance/Page Bar Assignment rows (Issue 5, bug-fix batch round
+		-- 4): rebuilt every time bar 1's page is (re)shown, same as the
+		-- Page Indicator controls just above, so the rows always reflect
+		-- the CURRENT stance count/pagination-and-stance-swap toggle state
+		-- rather than whatever they looked like the last time this page
+		-- happened to be open.
+		BTV:RebuildMainBarAssignmentRows()
+	end
+
+	-------------------------------------------------------------------------
+	-- Default-layout gating (bar 1 ONLY - major architecture migration,
+	-- Phase 1 of 2: bars 2-5 are now real Bar.lua bar objects, always
+	-- fully editable exactly like a custom bar id 6+, never gated by
+	-- useDefaultLayout at all - that toggle now only has meaning for bar
+	-- 1's position/size/spacing controls. Bar 1 itself is ALSO a real
+	-- Bar.lua bar object as of the Main Bar migration (Phase 2), but its
+	-- settings page keeps this same gating - useDefaultLayout locking bar
+	-- 1's drag/resize is a deliberately preserved behavior, per that
+	-- migration's Part 4). The enable checkbox and Reset to Blizzard
+	-- Default button are deliberately excluded even for bar 1, per the
+	-- spec - they stay fully functional regardless of useDefaultLayout.
+	-------------------------------------------------------------------------
+
+	if barId == 1 then
+		ApplyDefaultLayoutGating(
+			page,
+			BTVanillaDB.useDefaultLayout ~= true
+		)
+	end
+end
+
+-- Shows/hides the Main Bar page's Page Indicator Scale slider per
+-- BTVanillaDB.mainBarPaginationEnabled - called both from
+-- RefreshBarSettingsPage(1) above and from the General panel's own
+-- pagination checkbox handler (below), so toggling that checkbox
+-- immediately shows/hides this slider even while bar 1's page is already
+-- open (mirrors RefreshDefaultLayoutGatingOnAllPages' own "live-refresh an
+-- already-open page" reasoning).
+function BTV:RefreshMainBarPageIndicatorControlsVisibility()
+	if not settingsFrame then
+		return
+	end
+
+	local page = settingsFrame.pages[1]
+
+	if not page or not page.pageIndicatorSlider then
+		return
+	end
+
+	local show = BTVanillaDB.mainBarPaginationEnabled ~= false
+
+	if show then
+		page.pageIndicatorTitle:Show()
+		page.pageIndicatorSlider:Show()
+		page.pageIndicatorValueText:Show()
+	else
+		page.pageIndicatorTitle:Hide()
+		page.pageIndicatorSlider:Hide()
+		page.pageIndicatorValueText:Hide()
+	end
+end
+
+-------------------------------------------------------------------------
+-- Dynamic content-panel/window height (Fix 3)
+--
+-- Rather than a fixed size tuned for the busiest page, this measures the
+-- REAL on-screen bottom edge (Frame:GetTop()/GetBottom(), genuine vanilla
+-- API - not an introspection/polyfill trick) of whichever controls are
+-- actually shown right now, so a simpler page (e.g. a custom bar, which
+-- lacks the enable checkbox/Reset button/Spacing slider, or a default
+-- bar, which lacks the button-count stepper/Delete Bar) gets a window
+-- sized to ITS content instead of the fixed size tuned for the busiest
+-- combination of controls.
+-------------------------------------------------------------------------
+
+-- Distance from the settings window's own top edge down to
+-- contentPanel/listPanel's top (matches their "-52" TOPRIGHT/TOPLEFT
+-- anchor offset in CreateSettingsFrame) and from their bottom edge down
+-- to the window's own bottom edge (matches CreateSettingsFrame's original
+-- tuned 680/610 sizes: 680 - 52 - 610 = 18) - the fixed "chrome" every
+-- view's content sits inside, regardless of which view/page is showing.
+local SETTINGS_CHROME_TOP = 52
+local SETTINGS_CHROME_BOTTOM = 18
+
+-- Never shrinks below whatever the current view's own frame naturally
+-- needs to avoid feeling cramped, even if every one of its controls
+-- happens to measure shorter than this.
+local SETTINGS_CONTENT_MIN_HEIGHT = 260
+
+-- Appends frame to list only if non-nil, at the next free index (n+1).
+-- table.getn/# have undefined behavior on tables with nil "holes" (Lua
+-- 5.0 manual) - since several of the candidate controls below are nil
+-- depending on bar kind (custom vs. default) or bar id (bar 1 has no
+-- enable checkbox), candidate lists are built through this helper rather
+-- than a table constructor with nils embedded in it, so the resulting
+-- table is always hole-free.
+local function AppendCandidate(list, n, frame)
+	if frame then
+		list[n + 1] = frame
+		return n + 1
+	end
+
+	return n
+end
+
+local function ConsiderFrameBottom(frame, lowestBottom)
+	if not frame or not frame.GetBottom then
+		return lowestBottom
+	end
+
+	if frame.IsShown and not frame:IsShown() then
+		return lowestBottom
+	end
+
+	local bottom = frame:GetBottom()
+
+	if not bottom then
+		return lowestBottom
+	end
+
+	if not lowestBottom or bottom < lowestBottom then
+		return bottom
+	end
+
+	return lowestBottom
+end
+
+-- Resizes contentPanel/listPanel/the outer window to fit the lowest
+-- bottom edge found across every frame in candidateList, floored at
+-- SETTINGS_CONTENT_MIN_HEIGHT.
+local function ApplySettingsHeightFromCandidates(candidateList)
+	if not settingsFrame then
+		return
+	end
+
+	-- Computed from the window's own top edge rather than
+	-- contentPanel:GetTop() directly - contentPanel is Hide()'n while the
+	-- General view is showing (ShowGeneralView), and GetTop()/GetBottom()
+	-- only return real values for currently-shown frames, so relying on
+	-- it here would silently break height-fitting for that view.
+	local frameTop = settingsFrame:GetTop()
+
+	if not frameTop then
+		return
+	end
+
+	local top = frameTop - SETTINGS_CHROME_TOP
+
+	local lowestBottom = nil
+	local i
+
+	for i = 1, table.getn(candidateList) do
+		lowestBottom = ConsiderFrameBottom(candidateList[i], lowestBottom)
+	end
+
+	if not lowestBottom then
+		return
+	end
+
+	local BOTTOM_MARGIN = 20
+	local contentHeight = (top - lowestBottom) + BOTTOM_MARGIN
+
+	if contentHeight < SETTINGS_CONTENT_MIN_HEIGHT then
+		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
+	end
+
+	settingsFrame.contentPanel:SetHeight(contentHeight)
+	settingsFrame.listPanel:SetHeight(contentHeight)
+
+	settingsFrame:SetHeight(
+		contentHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
+	)
+end
+
+-- Bars view: combines the current bar page's own controls with the bar
+-- list's rows - both are visible side by side in this view, so the
+-- window has to be tall enough for whichever of the two is actually
+-- taller (e.g. a short custom-bar page next to a long bar list with many
+-- custom bars added).
+function BTV:FitSettingsWindowToBarPage(barId)
+	if not settingsFrame then
+		return
+	end
+
+	local page = settingsFrame.pages[barId]
+
+	if not page then
+		return
+	end
+
+	local candidates = {}
+	local n = 0
+
+	n = AppendCandidate(candidates, n, page.xValueText)
+	n = AppendCandidate(candidates, n, page.yValueText)
+	n = AppendCandidate(candidates, n, page.spacingValueText)
+	n = AppendCandidate(candidates, n, page.buttonSizeValueText)
+	n = AppendCandidate(candidates, n, page.resetPositionButton)
+	n = AppendCandidate(candidates, n, page.buttonCountMinus)
+	n = AppendCandidate(candidates, n, page.buttonCountPlus)
+	n = AppendCandidate(candidates, n, page.buttonCountValueText)
+	n = AppendCandidate(candidates, n, page.enableCheckbox)
+	n = AppendCandidate(candidates, n, page.pageIndicatorValueText)
+
+	-- Bug-fix batch Fix 4: Scale/Orientation controls, added to the simple
+	-- bar pages (Stance Bar/Bag Bar/Micro Menu) alongside Spacing above -
+	-- included here (the SHARED bar-page height-fit function, used for
+	-- both default/custom AND simple pages) rather than a separate simple-
+	-- page-only fit function, since FitSettingsWindowToBarPage already
+	-- looks up settingsFrame.pages[barId] generically regardless of key
+	-- type (numeric bar id or string simple-page key).
+	n = AppendCandidate(candidates, n, page.scaleValueText)
+	n = AppendCandidate(candidates, n, page.orientationCheckbox)
+	n = AppendCandidate(candidates, n, page.keyRingCheckbox)
+	n = AppendCandidate(candidates, n, page.keyRingScaleValueText)
+
+	-- Stance/Page Bar Assignment rows (relocated here from the General tab,
+	-- bug-fix batch round 4, Issue 5) - only ever present on bar 1's page.
+	-- Each individual row is included as its own candidate, same "walk the
+	-- rows, not their shared container" convention gridSwatches below uses.
+	if page.assignmentRows then
+		local i
+
+		for i = 1, table.getn(page.assignmentRows) do
+			n = AppendCandidate(candidates, n, page.assignmentRows[i])
+		end
+	end
+
+	if page.gridSwatches then
+		local i
+
+		for i = 1, table.getn(page.gridSwatches) do
+			local swatch = page.gridSwatches[i]
+
+			n = AppendCandidate(candidates, n, swatch)
+			n = AppendCandidate(candidates, n, swatch.caption)
+		end
+	end
+
+	if settingsFrame.barButtons then
+		local i
+
+		for i = 1, table.getn(settingsFrame.barButtons) do
+			n = AppendCandidate(candidates, n, settingsFrame.barButtons[i])
+		end
+	end
+
+	ApplySettingsHeightFromCandidates(candidates)
+end
+
+-- General view: no bar list is shown here, just the checkbox and its
+-- description text.
+function BTV:FitSettingsWindowToGeneralView()
+	if not settingsFrame or not settingsFrame.generalPanel then
+		return
+	end
+
+	local panel = settingsFrame.generalPanel
+
+	local candidates = {}
+	local n = 0
+
+	n = AppendCandidate(candidates, n, panel.useDefaultLayoutCheckbox)
+	n = AppendCandidate(candidates, n, panel.description)
+	n = AppendCandidate(candidates, n, panel.tintWholeButtonCheckbox)
+	n = AppendCandidate(candidates, n, panel.disableBlizzardArtCheckbox)
+	n = AppendCandidate(candidates, n, panel.mainBarPaginationCheckbox)
+	n = AppendCandidate(candidates, n, panel.mainBarStanceSwapCheckbox)
+	n = AppendCandidate(candidates, n, panel.mainBarStanceSwapDescription)
+
+	-- Stance/Page Bar Assignment rows - RELOCATED to bar 1's own settings
+	-- page (bug-fix batch round 4, Issue 5) - see
+	-- FitSettingsWindowToBarPage for their candidate handling now.
+
+	n = AppendCandidate(candidates, n, panel.hotkeyValueText)
+	n = AppendCandidate(candidates, n, panel.hotkeyResetButton)
+	n = AppendCandidate(candidates, n, panel.countValueText)
+	n = AppendCandidate(candidates, n, panel.countResetButton)
+
+	-- "Enable Better Experience Bar" (round 16 part 2, Part B).
+	n = AppendCandidate(candidates, n, panel.betterExpBarCheckbox)
+	n = AppendCandidate(candidates, n, panel.betterExpBarDescription)
+
+	ApplySettingsHeightFromCandidates(candidates)
 end
 
 -------------------------------------------------------------------------
@@ -1233,6 +3129,20 @@ end
 function BTV:ShowBarPage(barId)
 	if not settingsFrame then
 		CreateSettingsFrame()
+	end
+
+	-- Always switches back to the "Bars" view - every caller of this
+	-- function (bar list clicks, OpenBarSettings, OpenDefaultBarSettings,
+	-- ShowBarsView itself) wants a bar page on
+	-- screen, so this is the one place that needs to own un-hiding
+	-- listPanel/contentPanel and hiding the General panel, rather than
+	-- every caller remembering to do it.
+	settingsFrame.currentView = "bars"
+	settingsFrame.listPanel:Show()
+	settingsFrame.contentPanel:Show()
+
+	if settingsFrame.generalPanel then
+		settingsFrame.generalPanel:Hide()
 	end
 
 	local id
@@ -1249,10 +3159,1376 @@ function BTV:ShowBarPage(barId)
 	target:Show()
 
 	settingsFrame.activeBarId = barId
+
+	-- Fix 3: resize the window to fit this page's actual controls now
+	-- that it (and the always-visible bar list) are both on-screen and
+	-- positioned - GetTop()/GetBottom() only return real values for
+	-- currently-shown frames, so this has to run after target:Show()
+	-- above, not before it.
+	self:FitSettingsWindowToBarPage(barId)
+end
+
+-------------------------------------------------------------------------
+-- General tab panel (BTVanillaDB.useDefaultLayout)
+--
+-- Built lazily on first use, exactly like GetOrCreateBarPage - anchored
+-- to span the same combined area listPanel + contentPanel occupy
+-- together, since the bar list has no meaning in this view.
+-------------------------------------------------------------------------
+
+-- Clamps a saved/native font size into the slider's fixed [MIN, MAX]
+-- display range - a saved value from a build with a different range (or a
+-- captured native size that happens to sit outside 6-24 on some other
+-- client build) still needs a sane slider position rather than an error.
+--
+-- Fix 2 (bug-fix batch): also ROUNDS via math.floor(value + 0.5) - the
+-- captured native default (GetFont() off a real FontString, see Button.lua's
+-- hasCapturedFontDefaults block) can itself come back with float
+-- imprecision (e.g. 11.999999726451 instead of 12) on this client - this is
+-- the single place every display path (RefreshGeneralPanel, both Reset
+-- buttons) funnels a size through before it ever reaches a value-label
+-- FontString. Declared above GetOrCreateGeneralPanel (moved from its
+-- original position further down the file) so its own Reset button
+-- closures - defined inside that function, below - can see this local as a
+-- real upvalue: Lua 5.0 resolves locals lexically at parse time, so a
+-- closure can only capture a local already declared earlier in the file,
+-- never one declared later even if it runs afterward.
+local function ClampFontSize(size)
+	if not size then
+		return FONT_SIZE_MIN
+	end
+
+	size = math.floor(size + 0.5)
+
+	if size < FONT_SIZE_MIN then
+		return FONT_SIZE_MIN
+	end
+
+	if size > FONT_SIZE_MAX then
+		return FONT_SIZE_MAX
+	end
+
+	return size
+end
+
+-------------------------------------------------------------------------
+-- Stance / Page Bar Assignment cyclic value (Part 2)
+--
+-- 0 is the "Unassigned" sentinel - NOT a real table hole (a raw
+-- `{nil, 6, 7, 8, 9}` constructor would put a nil at index 1, and
+-- table.getn/# have undefined behavior on a table with a hole at the
+-- start, per the Lua 5.0 manual) - translated to/from a real nil only at
+-- the BTVanillaDB read/write boundary in CreateExtraBarAssignmentRow's
+-- own getFn/setFn callers below.
+-------------------------------------------------------------------------
+
+local EXTRA_BAR_ASSIGNMENT_CYCLE = { 0, 6, 7, 8, 9 }
+
+local function ExtraBarAssignmentLabel(assignedId)
+	if not assignedId or assignedId == 0 then
+		return "Unassigned"
+	end
+
+	return "Extra Bar " .. tostring(assignedId - BTV.EXTRA_BAR_ID_START + 1)
+end
+
+local function CycleExtraBarAssignment(current, delta)
+	current = current or 0
+
+	local idx = 1
+	local i
+
+	for i = 1, table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) do
+		if EXTRA_BAR_ASSIGNMENT_CYCLE[i] == current then
+			idx = i
+			break
+		end
+	end
+
+	idx = idx + delta
+
+	if idx < 1 then
+		idx = table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE)
+	elseif idx > table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) then
+		idx = 1
+	end
+
+	return EXTRA_BAR_ASSIGNMENT_CYCLE[idx]
+end
+
+-- Builds one "< Extra Bar N >" cyclic-assignment row - see
+-- EXTRA_BAR_ASSIGNMENT_CYCLE's own comment on why this fallback widget
+-- kind was chosen over a true dropdown. getFn must return a raw
+-- BTVanillaDB value (a real Extra Bar id 6-9, or nil/false for
+-- unassigned) - never the 0 sentinel, which is purely an internal cycling
+-- detail of this function.
+local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
+	local row = CreateFrame("Frame", nil, parent)
+
+	row:SetWidth(500)
+	row:SetHeight(22)
+
+	local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	label:SetPoint("LEFT", row, "LEFT", 0, 0)
+	label:SetWidth(180)
+	label:SetJustifyH("LEFT")
+	label:SetText(labelText)
+
+	local leftButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+
+	leftButton:SetWidth(24)
+	leftButton:SetHeight(22)
+	leftButton:SetPoint("LEFT", label, "RIGHT", 8, 0)
+	leftButton:SetText("<")
+
+	local valueText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	valueText:SetPoint("LEFT", leftButton, "RIGHT", 8, 0)
+	valueText:SetWidth(90)
+	valueText:SetJustifyH("CENTER")
+
+	local rightButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+
+	rightButton:SetWidth(24)
+	rightButton:SetHeight(22)
+	rightButton:SetPoint("LEFT", valueText, "RIGHT", 8, 0)
+	rightButton:SetText(">")
+
+	local function RefreshValue()
+		valueText:SetText(ExtraBarAssignmentLabel(getFn()))
+	end
+
+	leftButton:SetScript("OnClick", function()
+		local nextValue = CycleExtraBarAssignment(getFn() or 0, -1)
+
+		setFn(nextValue ~= 0 and nextValue or nil)
+		RefreshValue()
+	end)
+
+	rightButton:SetScript("OnClick", function()
+		local nextValue = CycleExtraBarAssignment(getFn() or 0, 1)
+
+		setFn(nextValue ~= 0 and nextValue or nil)
+		RefreshValue()
+	end)
+
+	RefreshValue()
+
+	row.valueText = valueText
+
+	return row
+end
+
+-- Rebuilds the Main Bar (bar 1) settings page's Stance/Page Bar
+-- Assignment rows from scratch (Part 2; relocated here from the General
+-- tab in bug-fix batch round 4, Issue 5 - these settings are specific to
+-- bar 1's own pagination/stance-swap behavior, not a general addon-wide
+-- setting, so they belong on bar 1's own page alongside
+-- mainBarPaginationEnabled/mainBarStanceSwapEnabled's OTHER live-gated
+-- control, the Page Indicator Scale slider). One row per currently-active
+-- stance (GetNumShapeshiftForms()) IF Stance/Form/Stealth Swapping is
+-- currently enabled (0 rows if it's off, mirroring how the Page Bar row
+-- below already only appears while pagination is on - previously the
+-- stance rows ignored this toggle entirely and always showed whenever the
+-- class had stances, regardless of whether stance-swapping itself was
+-- enabled), plus one Page Bar row IF pagination is currently enabled. A
+-- no-op if bar 1's settings page hasn't been built yet this session
+-- (mirrors every other Refresh*/Apply* function's own
+-- "settingsFrame[...] nil-check" tolerance). Called from
+-- GetOrCreateBarPage's own RefreshBarSettingsPage(1) every time bar 1's
+-- page is shown, from the pagination/stance-swap checkboxes' OnClick
+-- (General tab), and from DefaultBars.lua's UPDATE_SHAPESHIFT_FORMS
+-- handler.
+function BTV:RebuildMainBarAssignmentRows()
+	local page = settingsFrame and settingsFrame.pages[1]
+
+	if not page or not page.assignmentContainer then
+		return
+	end
+
+	local container = page.assignmentContainer
+	local i
+
+	for i = 1, table.getn(page.assignmentRows) do
+		page.assignmentRows[i]:Hide()
+		page.assignmentRows[i]:SetParent(nil)
+	end
+
+	page.assignmentRows = {}
+
+	local rowIndex = 0
+	local y = 0
+
+	-- Issue 5 (bug-fix batch round 4): gated on mainBarStanceSwapEnabled
+	-- now, matching the Page Bar row's own existing
+	-- mainBarPaginationEnabled gate below - previously these rows ignored
+	-- the Stance/Form/Stealth Swapping checkbox entirely.
+	local stanceSwapOn = BTVanillaDB.mainBarStanceSwapEnabled ~= false
+	local count = stanceSwapOn and GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+
+	if count and count > 0 then
+		local s
+
+		for s = 1, count do
+			local icon, name = GetShapeshiftFormInfo(s)
+			local label = (name and name ~= "" and name) or ("Stance " .. tostring(s))
+
+			local row = CreateExtraBarAssignmentRow(
+				container,
+				label .. ":",
+				function()
+					return BTVanillaDB.mainBarStanceBarAssignment
+						and BTVanillaDB.mainBarStanceBarAssignment[s]
+				end,
+				function(value)
+					if not BTVanillaDB.mainBarStanceBarAssignment then
+						BTVanillaDB.mainBarStanceBarAssignment = {}
+					end
+
+					BTVanillaDB.mainBarStanceBarAssignment[s] = value
+
+					BTV:RefreshMainBarSlots()
+				end
+			)
+
+			row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
+
+			rowIndex = rowIndex + 1
+			page.assignmentRows[rowIndex] = row
+
+			y = y - 26
+		end
+	end
+
+	if BTVanillaDB.mainBarPaginationEnabled ~= false then
+		local row = CreateExtraBarAssignmentRow(
+			container,
+			"Page 2 Content Source:",
+			function()
+				return BTVanillaDB.mainBarPageBarAssignment
+			end,
+			function(value)
+				BTVanillaDB.mainBarPageBarAssignment = value
+
+				BTV:RefreshMainBarSlots()
+			end
+		)
+
+		row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
+
+		rowIndex = rowIndex + 1
+		page.assignmentRows[rowIndex] = row
+
+		y = y - 26
+	end
+
+	-- Never 0 - a zero-height frame is a harmless but needless edge case
+	-- for the live BOTTOMLEFT anchor chain hotkeyTitle depends on
+	-- (GetOrCreateGeneralPanel's own comment) when nothing rendered at all
+	-- (no stances, pagination off).
+	local height = -y
+
+	if height < 1 then
+		height = 1
+	end
+
+	container:SetHeight(height)
+end
+
+function BTV:GetOrCreateGeneralPanel()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	if settingsFrame.generalPanel then
+		return settingsFrame.generalPanel
+	end
+
+	local panel = CreateFrame(
+		"Frame",
+		nil,
+		settingsFrame
+	)
+
+	panel:SetPoint(
+		"TOPLEFT",
+		settingsFrame.listPanel,
+		"TOPLEFT",
+		0,
+		0
+	)
+
+	panel:SetPoint(
+		"BOTTOMRIGHT",
+		settingsFrame.contentPanel,
+		"BOTTOMRIGHT",
+		0,
+		0
+	)
+
+	local title = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalLarge"
+	)
+
+	title:SetPoint(
+		"TOPLEFT",
+		panel,
+		"TOPLEFT",
+		INDENT_SECTION,
+		-14
+	)
+
+	title:SetText("General Settings")
+
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralUseDefaultLayoutCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint(
+		"TOPLEFT",
+		panel,
+		"TOPLEFT",
+		INDENT_SECTION,
+		-52
+	)
+
+	checkbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+			local wasDefault = BTVanillaDB.useDefaultLayout == true
+
+			BTVanillaDB.useDefaultLayout = checked
+
+			-- Re-gate any default-bar page already built/cached so it
+			-- reflects the new state immediately if it happens to be
+			-- visible (or gets shown next) without needing a reload.
+			BTV:RefreshDefaultLayoutGatingOnAllPages()
+
+			-- Idempotent when the saved cfg values themselves haven't
+			-- changed (only interactivity changed) - safe/cheap to call
+			-- unconditionally so bars are guaranteed visually in sync
+			-- rather than only catching up on next login.
+			if BTV.ApplyAllDefaultBars then
+				BTV:ApplyAllDefaultBars()
+			end
+
+			-- Issue 3 (bug-fix batch): useDefaultLayout changes whether
+			-- dragging is currently possible (BTV:CanDragDefaultLayout())
+			-- even when edit mode's own state hasn't changed, so the
+			-- default-bar/stance-bar overlays need their own refresh here
+			-- too, not just from ApplyEditModeVisual's call sites.
+			if BTV.ApplyDefaultLayoutEditVisual then
+				BTV:ApplyDefaultLayoutEditVisual()
+			end
+
+			-- Stance Bar (chain-anchored container migration): no longer
+			-- has any special-cased handling here - it's now an
+			-- unconditionally-positioned TrustyBars-owned container
+			-- exactly like Bag Bar/Micro Menu (see
+			-- BTV:CreateStanceBarContainer's PLAYER_LOGIN placement,
+			-- Core.lua), so switching OFF doesn't need to capture/apply
+			-- anything (its position is always live), and switching back
+			-- ON is handled by the same reset cascade below as Bag Bar/
+			-- Micro Menu/Latency Bar/Key Ring, rather than a
+			-- ShapeshiftBar_UpdatePosition() native-reconciliation call.
+			if (not wasDefault) and checked then
+				-------------------------------------------------------------
+				-- Bug-fix batch Fix 5: full reset-to-Blizzard-default
+				-- cascade. Switching back to true previously only handled
+				-- bar 1 (already fully reconciled by
+				-- ApplyAllDefaultBars/ApplyDefaultLayoutEditVisual above).
+				-- Bars 2-5 and the Bag Bar/Micro Menu/Latency Bar/Key Ring/
+				-- Stance Bar elements never had ANY reset wired to this
+				-- toggle at all, so re-enabling "Use Default Blizzard
+				-- Layout" left them wherever the user had last dragged/
+				-- resized/spaced them instead of actually restoring
+				-- Blizzard's own defaults, as the checkbox's own
+				-- description promises.
+				-------------------------------------------------------------
+
+				local id
+
+				for id = 2, 5 do
+					BTV:ResetDefaultBarLayout(id)
+				end
+
+				if BTV.ResetBagBarPosition then
+					BTV:ResetBagBarPosition()
+				end
+
+				if BTV.ResetBagBarLayout then
+					BTV:ResetBagBarLayout()
+				end
+
+				if BTV.ResetMicroMenuPosition then
+					BTV:ResetMicroMenuPosition()
+				end
+
+				if BTV.ResetMicroMenuLayout then
+					BTV:ResetMicroMenuLayout()
+				end
+
+				if BTV.ResetStanceBarPosition then
+					BTV:ResetStanceBarPosition()
+				end
+
+				if BTV.ResetStanceBarLayout then
+					BTV:ResetStanceBarLayout()
+				end
+
+				if BTV.ResetLatencyBarLayout then
+					BTV:ResetLatencyBarLayout()
+				end
+
+				if BTV.ResetKeyRingPosition then
+					BTV:ResetKeyRingPosition()
+				end
+
+				-- Experience Bar (round 16 part 2, Part A): same reset
+				-- treatment as every other single-native-frame element above.
+				if BTV.ResetExpBarLayout then
+					BTV:ResetExpBarLayout()
+				end
+
+				-- Issue 4 (bug-fix batch round 5): Page Indicator was never
+				-- added to this cascade when its container shipped - see
+				-- BTV:ResetPageIndicatorLayout's own comment (DefaultBars.lua).
+				if BTV.ResetPageIndicatorLayout then
+					BTV:ResetPageIndicatorLayout()
+				end
+
+				-- Re-syncs every already-built default/simple bar page's
+				-- sliders/checkboxes from the values the resets above just
+				-- wrote - the earlier RefreshDefaultLayoutGatingOnAllPages
+				-- call in this handler ran BEFORE these resets, so it only
+				-- caught up gating/alpha, not the underlying values.
+				BTV:RefreshDefaultLayoutGatingOnAllPages()
+			end
+		end
+	)
+
+	local checkboxLabel = getglobal(checkbox:GetName() .. "Text")
+
+	if checkboxLabel then
+		checkboxLabel:SetText("Use Default Blizzard Layout")
+	end
+
+	panel.useDefaultLayoutCheckbox = checkbox
+
+	local description = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontHighlightSmall"
+	)
+
+	description:SetPoint(
+		"TOPLEFT",
+		checkbox,
+		"BOTTOMLEFT",
+		4,
+		-10
+	)
+
+	description:SetWidth(520)
+	description:SetJustifyH("LEFT")
+
+	description:SetText(
+		"When enabled, default action bars keep Blizzard's native " ..
+		"position, size, and layout, and can only be shown/hidden - " ..
+		"dragging and resizing them is disabled. Disable this to " ..
+		"freely reposition, resize, and drag default bars like custom " ..
+		"bars."
+	)
+
+	panel.description = description
+
+	-------------------------------------------------------------------------
+	-- Tint whole button on out of range
+	--
+	-- Real Blizzard action buttons only tint the HOTKEY TEXT red on out-of-
+	-- range, never the whole icon - this addon has always tinted the whole
+	-- icon instead (BTVanillaDB.tintWholeButtonOnRange, default true - see
+	-- Core.lua's EnsureDB), so this checkbox lets users opt into the
+	-- native-accurate hotkey-only behavior instead. Styled/positioned
+	-- exactly like the "Use Default Blizzard Layout" checkbox above -
+	-- same UICheckButtonTemplate, anchored off the previous section's
+	-- description text the same BOTTOMLEFT-chain way.
+	-------------------------------------------------------------------------
+
+	local tintWholeButtonCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralTintWholeButtonCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	tintWholeButtonCheckbox:SetWidth(24)
+	tintWholeButtonCheckbox:SetHeight(24)
+
+	tintWholeButtonCheckbox:SetPoint(
+		"TOPLEFT",
+		description,
+		"BOTTOMLEFT",
+		-4,
+		-14
+	)
+
+	tintWholeButtonCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.tintWholeButtonOnRange = checked
+
+			-- Live: immediately re-sweeps every live button's range/
+			-- usability tint rather than waiting on the next natural
+			-- UpdateRange trigger (the 0.2s self-healing ticker or the
+			-- next real event) - mirrors BTV:ToggleAlwaysShowMultibars'
+			-- own immediate-sweep pattern (Button.lua) rather than this
+			-- toggle silently doing nothing until something else happens
+			-- to re-run UpdateRange.
+			BTV:SweepAllButtonRangeTint()
+		end
+	)
+
+	local tintWholeButtonLabel = getglobal(
+		tintWholeButtonCheckbox:GetName() .. "Text"
+	)
+
+	if tintWholeButtonLabel then
+		tintWholeButtonLabel:SetText("Tint whole button on out of range")
+	end
+
+	panel.tintWholeButtonCheckbox = tintWholeButtonCheckbox
+
+	-------------------------------------------------------------------------
+	-- Disable Blizzard Art (feature 1)
+	--
+	-- Hides MainMenuBarArtFrame (DefaultBars.lua's
+	-- ApplyBlizzardArtVisibility) - styled/positioned exactly like the two
+	-- checkboxes above, anchored off tintWholeButtonCheckbox the same
+	-- BOTTOMLEFT-chain way.
+	-------------------------------------------------------------------------
+
+	local disableBlizzardArtCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralDisableBlizzardArtCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	disableBlizzardArtCheckbox:SetWidth(24)
+	disableBlizzardArtCheckbox:SetHeight(24)
+
+	disableBlizzardArtCheckbox:SetPoint(
+		"TOPLEFT",
+		tintWholeButtonCheckbox,
+		"BOTTOMLEFT",
+		0,
+		-14
+	)
+
+	disableBlizzardArtCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.disableBlizzardArt = checked
+
+			BTV:ApplyBlizzardArtVisibility()
+		end
+	)
+
+	local disableBlizzardArtLabel = getglobal(
+		disableBlizzardArtCheckbox:GetName() .. "Text"
+	)
+
+	if disableBlizzardArtLabel then
+		disableBlizzardArtLabel:SetText("Disable Blizzard Art")
+	end
+
+	panel.disableBlizzardArtCheckbox = disableBlizzardArtCheckbox
+
+	-------------------------------------------------------------------------
+	-- Main Bar pagination / stance-swap (Main Bar migration, Parts 2/3)
+	--
+	-- Both default true (Core.lua's EnsureDB), matching real vanilla bar
+	-- 1's own always-on behavior unless the user explicitly opts out here.
+	-- Styled/positioned exactly like the three checkboxes above, chained
+	-- off disableBlizzardArtCheckbox the same BOTTOMLEFT way.
+	-------------------------------------------------------------------------
+
+	local mainBarPaginationCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralMainBarPaginationCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	mainBarPaginationCheckbox:SetWidth(24)
+	mainBarPaginationCheckbox:SetHeight(24)
+
+	mainBarPaginationCheckbox:SetPoint(
+		"TOPLEFT",
+		disableBlizzardArtCheckbox,
+		"BOTTOMLEFT",
+		0,
+		-14
+	)
+
+	mainBarPaginationCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTV:SetMainBarPaginationEnabled(checked)
+
+			-- Stance/Page Bar Assignment feature, Part 2/4: the Page Bar
+			-- assignment row (only meaningful while pagination is on) and
+			-- bar 1's own Page Indicator Scale slider both need to appear/
+			-- disappear live the instant this checkbox is clicked, without
+			-- requiring the General tab or bar 1's page to be closed and
+			-- reopened.
+			BTV:RebuildMainBarAssignmentRows()
+			BTV:RefreshMainBarPageIndicatorControlsVisibility()
+		end
+	)
+
+	local mainBarPaginationLabel = getglobal(
+		mainBarPaginationCheckbox:GetName() .. "Text"
+	)
+
+	if mainBarPaginationLabel then
+		mainBarPaginationLabel:SetText("Main Bar: Shift/Ctrl Page Swapping")
+	end
+
+	panel.mainBarPaginationCheckbox = mainBarPaginationCheckbox
+
+	local mainBarStanceSwapCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralMainBarStanceSwapCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	mainBarStanceSwapCheckbox:SetWidth(24)
+	mainBarStanceSwapCheckbox:SetHeight(24)
+
+	mainBarStanceSwapCheckbox:SetPoint(
+		"TOPLEFT",
+		mainBarPaginationCheckbox,
+		"BOTTOMLEFT",
+		0,
+		-14
+	)
+
+	mainBarStanceSwapCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTV:SetMainBarStanceSwapEnabled(checked)
+
+			-- Issue 5 (bug-fix batch round 4): the per-stance assignment
+			-- rows (bar 1's own settings page) need to appear/disappear
+			-- live the instant this checkbox is clicked, exactly like the
+			-- pagination checkbox above already does for the Page Bar row.
+			BTV:RebuildMainBarAssignmentRows()
+		end
+	)
+
+	local mainBarStanceSwapLabel = getglobal(
+		mainBarStanceSwapCheckbox:GetName() .. "Text"
+	)
+
+	if mainBarStanceSwapLabel then
+		mainBarStanceSwapLabel:SetText("Main Bar: Stance/Form/Stealth Swapping")
+	end
+
+	panel.mainBarStanceSwapCheckbox = mainBarStanceSwapCheckbox
+
+	local mainBarStanceSwapDescription = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontHighlightSmall"
+	)
+
+	mainBarStanceSwapDescription:SetPoint(
+		"TOPLEFT",
+		mainBarStanceSwapCheckbox,
+		"BOTTOMLEFT",
+		4,
+		-10
+	)
+
+	mainBarStanceSwapDescription:SetWidth(520)
+	mainBarStanceSwapDescription:SetJustifyH("LEFT")
+
+	-- Part 5's own slot-allocator documentation note (per the migration
+	-- plan) - the real vanilla stance/form/stealth bonus pages (7-9,
+	-- slots 73-108) are the SAME "free" range a custom bar (id 6+) can
+	-- draw from, so a stance-capable class with this toggle on may see a
+	-- custom bar's content coincide with this bar while shapeshifted -
+	-- see Bar.lua's GetNextFreeSlotStart, which already prefers slots
+	-- 109-120 first for exactly this reason.
+	mainBarStanceSwapDescription:SetText(
+		"Stance/Form/Stealth Swapping shares its action-slot range " ..
+		"(73-108) with custom bars 6+. New custom bars are allocated " ..
+		"from slots 109-120 first to avoid this, falling back to " ..
+		"73-108 only once that range is full."
+	)
+
+	panel.mainBarStanceSwapDescription = mainBarStanceSwapDescription
+
+	-- Stance / Page Bar Assignment rows - RELOCATED (bug-fix batch round 4,
+	-- Issue 5) to bar 1's own settings page (GetOrCreateBarPage/
+	-- RebuildMainBarAssignmentRows) - these are bar 1-specific settings, not
+	-- general addon-wide ones, so they now live alongside that page's Page
+	-- Indicator Scale slider instead of here. The two checkboxes above
+	-- still live on this General tab (unchanged) and still drive those rows
+	-- live via BTV:RebuildMainBarAssignmentRows, which now looks up bar 1's
+	-- page instead of this panel.
+
+	-------------------------------------------------------------------------
+	-- Hotkey / Count text font size (both bars, live sliders)
+	--
+	-- Global, not per-button (Button.lua's hasCapturedFontDefaults comment)
+	-- - one setting governs every button's hotkey/count text on every bar.
+	-- Mirrors a bar page's Button Size slider exactly: built-in label just
+	-- names the control, a live centered value readout below it, integer
+	-- min/max end captions, OnValueChanged applies immediately (no Apply-
+	-- button gating, matching the rest of this rebuilt Settings UI). A
+	-- "Reset to Default" button sits to the right of each slider, restoring
+	-- the captured native size (Button.lua's BTV.NATIVE_HOTKEY_FONT/
+	-- NATIVE_COUNT_FONT).
+	--
+	-- Anchored via a real anchor chain off the tint-whole-button checkbox
+	-- above (BOTTOMLEFT -> TOPLEFT), not a computed pixel-Y offset like the
+	-- bar pages use - description's actual height depends on how its
+	-- 520px-wide sentence wraps, which isn't knowable at build time, so
+	-- anchor-chaining lets this section follow wherever the checkbox's real
+	-- bottom edge lands instead of guessing a fixed Y.
+	-------------------------------------------------------------------------
+
+	local hotkeyTitle = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormal"
+	)
+
+	-- Anchored to mainBarStanceSwapDescription's BOTTOMLEFT - the Stance/
+	-- Page Bar Assignment rows that used to sit between these two
+	-- (RebuildMainBarAssignmentRows) moved to bar 1's own settings page in
+	-- bug-fix batch round 4 (Issue 5), so this anchor chain is back to a
+	-- direct link between the two General-tab elements.
+	hotkeyTitle:SetPoint(
+		"TOPLEFT",
+		mainBarStanceSwapDescription,
+		"BOTTOMLEFT",
+		4,
+		-22
+	)
+
+	hotkeyTitle:SetText(
+		"Hotkey Text Size (" .. tostring(FONT_SIZE_MIN) ..
+		" to " .. tostring(FONT_SIZE_MAX) .. ")"
+	)
+
+	local hotkeySlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralHotkeyFontSizeSlider",
+		260
+	)
+
+	hotkeySlider:SetPoint(
+		"TOPLEFT",
+		hotkeyTitle,
+		"BOTTOMLEFT",
+		INDENT_INPUT - INDENT_SECTION,
+		-12
+	)
+
+	hotkeySlider:SetMinMaxValues(
+		FONT_SIZE_MIN,
+		FONT_SIZE_MAX
+	)
+
+	hotkeySlider:SetValueStep(FONT_SIZE_STEP)
+
+	SetSliderLabel(hotkeySlider, "Hotkey Text Size")
+
+	local hotkeySliderLow = getglobal(hotkeySlider:GetName() .. "Low")
+
+	if hotkeySliderLow then
+		hotkeySliderLow:SetText(tostring(FONT_SIZE_MIN))
+	end
+
+	local hotkeySliderHigh = getglobal(hotkeySlider:GetName() .. "High")
+
+	if hotkeySliderHigh then
+		hotkeySliderHigh:SetText(tostring(FONT_SIZE_MAX))
+	end
+
+	local hotkeyValueText = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	hotkeyValueText:SetPoint(
+		"TOP",
+		hotkeySlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	-- Placeholder only - RefreshGeneralPanel (called by ShowGeneralView
+	-- every time this view is shown) overwrites this with the real saved/
+	-- native value before the panel is ever visible.
+	hotkeyValueText:SetText(tostring(FONT_SIZE_MIN))
+
+	panel.hotkeyValueText = hotkeyValueText
+
+	hotkeySlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			hotkeyValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTV:SetHotkeyFontSize(value)
+			end
+		end
+	)
+
+	panel.hotkeySlider = hotkeySlider
+
+	local hotkeyResetButton = CreateFrame(
+		"Button",
+		nil,
+		panel,
+		"UIPanelButtonTemplate"
+	)
+
+	hotkeyResetButton:SetWidth(90)
+	hotkeyResetButton:SetHeight(22)
+
+	hotkeyResetButton:SetPoint(
+		"LEFT",
+		hotkeySlider,
+		"RIGHT",
+		16,
+		4
+	)
+
+	hotkeyResetButton:SetText("Reset")
+
+	hotkeyResetButton:SetScript(
+		"OnClick",
+		function()
+			-- Nothing captured yet (no button created this session) - no
+			-- native size to restore to, so this is a no-op rather than a
+			-- guessed fallback value.
+			if not BTV.NATIVE_HOTKEY_FONT then
+				return
+			end
+
+			-- ClampFontSize rounds (Fix 2) as well as clamps, so this
+			-- Reset button's displayed text can never show the same raw
+			-- GetFont()-precision decimal the bug report described.
+			local size = ClampFontSize(BTV.NATIVE_HOTKEY_FONT.size)
+
+			BTV:SetHotkeyFontSize(size)
+
+			panel.hotkeySlider.suppressApply = true
+			panel.hotkeySlider:SetValue(size)
+			panel.hotkeyValueText:SetText(tostring(size))
+			panel.hotkeySlider.suppressApply = nil
+		end
+	)
+
+	panel.hotkeyResetButton = hotkeyResetButton
+
+	-------------------------------------------------------------------------
+	-- Count text font size - identical structure to Hotkey Text Size above,
+	-- anchored off it the same anchor-chain way.
+	-------------------------------------------------------------------------
+
+	local countTitle = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormal"
+	)
+
+	-- Fix 1 (bug-fix batch): previously anchored off hotkeyValueText's
+	-- BOTTOMLEFT, but hotkeyValueText uses a "TOP" anchor point (centered
+	-- under hotkeySlider - see its SetPoint above), so its LEFT edge shifts
+	-- with the displayed digit count/width instead of sitting at a fixed X.
+	-- That's what caused the whole Item Count block to drift right of the
+	-- Hotkey block above it. Anchored off hotkeyTitle instead (a plain
+	-- TOPLEFT-anchored FontString with a fixed, text-width-independent left
+	-- edge), with 0 X offset so both titles - and everything anchored off
+	-- them below (sliders, Reset buttons) - share exactly the same X. The Y
+	-- offset is computed rather than hardcoded, preserving the original
+	-- title -> slider -> value-text -> gap spacing exactly (12px title-to-
+	-- slider gap, the slider's own real height, 2px slider-to-valuetext
+	-- gap, the value text's own real height, then the original 18px gap to
+	-- this title) without guessing GameFontNormalSmall's pixel height.
+	countTitle:SetPoint(
+		"TOPLEFT",
+		hotkeyTitle,
+		"BOTTOMLEFT",
+		0,
+		-12 - hotkeySlider:GetHeight() - 2 - hotkeyValueText:GetHeight() - 18
+	)
+
+	countTitle:SetText(
+		"Item Count Text Size (" .. tostring(FONT_SIZE_MIN) ..
+		" to " .. tostring(FONT_SIZE_MAX) .. ")"
+	)
+
+	local countSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralCountFontSizeSlider",
+		260
+	)
+
+	countSlider:SetPoint(
+		"TOPLEFT",
+		countTitle,
+		"BOTTOMLEFT",
+		INDENT_INPUT - INDENT_SECTION,
+		-12
+	)
+
+	countSlider:SetMinMaxValues(
+		FONT_SIZE_MIN,
+		FONT_SIZE_MAX
+	)
+
+	countSlider:SetValueStep(FONT_SIZE_STEP)
+
+	SetSliderLabel(countSlider, "Item Count Text Size")
+
+	local countSliderLow = getglobal(countSlider:GetName() .. "Low")
+
+	if countSliderLow then
+		countSliderLow:SetText(tostring(FONT_SIZE_MIN))
+	end
+
+	local countSliderHigh = getglobal(countSlider:GetName() .. "High")
+
+	if countSliderHigh then
+		countSliderHigh:SetText(tostring(FONT_SIZE_MAX))
+	end
+
+	local countValueText = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	countValueText:SetPoint(
+		"TOP",
+		countSlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	countValueText:SetText(tostring(FONT_SIZE_MIN))
+
+	panel.countValueText = countValueText
+
+	countSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			countValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTV:SetCountFontSize(value)
+			end
+		end
+	)
+
+	panel.countSlider = countSlider
+
+	local countResetButton = CreateFrame(
+		"Button",
+		nil,
+		panel,
+		"UIPanelButtonTemplate"
+	)
+
+	countResetButton:SetWidth(90)
+	countResetButton:SetHeight(22)
+
+	countResetButton:SetPoint(
+		"LEFT",
+		countSlider,
+		"RIGHT",
+		16,
+		4
+	)
+
+	countResetButton:SetText("Reset")
+
+	countResetButton:SetScript(
+		"OnClick",
+		function()
+			if not BTV.NATIVE_COUNT_FONT then
+				return
+			end
+
+			-- ClampFontSize rounds (Fix 2) as well as clamps - see the
+			-- Hotkey Reset button's matching comment above.
+			local size = ClampFontSize(BTV.NATIVE_COUNT_FONT.size)
+
+			BTV:SetCountFontSize(size)
+
+			panel.countSlider.suppressApply = true
+			panel.countSlider:SetValue(size)
+			panel.countValueText:SetText(tostring(size))
+			panel.countSlider.suppressApply = nil
+		end
+	)
+
+	panel.countResetButton = countResetButton
+
+	-------------------------------------------------------------------------
+	-- "Enable Better Experience Bar" (round 16 part 2, Part B)
+	--
+	-- BTVanillaDB.betterExpBarEnabled - independent of the Experience Bar
+	-- container's own Position/Scale/Enable page (Settings.lua's
+	-- simpleBarPageConfigs["expbar"], "Bars" tab) - toggling this only
+	-- shows/hides the live percent-complete/percent-rested text overlay
+	-- (DefaultBars.lua's BTV:ApplyBetterExpBarVisual), applied immediately
+	-- like every other live checkbox on this panel. Styled/positioned
+	-- exactly like the checkboxes earlier in this function, anchored off
+	-- the Item Count Text Size Reset button the same real-anchor-chain way
+	-- (its actual bottom edge isn't knowable at build time, same reasoning
+	-- as mainBarStanceSwapDescription's own anchor above).
+	-------------------------------------------------------------------------
+
+	local betterExpBarCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralBetterExpBarCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	betterExpBarCheckbox:SetWidth(24)
+	betterExpBarCheckbox:SetHeight(24)
+
+	-- X offset -4 (not 0, unlike countTitle's own anchor off hotkeyTitle) -
+	-- every OTHER checkbox on this panel sits 4px LEFT of its own
+	-- following description/title text (e.g. tintWholeButtonCheckbox is
+	-- description's BOTTOMLEFT -4, compensating for description's own +4
+	-- offset from its checkbox) - matching that same checkbox-column X here
+	-- keeps this checkbox visually aligned with the others instead of
+	-- sitting 4px further right, in line with the title text above it.
+	betterExpBarCheckbox:SetPoint(
+		"TOPLEFT",
+		countTitle,
+		"BOTTOMLEFT",
+		-4,
+		-12 - countSlider:GetHeight() - 2 - countValueText:GetHeight() - 18
+	)
+
+	betterExpBarCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.betterExpBarEnabled = checked
+
+			BTV:ApplyBetterExpBarVisual()
+		end
+	)
+
+	local betterExpBarLabel = getglobal(
+		betterExpBarCheckbox:GetName() .. "Text"
+	)
+
+	if betterExpBarLabel then
+		betterExpBarLabel:SetText("Enable Better Experience Bar")
+	end
+
+	panel.betterExpBarCheckbox = betterExpBarCheckbox
+
+	local betterExpBarDescription = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontHighlightSmall"
+	)
+
+	betterExpBarDescription:SetPoint(
+		"TOPLEFT",
+		betterExpBarCheckbox,
+		"BOTTOMLEFT",
+		4,
+		-10
+	)
+
+	betterExpBarDescription:SetWidth(520)
+	betterExpBarDescription:SetJustifyH("LEFT")
+
+	betterExpBarDescription:SetText(
+		"When enabled, shows percent-of-current-level and percent-of-" ..
+		"fully-rested text directly on the Experience Bar."
+	)
+
+	panel.betterExpBarDescription = betterExpBarDescription
+
+	panel:Hide()
+
+	settingsFrame.generalPanel = panel
+
+	return panel
+end
+
+function BTV:RefreshGeneralPanel()
+	local panel = self:GetOrCreateGeneralPanel()
+
+	panel.useDefaultLayoutCheckbox:SetChecked(
+		BTVanillaDB.useDefaultLayout == true
+	)
+
+	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
+	-- unchecks this.
+	panel.tintWholeButtonCheckbox:SetChecked(
+		BTVanillaDB.tintWholeButtonOnRange ~= false
+	)
+
+	-- Default false (Core.lua's EnsureDB) - only an explicit true ever
+	-- checks this.
+	panel.disableBlizzardArtCheckbox:SetChecked(
+		BTVanillaDB.disableBlizzardArt == true
+	)
+
+	-- Both default true (Core.lua's EnsureDB) - only an explicit false
+	-- ever unchecks either.
+	panel.mainBarPaginationCheckbox:SetChecked(
+		BTVanillaDB.mainBarPaginationEnabled ~= false
+	)
+
+	-- Stance/Page Bar Assignment rows themselves - RELOCATED to bar 1's own
+	-- settings page (bug-fix batch round 4, Issue 5); refreshed from
+	-- RefreshBarSettingsPage(1) instead of here now.
+
+	panel.mainBarStanceSwapCheckbox:SetChecked(
+		BTVanillaDB.mainBarStanceSwapEnabled ~= false
+	)
+
+	-------------------------------------------------------------------------
+	-- Hotkey / Count text font size
+	--
+	-- nil (never yet touched by the user) falls back to the captured
+	-- native default - see Core.lua's EnsureDB comment on why these two
+	-- fields are deliberately left unseeded.
+	-------------------------------------------------------------------------
+
+	local hotkeyDefault = BTV.NATIVE_HOTKEY_FONT and BTV.NATIVE_HOTKEY_FONT.size
+	local hotkeySize = ClampFontSize(BTVanillaDB.hotkeyFontSize or hotkeyDefault)
+
+	panel.hotkeySlider.suppressApply = true
+	panel.hotkeySlider:SetValue(hotkeySize)
+	panel.hotkeyValueText:SetText(tostring(hotkeySize))
+	panel.hotkeySlider.suppressApply = nil
+
+	local countDefault = BTV.NATIVE_COUNT_FONT and BTV.NATIVE_COUNT_FONT.size
+	local countSize = ClampFontSize(BTVanillaDB.countFontSize or countDefault)
+
+	panel.countSlider.suppressApply = true
+	panel.countSlider:SetValue(countSize)
+	panel.countValueText:SetText(tostring(countSize))
+	panel.countSlider.suppressApply = nil
+
+	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - default
+	-- false (Core.lua's EnsureDB) - only an explicit true ever checks this.
+	panel.betterExpBarCheckbox:SetChecked(
+		BTVanillaDB.betterExpBarEnabled == true
+	)
+end
+
+-------------------------------------------------------------------------
+-- View switching ("Bars" / "General" tabs)
+-------------------------------------------------------------------------
+
+function BTV:ShowBarsView()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	self:ShowBarPage(settingsFrame.activeBarId or 1)
+end
+
+function BTV:ShowGeneralView()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	local id
+	local page
+
+	for id, page in pairs(settingsFrame.pages) do
+		page:Hide()
+	end
+
+	settingsFrame.listPanel:Hide()
+	settingsFrame.contentPanel:Hide()
+	settingsFrame.currentView = "general"
+
+	self:RefreshGeneralPanel()
+	self:GetOrCreateGeneralPanel():Show()
+
+	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
+	-- :Show() so GetBottom() reads real values.
+	self:FitSettingsWindowToGeneralView()
+end
+
+-------------------------------------------------------------------------
+-- Bar list row creation
+--
+-- One row layout shared by default bars (1-5) and custom bars (6+) -
+-- only the presence of the inline enable-checkbox (default bars 2-5)
+-- and the small kind indicator text differ.
+-------------------------------------------------------------------------
+
+local function CreateBarListRow(barId, isDefault, cfg)
+	local row = CreateFrame(
+		"Button",
+		nil,
+		settingsFrame.listPanel,
+		"UIPanelButtonTemplate"
+	)
+
+	-- Wide enough for the longest friendly name ("Right Action Bar 2")
+	-- plus the inline enable checkbox some rows also carry.
+	row:SetWidth(110)
+	row:SetHeight(LIST_ROW_HEIGHT)
+
+	row:SetText(
+		GetBarDisplayName(barId, isDefault)
+	)
+
+	row.barId = barId
+
+	row:SetScript(
+		"OnClick",
+		BarListButton_OnClick
+	)
+
+	-- Bars 2-5 (default only) AND the Bag Bar/Micro Menu (feature 3 - the
+	-- only two of the three "simple" string-keyed pages that can be
+	-- meaningfully disabled, unlike the Stance Bar) get an inline
+	-- enable/disable checkbox - live, applies on click immediately
+	-- (point 7). Generalized (rather than the old hardcoded
+	-- SetDefaultBarEnabled-only version) so both sources of an "enabled"
+	-- flag share one checkbox-creation code path.
+	local simpleConfig = simpleBarPageConfigs[barId]
+
+	local wantsCheckbox = false
+	local checkedState = false
+	local onToggle = nil
+
+	if isDefault and type(barId) == "number" and barId ~= 1 then
+		wantsCheckbox = true
+		checkedState = cfg and cfg.enabled == true
+		onToggle = function(checked)
+			BTV:SetDefaultBarEnabled(barId, checked)
+		end
+	elseif simpleConfig and simpleConfig.hasEnable then
+		wantsCheckbox = true
+		checkedState = simpleConfig.getEnabled and simpleConfig.getEnabled() ~= false
+		onToggle = function(checked)
+			simpleConfig.setEnabled(checked)
+		end
+	elseif not isDefault and type(barId) == "number" and BTV:IsExtraBarId(barId) then
+		-- Extra Bars (ids 6-9, Stance/Page Bar Assignment feature, Part 1):
+		-- same inline list checkbox default bars 2-5 get above.
+		wantsCheckbox = true
+		checkedState = cfg and cfg.enabled == true
+		onToggle = function(checked)
+			BTV:SetExtraBarEnabled(barId, checked)
+		end
+	end
+
+	if wantsCheckbox then
+		local checkbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaBarList" .. tostring(barId) .. "Checkbox",
+			settingsFrame.listPanel,
+			"UICheckButtonTemplate"
+		)
+
+		checkbox:SetWidth(20)
+		checkbox:SetHeight(20)
+
+		checkbox:SetPoint(
+			"LEFT",
+			row,
+			"RIGHT",
+			2,
+			0
+		)
+
+		checkbox:SetChecked(checkedState)
+
+		checkbox.barId = barId
+
+		checkbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				onToggle(checked)
+
+				-- Keep the corresponding page's own checkbox (if built)
+				-- in sync too.
+				BTV:RefreshBarSettingsPage(this.barId)
+			end
+		)
+
+		row.checkbox = checkbox
+	end
+
+	return row
 end
 
 -------------------------------------------------------------------------
 -- Refresh left bar list
+--
+-- Unified list (point 1): Bar 1 -> Bar 5, a divider, then the 4 permanent
+-- Extra Bars (6-9, Stance/Page Bar Assignment feature Part 1) - no more
+-- "+ Add New Bar" row, since capacity is fixed and every possible bar id
+-- already always exists.
 -------------------------------------------------------------------------
 
 function BTV:RefreshBarList()
@@ -1263,28 +4539,39 @@ function BTV:RefreshBarList()
 	local i
 
 	for i = 1, table.getn(settingsFrame.barButtons) do
-		settingsFrame.barButtons[i]:Hide()
+		local widget = settingsFrame.barButtons[i]
+
+		widget:Hide()
+
+		if widget.checkbox then
+			widget.checkbox:Hide()
+		end
 	end
 
 	settingsFrame.barButtons = {}
 
 	local yOffset = -24
+	local rowIndex = 0
 
-	for i = 1, table.getn(BTVanillaDB.bars) do
-		local cfg = BTVanillaDB.bars[i]
+	-------------------------------------------------------------------------
+	-- Default bars 1-5
+	-------------------------------------------------------------------------
+
+	local id
+
+	for id = 1, 5 do
+		local cfg = BTVanillaDB.defaultBars[id]
 
 		if cfg then
-			local btn = CreateFrame(
-				"Button",
-				nil,
-				settingsFrame.listPanel,
-				"UIPanelButtonTemplate"
-			)
+			-- Major architecture migration, Phase 1 of 2: no more native-
+			-- global reconciliation here (see RefreshBarSettingsPage's
+			-- matching comment) - bars 2-5's real Blizzard buttons are
+			-- permanently hidden regardless of the old SHOW_MULTI_
+			-- ACTIONBAR_* globals, so cfg.enabled is read directly as the
+			-- sole source of truth.
+			local row = CreateBarListRow(id, true, cfg)
 
-			btn:SetWidth(110)
-			btn:SetHeight(24)
-
-			btn:SetPoint(
+			row:SetPoint(
 				"TOPLEFT",
 				settingsFrame.listPanel,
 				"TOPLEFT",
@@ -1292,124 +4579,150 @@ function BTV:RefreshBarList()
 				yOffset
 			)
 
-			btn:SetText(
-				"Bar " .. tostring(cfg.id)
-			)
+			rowIndex = rowIndex + 1
+			settingsFrame.barButtons[rowIndex] = row
 
-			btn.barId = cfg.id
-
-			btn:SetScript(
-				"OnClick",
-				BarListButton_OnClick
-			)
-
-			settingsFrame.barButtons[i] = btn
-
-			yOffset = yOffset - 28
+			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
 		end
 	end
-end
 
--------------------------------------------------------------------------
--- Delete Bar
--------------------------------------------------------------------------
+	-------------------------------------------------------------------------
+	-- Stance Bar / Bag Bar / Micro Menu (features 2/3) - distinct string
+	-- keys, not numbered default/custom bars. Grouped here with the
+	-- default bars above the divider since they're equally native-backed,
+	-- not user-created. Always shown in the list (never hidden entirely,
+	-- point made explicit in this feature's own task spec) - drag/
+	-- position-slider interactivity is gated separately by
+	-- useDefaultLayout (ApplyDefaultLayoutGating, reused by
+	-- RefreshSimpleBarPage below), exactly mirroring how default bars 1-5
+	-- stay visible and just grey out rather than disappearing.
+	-------------------------------------------------------------------------
 
-function BTV:DeleteBar(barId)
-	self:EnsureDB()
+	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar" }
+	local si
 
-	barId = tonumber(barId)
+	for si = 1, table.getn(specialKeys) do
+		local key = specialKeys[si]
 
-	if not barId then
-		return
+		-- Bag Bar/Micro Menu rows are only meaningful once their real
+		-- container was successfully built (BTV:CreateBagBarAndMicroMenu,
+		-- DefaultBars.lua) - degrades gracefully (row simply absent) if
+		-- discovery failed this session, the same tolerance default bars
+		-- 2-5 already have for a failed fixedActionSlots discovery. The
+		-- Stance Bar has no equivalent "did this fail" case - ShapeshiftBarFrame
+		-- is a fixed, always-present real Blizzard global. The Latency Bar
+		-- (bug-fix batch Fix 3) is defensively checked too, even though
+		-- MainMenuBarPerformanceBarFrame is confirmed to exist on this
+		-- client, in case it's ever missing on some other client build.
+		-- The Experience Bar (round 16 part 2, Part A) gets the same
+		-- defensive check - MainMenuExpBar's presence on this specific
+		-- modded client build is UNCONFIRMED (see
+		-- DefaultBars.lua's own header comment on this element).
+		local exists = true
+
+		if key == "bagbar" then
+			exists = BTV.bagBarContainer ~= nil
+		elseif key == "micromenu" then
+			exists = BTV.microMenuContainer ~= nil
+		elseif key == "latencybar" then
+			exists = getglobal(BTV.LATENCY_BAR_FRAME_NAME) ~= nil
+		elseif key == "expbar" then
+			exists = getglobal(BTV.EXP_BAR_FRAME_NAME) ~= nil
+		end
+
+		if exists then
+			local row = CreateBarListRow(key, true, nil)
+
+			row:SetPoint(
+				"TOPLEFT",
+				settingsFrame.listPanel,
+				"TOPLEFT",
+				0,
+				yOffset
+			)
+
+			rowIndex = rowIndex + 1
+			settingsFrame.barButtons[rowIndex] = row
+
+			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
+		end
 	end
 
-	-- Find the SavedVariables entry by ID, never by array index - IDs are
-	-- intentionally allowed to have gaps (see AddNewBar's comment in
-	-- Bar.lua: deleting Bar 3 out of 1,2,3,4 leaves 1,2,4, so Bar 4 no
-	-- longer sits at array index 4).
-	local dbIndex = nil
-	local cfg = nil
+	-------------------------------------------------------------------------
+	-- Divider between default and custom bars
+	-------------------------------------------------------------------------
 
-	local i
+	-- WHITE8X8 rather than "Interface\Common\UI-TooltipDivider" - the
+	-- latter isn't confirmed to exist on this 1.12.1 client, while
+	-- WHITE8X8 is already proven working here (see Button.lua's
+	-- editOverlay). A thin dim line is enough of a section break.
+	local divider = settingsFrame.listPanel:CreateTexture(
+		nil,
+		"ARTWORK"
+	)
+
+	divider:SetTexture("Interface\\Buttons\\WHITE8X8")
+	divider:SetVertexColor(0.5, 0.5, 0.5, 0.6)
+	divider:SetWidth(120)
+	divider:SetHeight(2)
+
+	divider:SetPoint(
+		"TOPLEFT",
+		settingsFrame.listPanel,
+		"TOPLEFT",
+		2,
+		yOffset + 2
+	)
+
+	rowIndex = rowIndex + 1
+
+	-- The divider shares the same tracked-widget list purely so it gets
+	-- hidden/recreated alongside everything else on refresh - it has no
+	-- barId/checkbox and BarListButton_OnClick is never bound to it.
+	settingsFrame.barButtons[rowIndex] = divider
+
+	yOffset = yOffset - 14
+
+	-------------------------------------------------------------------------
+	-- Extra Bars 6-9 (Stance/Page Bar Assignment feature, Part 1) - always
+	-- exactly 4 entries (Core.lua's EnsureExtraBars), each toggled via its
+	-- own inline checkbox above.
+	-------------------------------------------------------------------------
 
 	for i = 1, table.getn(BTVanillaDB.bars) do
-		if BTVanillaDB.bars[i] and
-			BTVanillaDB.bars[i].id == barId then
+		local cfg = BTVanillaDB.bars[i]
 
-			dbIndex = i
-			cfg = BTVanillaDB.bars[i]
-			break
+		if cfg then
+			local row = CreateBarListRow(cfg.id, false, cfg)
+
+			row:SetPoint(
+				"TOPLEFT",
+				settingsFrame.listPanel,
+				"TOPLEFT",
+				0,
+				yOffset
+			)
+
+			rowIndex = rowIndex + 1
+			settingsFrame.barButtons[rowIndex] = row
+
+			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
 		end
 	end
 
-	if not cfg then
-		return
-	end
-
-	-------------------------------------------------------------------------
-	-- Remove live bar
-	--
-	-- Goes through DestroyBarButtons so each button's range-check ticker
-	-- is cancelled and its scripts/events unhooked, not just hidden -
-	-- otherwise the ticker keeps firing against a hidden, orphaned button.
-	-------------------------------------------------------------------------
-
-	local bar = self.bars[barId]
-
-	if bar then
-		self:DestroyBarButtons(bar)
-
-		bar:Hide()
-
-		bar:SetScript("OnDragStart", nil)
-		bar:SetScript("OnDragStop", nil)
-
-		bar:UnregisterAllEvents()
-
-		bar:SetParent(nil)
-
-		self.bars[barId] = nil
-	end
-
-	-------------------------------------------------------------------------
-	-- Remove ONLY this configuration.
-	--
-	-- No other configuration is modified, so no other bar's ID or
-	-- action-slot assignment changes.
-	-------------------------------------------------------------------------
-
-	table.remove(BTVanillaDB.bars, dbIndex)
-
-	-------------------------------------------------------------------------
-	-- Remove page
-	-------------------------------------------------------------------------
-
-	if settingsFrame.pages[barId] then
-		settingsFrame.pages[barId]:Hide()
-		settingsFrame.pages[barId] = nil
-	end
-
-	settingsFrame.activeBarId = nil
-
-	-------------------------------------------------------------------------
-	-- Refresh UI
-	-------------------------------------------------------------------------
-
-	self:RefreshBarList()
-
-	if table.getn(BTVanillaDB.bars) > 0 then
-		self:ShowBarPage(
-			BTVanillaDB.bars[1].id
-		)
-	else
-		settingsFrame:Hide()
-	end
-
-	self:Print(
-		"Deleted Bar " .. tostring(barId) ..
-		". Other bars and their action slots were unchanged."
-	)
+	-- "+ Add New Bar" - REMOVED (Stance/Page Bar Assignment feature,
+	-- Part 1). Capacity is now fixed at exactly BTV.EXTRA_BAR_COUNT (4)
+	-- permanent Extra Bars, always listed in the loop above - a user
+	-- enables/disables one via its inline checkbox rather than adding a
+	-- new one, so there is nothing left for this button to do.
 end
+
+-- BTV:DeleteBar - REMOVED (Stance/Page Bar Assignment feature, Part 1).
+-- Every non-default bar id (6-9) is now a permanent Extra Bar (Core.lua's
+-- EnsureExtraBars) toggled via cfg.enabled (Bar.lua's SetExtraBarEnabled),
+-- never added/removed - there is no longer any bar this could legally
+-- apply to, and no remaining call site (the old Delete Bar button and
+-- Menu.lua's "Add New Bar" entry are both gone too).
 
 -------------------------------------------------------------------------
 -- Show settings
@@ -1424,12 +4737,16 @@ function BTV:ShowSettingsFrame()
 
 	settingsFrame:Show()
 
-	if not settingsFrame.activeBarId
-		and table.getn(BTVanillaDB.bars) > 0 then
-
-		self:ShowBarPage(
-			BTVanillaDB.bars[1].id
-		)
+	if not settingsFrame.activeBarId then
+		self:ShowBarPage(1)
+	elseif settingsFrame.currentView == "general" then
+		self:FitSettingsWindowToGeneralView()
+	else
+		-- RefreshBarList (above) just rebuilt the bar-list rows from
+		-- scratch (e.g. a bar added/removed while the window was closed),
+		-- so even though the active page itself isn't changing here, the
+		-- window still needs to refit against the new row count.
+		self:FitSettingsWindowToBarPage(settingsFrame.activeBarId)
 	end
 end
 
@@ -1450,7 +4767,9 @@ function BTV:ToggleSettingsFrame()
 end
 
 -------------------------------------------------------------------------
--- Open specific bar settings
+-- Open specific bar settings (custom bars only - called from
+-- Button.lua's right-click-to-configure on a live custom-bar button;
+-- default bars aren't backed by BTV.bars, see DefaultBars.lua)
 -------------------------------------------------------------------------
 
 function BTV:OpenBarSettings(bar)
@@ -1463,4 +4782,21 @@ function BTV:OpenBarSettings(bar)
 	self:ShowBarPage(
 		bar.config.id
 	)
+end
+
+-------------------------------------------------------------------------
+-- Open specific bar settings (default bars 1-5 - called from
+-- HoverBind.lua's right-click hook on a live Blizzard default-bar
+-- button; default bars have no live BTV.bars entry the way custom bars
+-- do, so this takes a bar id directly rather than a bar object).
+-------------------------------------------------------------------------
+
+function BTV:OpenDefaultBarSettings(barId)
+	if not IsDefaultBarId(barId) then
+		return
+	end
+
+	self:ShowSettingsFrame()
+
+	self:ShowBarPage(barId)
 end
