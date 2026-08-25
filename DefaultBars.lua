@@ -1149,19 +1149,29 @@ end
 -- Default bar / stance bar dragging (Edit Layout mode, useDefaultLayout
 -- == false only)
 --
--- Default bars (1-5) are real Blizzard frames, not a container frame we
--- own the way Bar.lua's custom bars are (see Bar.lua's
--- StartBarDrag/StopBarDrag, which just call bar:StartMoving()/
--- StopMovingOrSizing() on a frame TrustyBars itself created with
--- SetMovable(true)). We only have the 12 individual button frames per
--- default bar, and there's no single frame anchoring all 12 that
--- StartMoving() could be called on instead - so this tracks the cursor
--- delta manually every frame (one shared OnUpdate-driven frame, not a
--- polling-from-scratch loop) and re-applies cfg.x/cfg.y through
--- ApplyDefaultBarShape, which already knows how to reposition all 12
--- buttons from those two fields. The stance bar (below) reuses this same
--- shared drag frame/OnUpdate for the same reason: it's also a single
--- real Blizzard frame we don't own.
+-- NOTE (round 36): the dragKind == "defaultBar" branch above and
+-- BTV:StartDefaultBarDrag/StopDefaultBarDrag below predate the major
+-- architecture migration (Core.lua's schema versions 5/7) that moved
+-- default bars 1-5 onto Bar.lua's own bar-pool engine
+-- (CreateFixedSlotDefaultBars -> CreateBarFromConfig) - they are dead code
+-- (confirmed via a whole-codebase search: nothing calls
+-- BTV:StartDefaultBarDrag/StopDefaultBarDrag or ever populates
+-- defaultBarOverlays, since EnsureDefaultBarOverlay is itself never
+-- called), left in place rather than removed since deleting unrelated
+-- dead code is out of scope for the round that found this. Default bars
+-- 1-5 actually drag via Bar.lua's own EnsureBarOverlay/StartBarDrag/
+-- StopBarDrag now, same as every custom/Extra Bar - see Bar.lua's own
+-- StartBarDrag comment: it no longer calls native bar:StartMoving()/
+-- StopMovingOrSizing() either, having been migrated (round 36) onto this
+-- exact same shared cursor-tracking OnUpdate mechanism via the dragKind
+-- == "bar" branch above and BTV:StartSharedDrag/StopSharedDrag below.
+--
+-- The stance bar dragging below this note is very much alive (dragKind ==
+-- "stanceBar") - it's a single real Blizzard frame (ShapeshiftBarFrame)
+-- this addon doesn't own a container frame for, so it tracks the cursor
+-- delta manually every frame (this shared OnUpdate-driven frame, not a
+-- polling-from-scratch loop) and re-applies its position directly, the
+-- same reasoning every other chain-anchored element below uses.
 -------------------------------------------------------------------------
 
 -- Created lazily, exactly once - shared by every default-bar AND
@@ -1191,6 +1201,64 @@ local function GetCursorPositionUIScale()
 	return x / scale, y / scale
 end
 
+-- Round 35: shared per-tick snap injection for every dragKind below
+-- (BTV:ComputeSnapAdjustment, Core.lua) - called with the real frame
+-- actually being repositioned (the container/native frame itself, never
+-- its overlay) and the position table about to be applied, so it can nudge
+-- pos.x/pos.y in place BEFORE the caller applies them - this is what gives
+-- these elements live, real-time snapping while dragging.
+-- No-ops (leaves pos.x/pos.y untouched) when the setting is off, or if the
+-- frame can't yet report a size/scale (e.g. never shown this session).
+--
+-- Round 36: also used by the dragKind == "bar" branch below (Bar.lua's
+-- StartBarDrag/StopBarDrag, bars 1-9) - bars used to be the one exception
+-- noted here, dragging via native bar:StartMoving()/StopMovingOrSizing()
+-- with no per-frame hook at all, so they could only ever snap at drop time.
+-- They're now migrated onto this exact same shared OnUpdate mechanism, so
+-- every draggable element in the addon shares one snap code path.
+--
+-- pos.point/pos.relativePoint are always the hardcoded "TOPLEFT"/
+-- "BOTTOMLEFT" pair every caller's own Apply*Position function captures/
+-- applies with (confirmed via a whole-file search - no other code path
+-- ever writes a different pair for any of these fields; Bar.lua's
+-- StartBarDrag explicitly normalizes a bar's cfg.point/relativePoint to
+-- this same pair the moment a drag starts, precisely so this holds for
+-- bars too), so pos.x/pos.y (the frame's own local-unit offset from
+-- UIParent's BOTTOMLEFT corner) convert to/from real screen pixels via
+-- this frame's own effective scale alone - no anchor-point math needed.
+local function ApplyDragSnap(frame, pos)
+	if not frame or not pos then
+		return
+	end
+
+	local scale = frame:GetEffectiveScale()
+	local width = frame:GetWidth()
+	local height = frame:GetHeight()
+
+	if not scale or not width or not height then
+		return
+	end
+
+	local proposedLeft = pos.x * scale
+	local proposedTop = pos.y * scale
+
+	local adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
+		proposedLeft,
+		proposedTop,
+		width * scale,
+		height * scale,
+		frame
+	)
+
+	if adjustedLeft then
+		pos.x = adjustedLeft / scale
+	end
+
+	if adjustedTop then
+		pos.y = adjustedTop / scale
+	end
+end
+
 -- Shared OnUpdate body for both drag kinds - `this` is dragFrame itself
 -- (an engine-invoked handler, so `this` per the file-level convention
 -- noted throughout this addon, e.g. Button.lua's header comment).
@@ -1215,6 +1283,8 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
+			ApplyDragSnap(BTV.stanceBarContainer, pos)
+
 			BTV:ApplyStanceBarPosition()
 		end
 	elseif this.dragKind == "bagBar" then
@@ -1223,6 +1293,8 @@ local function DefaultBarDrag_OnUpdate()
 		if pos then
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(BTV.bagBarContainer, pos)
 
 			BTV:ApplyBagBarPosition()
 		end
@@ -1233,6 +1305,8 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
+			ApplyDragSnap(BTV.microMenuContainer, pos)
+
 			BTV:ApplyMicroMenuPosition()
 		end
 	elseif this.dragKind == "keyRing" then
@@ -1241,6 +1315,8 @@ local function DefaultBarDrag_OnUpdate()
 		if pos then
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(getglobal(BTV.KEYRING_BUTTON_NAME), pos)
 
 			BTV:ApplyKeyRingPosition()
 		end
@@ -1251,6 +1327,8 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
+			ApplyDragSnap(getglobal(BTV.LATENCY_BAR_FRAME_NAME), pos)
+
 			BTV:ApplyLatencyBarPosition()
 		end
 	elseif this.dragKind == "expBar" then
@@ -1259,6 +1337,8 @@ local function DefaultBarDrag_OnUpdate()
 		if pos then
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(getglobal(BTV.EXP_BAR_FRAME_NAME), pos)
 
 			BTV:ApplyExpBarPosition()
 		end
@@ -1269,7 +1349,40 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
+			ApplyDragSnap(BTV.pageIndicatorContainer, pos)
+
 			BTV:ApplyPageIndicatorPosition()
+		end
+	elseif this.dragKind == "bar" then
+		-- Round 36 (unify bar dragging): bars 1-9 (Bar.lua's
+		-- StartBarDrag/StopBarDrag, both default bars 1-5 and every
+		-- custom/Extra Bar 6-9) - unlike the other dragKinds above, which
+		-- each wrap a real/synthetic native frame with its own dedicated
+		-- BTVanillaDB.xPosition table, a bar's position lives directly on
+		-- bar.config.x/y (Bar.lua's own ApplyBarPosition reads exactly
+		-- these two fields) - so this reads/writes bar.config in place
+		-- rather than a separate position table, but otherwise follows the
+		-- identical per-tick shape as every dragKind above: compute the
+		-- proposed position from the cursor delta, let ApplyDragSnap nudge
+		-- it in place, then apply. BTV:ApplyBarPosition (not ApplyBarShape)
+		-- is deliberately the minimal correct call here - ApplyBarShape
+		-- would also re-bind every button's action slot, resize the bar
+		-- frame, and re-run LayoutButtons on every single tick, none of
+		-- which ever changes during a pure position drag.
+		local bar = BTV.bars and BTV.bars[this.dragId]
+
+		if bar and bar.config then
+			local pos = {
+				x = this.dragStartX + dx,
+				y = this.dragStartY + dy,
+			}
+
+			ApplyDragSnap(bar, pos)
+
+			bar.config.x = pos.x
+			bar.config.y = pos.y
+
+			BTV:ApplyBarPosition(bar)
 		end
 	end
 end
@@ -1281,6 +1394,42 @@ local function EnsureDragFrame()
 	end
 
 	return dragFrame
+end
+
+-------------------------------------------------------------------------
+-- Round 36: generic start/stop seam onto the shared cursor-tracking drag
+-- frame above (dragFrame/EnsureDragFrame/DefaultBarDrag_OnUpdate/
+-- GetCursorPositionUIScale are all file-local to this file) - exposed as
+-- BTV methods purely so Bar.lua's own StartBarDrag/StopBarDrag (bars 1-9)
+-- can initiate/finalize a drag through this exact mechanism instead of
+-- duplicating it. Every existing Start*Drag function below (StartBagBarDrag,
+-- StartStanceBarDrag, etc.) could in principle be rewritten to call this
+-- too, but they're left as-is - this only needs to cover the one new caller.
+-------------------------------------------------------------------------
+
+function BTV:StartSharedDrag(dragKind, dragId, startX, startY)
+	local cx, cy = GetCursorPositionUIScale()
+
+	local frame = EnsureDragFrame()
+
+	frame.dragKind = dragKind
+	frame.dragId = dragId
+	frame.dragStartCursorX = cx
+	frame.dragStartCursorY = cy
+	frame.dragStartX = startX or 0
+	frame.dragStartY = startY or 0
+
+	frame:SetScript("OnUpdate", DefaultBarDrag_OnUpdate)
+	frame:Show()
+end
+
+function BTV:StopSharedDrag()
+	if not dragFrame then
+		return
+	end
+
+	dragFrame:SetScript("OnUpdate", nil)
+	dragFrame:Hide()
 end
 
 -- True only while both Edit Layout mode AND useDefaultLayout == false are
@@ -1737,7 +1886,7 @@ end
 -- requires: with the overlay no longer a child of the real frame, hiding
 -- the real frame alone no longer implicitly cascades to hide the overlay
 -- too.
-local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settingsKey, scaleSetFn, level)
+local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settingsKey, scaleSetFn, level, displayName)
 	if container.btvOverlay then
 		return container.btvOverlay
 	end
@@ -1752,6 +1901,34 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
 	tex:SetVertexColor(0.35, 0.65, 1.0, 0.45)
 	tex:SetAllPoints(overlay)
+
+	-- Round 36 (Item 2): hover border + centered element-name label -
+	-- exactly mirrors Bar.lua's own EnsureBarOverlay treatment (see its
+	-- comment for the full reasoning), just against a chain-anchored
+	-- container/single native frame instead of a bar-pool frame.
+	-- displayName is passed explicitly per call site below rather than
+	-- derived from settingsKey, since settingsKey doesn't uniquely identify
+	-- an element here (Key Ring's settingsKey is "bagbar" - it shares Bag
+	-- Bar's settings page - and Page Indicator's is the numeric Main Bar id
+	-- 1, since it has no page of its own).
+	overlay:SetBackdrop({
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 8,
+	})
+	overlay:SetBackdropBorderColor(0, 0, 0, 0)
+
+	overlay:SetScript("OnEnter", function()
+		this:SetBackdropBorderColor(0, 0, 0, 1)
+	end)
+	overlay:SetScript("OnLeave", function()
+		this:SetBackdropBorderColor(0, 0, 0, 0)
+	end)
+
+	if displayName then
+		local nameText = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		nameText:SetPoint("CENTER", overlay, "CENTER", 0, 0)
+		nameText:SetText(displayName)
+	end
 
 	overlay:RegisterForDrag("LeftButton")
 	overlay:SetScript("OnDragStart", function()
@@ -1820,6 +1997,11 @@ local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 
 	if interactive then
 		overlay:Show()
+
+		-- Round 36 (Item 2): same stale-hover-border reset as Bar.lua's own
+		-- ApplyEditModeVisual - see its comment for why this is needed every
+		-- time an overlay is (re-)shown, not just once at creation.
+		overlay:SetBackdropBorderColor(0, 0, 0, 0)
 	else
 		overlay:Hide()
 	end
@@ -1853,7 +2035,7 @@ function BTV:ApplyBagBarPosition()
 		pos.y or 0
 	)
 
-	EnsureContainerOverlay(container, self.StartBagBarDrag, self.StopBagBarDrag, "bagbar", self.SetBagBarScale)
+	EnsureContainerOverlay(container, self.StartBagBarDrag, self.StopBagBarDrag, "bagbar", self.SetBagBarScale, nil, "Bag Bar")
 end
 
 -- Settings.lua's Bag Bar page X/Y sliders write through this.
@@ -2071,7 +2253,7 @@ function BTV:ApplyMicroMenuPosition()
 		pos.y or 0
 	)
 
-	EnsureContainerOverlay(container, self.StartMicroMenuDrag, self.StopMicroMenuDrag, "micromenu", self.SetMicroMenuScale)
+	EnsureContainerOverlay(container, self.StartMicroMenuDrag, self.StopMicroMenuDrag, "micromenu", self.SetMicroMenuScale, nil, "Micro Menu")
 end
 
 function BTV:SetMicroMenuPosition(x, y)
@@ -2727,7 +2909,7 @@ function BTV:ApplyStanceBarPosition()
 		pos.y or 0
 	)
 
-	EnsureContainerOverlay(container, self.StartStanceBarDrag, self.StopStanceBarDrag, "stance", self.SetStanceBarScale)
+	EnsureContainerOverlay(container, self.StartStanceBarDrag, self.StopStanceBarDrag, "stance", self.SetStanceBarScale, nil, "Stance Bar")
 end
 
 -- Settings.lua's Stance Bar page X/Y sliders write through this.
@@ -3230,7 +3412,7 @@ function BTV:ApplyKeyRingPosition()
 	-- default position overlaps the Bag Bar container's own overlay, and
 	-- this guarantees Key Ring's drag/right-click/scroll surface always
 	-- wins that overlap regardless of creation order.
-	EnsureContainerOverlay(frame, self.StartKeyRingDrag, self.StopKeyRingDrag, "bagbar", self.SetKeyRingScale, 150)
+	EnsureContainerOverlay(frame, self.StartKeyRingDrag, self.StopKeyRingDrag, "bagbar", self.SetKeyRingScale, 150, "Key Ring")
 end
 
 -- Settings.lua's Bag Bar page "Show Key Ring" checkbox writes through
@@ -3451,7 +3633,7 @@ function BTV:ApplyLatencyBarPosition()
 		)
 	end
 
-	EnsureContainerOverlay(frame, self.StartLatencyBarDrag, self.StopLatencyBarDrag, "latencybar", self.SetLatencyBarScale)
+	EnsureContainerOverlay(frame, self.StartLatencyBarDrag, self.StopLatencyBarDrag, "latencybar", self.SetLatencyBarScale, nil, "Latency Bar")
 end
 
 function BTV:SetLatencyBarPosition(x, y)
@@ -3853,7 +4035,7 @@ function BTV:ApplyExpBarPosition()
 		)
 	end
 
-	EnsureContainerOverlay(frame, self.StartExpBarDrag, self.StopExpBarDrag, "expbar", self.SetExpBarScale)
+	EnsureContainerOverlay(frame, self.StartExpBarDrag, self.StopExpBarDrag, "expbar", self.SetExpBarScale, nil, "Experience Bar")
 	EnsureExpBarBottomBorderStrip(frame)
 end
 
@@ -5699,7 +5881,9 @@ function BTV:ApplyPageIndicatorPosition()
 		self.StartPageIndicatorDrag,
 		self.StopPageIndicatorDrag,
 		1,
-		self.SetPageIndicatorScale
+		self.SetPageIndicatorScale,
+		nil,
+		"Page Indicator"
 	)
 end
 

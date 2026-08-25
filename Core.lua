@@ -57,6 +57,14 @@ BTV.EQUIP_RING_RATIO = 62 / 36
 -- which replicates this for default bars 1-5).
 BTV.BORDER_RATIO = 66 / 36
 
+-- "Snap to Adjacent Elements" (round 35, BTV:ComputeSnapAdjustment below):
+-- how close (in real screen pixels, i.e. already GetEffectiveScale()-
+-- corrected - never raw local-frame units) a dragged edge must get to a
+-- screen edge/corner or another element's edge before it snaps. The user's
+-- own spec asked for a 5-10px range without requesting a further user-
+-- facing setting of its own - 8 is the chosen mid-point.
+BTV.SNAP_THRESHOLD = 8
+
 -- Schema version 2 introduces the fixed-id default-bar model (Main +
 -- Bottom Left/Bottom Right/Right/Right 2, ids 1-5) alongside the
 -- existing custom-bar array (BTVanillaDB.bars, ids starting at 6). This
@@ -502,6 +510,40 @@ BTV.DEFAULT_BAR_GRID = {
 	[4] = { cols = 1,  rows = 12, enabled = false },     -- Right.
 	[5] = { cols = 1,  rows = 12, enabled = false },     -- Right 2.
 }
+
+-- Friendly display names for the 5 fixed default bars (1-5) - round 36
+-- (Item 2) promotes this out of Settings.lua's own file-local copy into a
+-- single BTV-level source of truth, since Bar.lua's EnsureBarOverlay now
+-- needs the exact same names for its own edit-mode label and Bar.lua loads
+-- before Settings.lua (BTVanilla.toc order) - a file-local Lua table can't
+-- be shared across files regardless of load order anyway. Settings.lua's
+-- own GetBarDisplayName now delegates to BTV:GetBarDisplayName below
+-- instead of keeping a second, independently-maintained copy.
+BTV.DEFAULT_BAR_NAMES = {
+	[1] = "Main Bar",
+	[2] = "Action Bar 1",
+	[3] = "Action Bar 2",
+	[4] = "Right Action Bar 1",
+	[5] = "Right Action Bar 2",
+}
+
+-- Extra Bars (ids EXTRA_BAR_ID_START..+COUNT-1, i.e. 6-9) are numbered
+-- from 1 for the user rather than showing the internal id - mirrors
+-- Settings.lua's own pre-existing "Extra Bar " .. (barId - 5) numbering
+-- exactly (5 is the count of default bars 1-5 that precede them, not a
+-- magic number tied to EXTRA_BAR_ID_START). String-keyed chain-anchored
+-- elements (Bag Bar, Stance Bar, etc. - never numeric ids) are a separate
+-- naming domain entirely and are NOT handled here - see DefaultBars.lua's
+-- EnsureContainerOverlay, which takes an explicit displayName argument per
+-- call site instead, since those 7 elements have no single shared id
+-- scheme this function could key off.
+function BTV:GetBarDisplayName(barId)
+	if barId and barId >= 1 and barId <= 5 then
+		return self.DEFAULT_BAR_NAMES[barId] or ("Bar " .. tostring(barId))
+	end
+
+	return "Extra Bar " .. tostring((barId or 0) - 5)
+end
 
 -- Last-resort fallback ONLY for the case CaptureNativeAnchor can't read
 -- a real Blizzard frame at all (e.g. called too early, or one of the 5
@@ -949,6 +991,33 @@ function BTV:EnsureDB()
 		BTVanillaDB.disableBlizzardArt = false
 	end
 
+	-- "Snap to Adjacent Elements" (General tab, round 35/36) - default TRUE
+	-- as of round 36 (changed from round 35's original default false): the
+	-- user decided snapping should be the expected default experience now
+	-- that Shift-to-disable (Item 3, BTV:ComputeSnapAdjustment) gives an
+	-- easy escape hatch for anyone who wants unassisted free dragging for a
+	-- single drag.
+	if BTVanillaDB.snapToAdjacentElements == nil then
+		BTVanillaDB.snapToAdjacentElements = true
+	end
+
+	-- Round 36 one-time correction: this codebase's own EnsureDB pattern
+	-- above only ever seeds a field `if x == nil` - it will NOT retroactively
+	-- flip an existing tester's save that already has
+	-- snapToAdjacentElements = false explicitly written from round 35 (not
+	-- nil). A one-shot marker (rather than an unconditional self-heal, this
+	-- session's usual preference for anything position-corruption-related)
+	-- is judged appropriate here specifically because the stakes are low
+	-- and purely cosmetic - a marker that somehow doesn't fire (e.g. an
+	-- account-wide SavedVariables race, per this file's own extensive
+	-- anchorRecaptureDone/etc. history above) just means the user keeps
+	-- their current explicit choice one login longer, never a broken
+	-- feature or a corrupted position.
+	if not BTVanillaDB.snapDefaultCorrectedOnce then
+		BTVanillaDB.snapDefaultCorrectedOnce = true
+		BTVanillaDB.snapToAdjacentElements = true
+	end
+
 	-- Bag Bar / Micro Menu (feature 3, DefaultBars.lua's
 	-- CreateBagBarAndMicroMenu) enable flags. Default true: both stay
 	-- visible exactly as native FrameXML already shows them unless the
@@ -1388,6 +1457,226 @@ function BTV:Print(msg)
 end
 
 -------------------------------------------------------------------------
+-- Snap to Adjacent Elements (round 35)
+--
+-- One shared, mechanism-agnostic utility used by BOTH of this addon's two
+-- structurally different drag mechanisms:
+--
+--   1. Bar.lua's StartBarDrag/StopBarDrag (bars 1-5 and every custom/Extra
+--      Bar 6-9) - native bar:StartMoving()/StopMovingOrSizing(). There is
+--      no per-frame hook during a native drag, so this is only ever called
+--      once, at drop time, in StopBarDrag, right after bar:GetPoint() is
+--      read and before it's written into bar.config.
+--   2. DefaultBars.lua's shared DefaultBarDrag_OnUpdate (Stance Bar, Bag
+--      Bar, Micro Menu, Key Ring, Latency Bar, Experience Bar, Page
+--      Indicator - every element wrapping a real/synthetic native frame
+--      instead of a bar-pool frame). This DOES give a live per-frame hook,
+--      so it's called every tick, right after that function computes the
+--      proposed pos.x/pos.y and before calling the Apply*Position function
+--      that actually moves the real frame - giving live, real-time
+--      snapping while dragging, unlike mechanism 1's drop-time-only limit
+--      (an unavoidable consequence of StartMoving() having no per-frame
+--      hook, not a compromise - the same limitation any other vanilla-era
+--      grid/snap addon has to live with).
+--
+-- Both call sites are responsible for converting their own proposed
+-- position into real screen pixels before calling this, and converting the
+-- (possibly adjusted) result back into whatever units their own mechanism
+-- stores - this function only ever works in real screen pixels itself, so
+-- it never needs to know which mechanism/element kind is calling it.
+-------------------------------------------------------------------------
+
+-- Real screen pixels = region:GetLeft() * region:GetEffectiveScale() (also
+-- true of GetRight()/GetTop()/GetBottom()) - the same conversion this
+-- addon already relies on throughout (CaptureNativeAnchor/
+-- CaptureNativeSpacing above, DefaultBars.lua's BuildChainAnchoredContainer)
+-- - it's scale-agnostic and lets two elements with different effective
+-- scales (e.g. a plain bar frame vs. a Bag Bar container the user scaled
+-- to 1.5x) be compared directly in one common coordinate space, with no
+-- per-pair special-casing needed. Returns nil if the region can't report a
+-- position yet (e.g. hidden/never laid out).
+local function GetRealScreenBounds(region)
+	if not region or not region.GetLeft then
+		return nil
+	end
+
+	local left, right, top, bottom = region:GetLeft(), region:GetRight(), region:GetTop(), region:GetBottom()
+	local scale = region:GetEffectiveScale()
+
+	if not left or not right or not top or not bottom or not scale then
+		return nil
+	end
+
+	return left * scale, right * scale, top * scale, bottom * scale
+end
+
+-- Every currently visible/enabled draggable element EXCEPT `excludeElement`
+-- (the one actually being dragged), as real-screen-pixel bounding boxes -
+-- shared by both drag mechanisms via BTV:ComputeSnapAdjustment below.
+-- IsShown() is the sole visibility gate (matching how every one of these
+-- elements is actually hidden - a plain :Hide() call, per Bar.lua's
+-- SetExtraBarEnabled/DefaultBars.lua's SetBagBarEnabled and friends) so a
+-- disabled element is naturally excluded with no separate enabled-flag
+-- bookkeeping needed here.
+function BTV:GetAllSnapTargetBoxes(excludeElement)
+	local boxes = {}
+
+	local function AddBox(frame)
+		if not frame or frame == excludeElement then
+			return
+		end
+
+		if not frame.IsShown or not frame:IsShown() then
+			return
+		end
+
+		local left, right, top, bottom = GetRealScreenBounds(frame)
+
+		if left then
+			table.insert(boxes, { left = left, right = right, top = top, bottom = bottom })
+		end
+	end
+
+	-- Bars 1-5 (default bars) and Extra Bars 6-9 (custom bars) - both kinds
+	-- live in this one table, keyed by id (Bar.lua's CreateAllBars/
+	-- DefaultBars.lua's CreateFixedSlotDefaultBars).
+	if self.bars then
+		local barId
+
+		for barId, bar in pairs(self.bars) do
+			AddBox(bar)
+		end
+	end
+
+	-- Chain-anchored containers (DefaultBars.lua's BuildChainAnchoredContainer).
+	AddBox(self.bagBarContainer)
+	AddBox(self.microMenuContainer)
+	AddBox(self.stanceBarContainer)
+	AddBox(self.pageIndicatorContainer)
+
+	-- Single real native frames DefaultBars.lua wraps in place (never
+	-- reparented into a synthetic container of our own).
+	AddBox(getglobal(self.KEYRING_BUTTON_NAME))
+	AddBox(getglobal(self.LATENCY_BAR_FRAME_NAME))
+	AddBox(getglobal(self.EXP_BAR_FRAME_NAME))
+
+	return boxes
+end
+
+-- Computes a snap-adjusted (proposedLeft, proposedTop), independently per
+-- axis, given the dragged element's proposed real-screen-pixel top-left
+-- corner and size. Returns adjustedLeft, adjustedTop - each nil if that
+-- axis shouldn't snap (the caller should leave its own proposed value on
+-- that axis untouched in that case).
+--
+-- Screen-edge/corner snapping only ever matches a dragged edge against the
+-- SAME-side screen edge (dragged LEFT vs. screen LEFT, never screen RIGHT)
+-- - per the feature's own spec, no crossed/opposite-side snapping. Corner
+-- snapping falls out of this for free: a dragged element's bottom-right
+-- corner "snaps to the screen's bottom-right corner" simply because its
+-- RIGHT edge snaps to screenRight and its BOTTOM edge independently snaps
+-- to screenBottom in the same call - no separate corner-case code needed.
+--
+-- Element-to-element snapping deliberately DOES allow crossed matching
+-- (dragged LEFT vs. another element's LEFT *or* RIGHT) so pixel-perfect
+-- edge-to-edge stacking (one bar's bottom touching another's top) is
+-- possible, matching the feature's explicit stacking use case - screen
+-- edges and other-element edges intentionally use different matching
+-- rules for this reason.
+function BTV:ComputeSnapAdjustment(proposedLeft, proposedTop, width, height, excludeElement)
+	-- Item 3 (round 36): holding Shift temporarily disables snapping,
+	-- exactly as if no target was within threshold on either axis. A
+	-- single choke point here covers every caller uniformly (bars 1-9 via
+	-- Bar.lua's StartBarDrag/StopBarDrag, all 7 chain-anchored elements via
+	-- DefaultBars.lua's DefaultBarDrag_OnUpdate, and any future caller) with
+	-- no need to duplicate this check at each drag call site.
+	-- IsShiftKeyDown is a native, always-available WoW API on this client.
+	if IsShiftKeyDown and IsShiftKeyDown() then
+		return nil, nil
+	end
+
+	if not BTVanillaDB or not BTVanillaDB.snapToAdjacentElements then
+		return nil, nil
+	end
+
+	if not proposedLeft or not proposedTop or not width or not height then
+		return nil, nil
+	end
+
+	local threshold = self.SNAP_THRESHOLD or 8
+
+	local proposedRight = proposedLeft + width
+	local proposedBottom = proposedTop - height
+
+	local adjustedLeft, bestLeftDist
+	local adjustedTop, bestTopDist
+
+	-- `edge` is the dragged element's own real-screen-pixel edge value on
+	-- this axis right now (proposedLeft/proposedRight for X, proposedTop/
+	-- proposedBottom for Y) - kept separate from proposedLeft/proposedTop
+	-- themselves (the corner actually being solved for) since the RIGHT/
+	-- BOTTOM edges need to snap too, but always resolve back to an
+	-- adjustment of the TOPLEFT corner the caller actually stores.
+	local function ConsiderX(candidate, edge)
+		local dist = candidate - edge
+
+		if dist < 0 then
+			dist = -dist
+		end
+
+		if dist <= threshold and (not bestLeftDist or dist < bestLeftDist) then
+			adjustedLeft = proposedLeft + (candidate - edge)
+			bestLeftDist = dist
+		end
+	end
+
+	local function ConsiderY(candidate, edge)
+		local dist = candidate - edge
+
+		if dist < 0 then
+			dist = -dist
+		end
+
+		if dist <= threshold and (not bestTopDist or dist < bestTopDist) then
+			adjustedTop = proposedTop + (candidate - edge)
+			bestTopDist = dist
+		end
+	end
+
+	-- Screen bounds, in the same real-screen-pixel space as everything
+	-- else here - UIParent spans the whole screen, so its own edges ARE
+	-- the screen's edges (same "GetLeft() * GetEffectiveScale()" technique
+	-- as GetRealScreenBounds above, applied to UIParent specifically).
+	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
+
+	if screenLeft then
+		ConsiderX(screenLeft, proposedLeft)
+		ConsiderX(screenRight, proposedRight)
+		ConsiderY(screenTop, proposedTop)
+		ConsiderY(screenBottom, proposedBottom)
+	end
+
+	local boxes = self:GetAllSnapTargetBoxes(excludeElement)
+	local i
+
+	for i = 1, table.getn(boxes) do
+		local box = boxes[i]
+
+		ConsiderX(box.left, proposedLeft)
+		ConsiderX(box.right, proposedLeft)
+		ConsiderX(box.left, proposedRight)
+		ConsiderX(box.right, proposedRight)
+
+		ConsiderY(box.top, proposedTop)
+		ConsiderY(box.bottom, proposedTop)
+		ConsiderY(box.top, proposedBottom)
+		ConsiderY(box.bottom, proposedBottom)
+	end
+
+	return adjustedLeft, adjustedTop
+end
+
+-------------------------------------------------------------------------
 -- Edit mode ("Configure Layout")
 -------------------------------------------------------------------------
 
@@ -1423,7 +1712,7 @@ end
 function BTV:ToggleEditMode()
 	self:SetEditMode(not self:IsEditMode())
 	self:Print(self:IsEditMode()
-		and "Configure Layout ON - drag buttons to move bars, scroll to scale, right-click for bar settings."
+		and "Configure Layout ON - drag buttons to move bars, scroll to scale, right-click for bar settings. Hold Shift while dragging to temporarily disable snapping."
 		or "Configure Layout OFF.")
 end
 

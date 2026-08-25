@@ -227,6 +227,38 @@ local function EnsureBarOverlay(bar)
 	tex:SetVertexColor(0.35, 0.65, 1.0, 0.45)
 	tex:SetAllPoints(overlay)
 
+	-- Round 36 (Item 2): hover border - a plain SetBackdrop edge (no
+	-- bgFile, the blue tint texture above already fills that role), kept
+	-- fully transparent until OnEnter/OnLeave below toggle it. Mirrors
+	-- Button.lua's own SetBackdropBorderColor-toggle technique for its
+	-- native-border buttons (Init/UpdateBackdropVisibility) rather than a
+	-- separate texture, since a backdrop edge already gives a clean solid
+	-- outline with no extra region to keep positioned/sized in sync.
+	overlay:SetBackdrop({
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		edgeSize = 8,
+	})
+	overlay:SetBackdropBorderColor(0, 0, 0, 0)
+
+	overlay:SetScript("OnEnter", function()
+		this:SetBackdropBorderColor(0, 0, 0, 1)
+	end)
+	overlay:SetScript("OnLeave", function()
+		this:SetBackdropBorderColor(0, 0, 0, 0)
+	end)
+
+	-- Round 36 (Item 2): centered element-name label, always visible while
+	-- in edit mode (not just on hover) - reuses BTV:GetBarDisplayName
+	-- (Core.lua), the exact same friendly name Settings.lua's bar list/page
+	-- title already shows, so there's no separate/divergent name invented
+	-- here. A plain child FontString has no Show/Hide of its own called
+	-- anywhere - it simply inherits overlay's own Show()/Hide() state
+	-- (ApplyEditModeVisual below), the same "shown exactly whenever the
+	-- blue tint is" gate the task calls for, with no separate bookkeeping.
+	local nameText = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	nameText:SetPoint("CENTER", overlay, "CENTER", 0, 0)
+	nameText:SetText(BTV:GetBarDisplayName(bar.config.id))
+
 	-- Owns dragging directly (SetScript, not HookScript - this is
 	-- entirely our own frame with no native behavior to preserve),
 	-- exactly mirroring DefaultBars.lua's EnsureDefaultBarOverlay.
@@ -352,6 +384,16 @@ function BTV:ApplyEditModeVisual()
 			if canEdit then
 				overlay:SetFrameStrata("TOOLTIP")
 				overlay:Show()
+
+				-- Round 36 (Item 2): reset the hover border to invisible every
+				-- time edit mode is (re-)entered, rather than leaving whatever
+				-- state a stale OnEnter left it in from a previous edit-mode
+				-- session (mouse was left sitting over the overlay the instant
+				-- edit mode turned off, so OnLeave never fired) - without this
+				-- the border could appear "stuck" on at the very start of a
+				-- new edit-mode session, before the mouse next actually
+				-- leaves/re-enters this overlay.
+				overlay:SetBackdropBorderColor(0, 0, 0, 0)
 			else
 				overlay:SetFrameStrata("HIGH")
 				overlay:Hide()
@@ -1237,14 +1279,63 @@ end
 
 -------------------------------------------------------------------------
 -- Bar drag
+--
+-- Round 36 (unify bar dragging with the chain-anchored live-drag system):
+-- bars 1-9 used to drag via native bar:StartMoving()/StopMovingOrSizing(),
+-- which gives NO per-frame hook during the drag itself - snap could only
+-- ever be applied once, at drop time (the old ApplyBarDropSnap, removed).
+-- Bars now start/stop the exact same shared cursor-tracking OnUpdate loop
+-- DefaultBars.lua's 7 chain-anchored elements (Bag Bar, Micro Menu, Stance
+-- Bar, Key Ring, Latency Bar, Experience Bar, Page Indicator) already use
+-- for live, real-time snap-while-dragging - see DefaultBars.lua's
+-- BTV:StartSharedDrag/StopSharedDrag (the exposed seam onto that file's
+-- own file-local dragFrame/DefaultBarDrag_OnUpdate machinery) and its
+-- dragKind == "bar" branch, which reads/writes bar.config.x/y directly
+-- and calls BTV:ApplyBarPosition(bar) every tick - the cheapest correct
+-- reposition-only call (ApplyBarShape would also redundantly re-bind
+-- every button's action slot, resize the bar frame, and re-run
+-- LayoutButtons on every single tick, none of which changes during a pure
+-- position drag). No bar frame calls StartMoving()/StopMovingOrSizing()
+-- anywhere in this addon anymore.
 -------------------------------------------------------------------------
 
 function BTV:StartBarDrag(bar)
-	if not bar then
+	if not bar or not bar.config then
 		return
 	end
 
-	bar:StartMoving()
+	local cfg = bar.config
+
+	-- Normalize to the exact TOPLEFT-of-bar/BOTTOMLEFT-of-UIParent anchor
+	-- convention Core.lua's CaptureNativeAnchor and every one of
+	-- DefaultBars.lua's 7 chain-anchored elements already use (see
+	-- DefaultBars.lua's ApplyDragSnap comment on why this pairing is
+	-- required) - necessary because a real custom/Extra Bar (id 6+) is
+	-- originally seeded CENTER/CENTER (Core.lua's seedExtraBarConfig),
+	-- under which the same cfg.x/cfg.y numbers would mean an offset from
+	-- screen CENTER, not from UIParent's BOTTOMLEFT corner, and the shared
+	-- drag mechanism's per-tick math only ever works in that one
+	-- convention. Reading the bar's own real GetLeft()/GetTop() sidesteps
+	-- having to convert between anchor conventions by hand, exactly like
+	-- CaptureNativeAnchor already does for default bars 1-5 (this is a
+	-- one-time, permanent normalization - once a bar has been dragged
+	-- through this addon once, it stays TOPLEFT/BOTTOMLEFT from then on).
+	local scale = bar:GetEffectiveScale()
+	local uiParentScale = UIParent:GetEffectiveScale()
+	local left, top = bar:GetLeft(), bar:GetTop()
+
+	if not scale or not uiParentScale or uiParentScale == 0 or not left or not top then
+		return
+	end
+
+	cfg.point = "TOPLEFT"
+	cfg.relativePoint = "BOTTOMLEFT"
+	cfg.x = (left * scale) / uiParentScale
+	cfg.y = (top * scale) / uiParentScale
+
+	self:ApplyBarPosition(bar)
+
+	self:StartSharedDrag("bar", cfg.id, cfg.x, cfg.y)
 end
 
 function BTV:StopBarDrag(bar)
@@ -1252,27 +1343,13 @@ function BTV:StopBarDrag(bar)
 		return
 	end
 
-	bar:StopMovingOrSizing()
+	self:StopSharedDrag()
 
-	local point,
-		_,
-		relativePoint,
-		x,
-		y = bar:GetPoint()
-
-	if point then
-		bar.config.point = point
-	end
-
-	if relativePoint then
-		bar.config.relativePoint = relativePoint
-	end
-
-	if x then
-		bar.config.x = x
-	end
-
-	if y then
-		bar.config.y = y
+	-- Keeps the Settings X/Y sliders in sync if this bar's page happens to
+	-- already be built/cached - same pattern as every one of the 7 chain-
+	-- anchored elements' own Stop*Drag (e.g. StopBagBarDrag). A no-op if
+	-- the Settings window/this bar's page was never opened this session.
+	if bar.config and self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage(bar.config.id)
 	end
 end

@@ -118,15 +118,12 @@ local SPACING_MIN = 0
 local SPACING_MAX = 20
 local SPACING_STEP = 1
 
--- Friendly names for the 5 fixed default bars (1-5), used in place of
--- the raw internal barId wherever a default bar's name is shown.
-local DEFAULT_BAR_NAMES = {
-	[1] = "Main Bar",
-	[2] = "Action Bar 1",
-	[3] = "Action Bar 2",
-	[4] = "Right Action Bar 1",
-	[5] = "Right Action Bar 2",
-}
+-- Friendly names for the 5 fixed default bars (1-5) now live on
+-- BTV.DEFAULT_BAR_NAMES (Core.lua, round 36) - promoted out of this file
+-- so Bar.lua's EnsureBarOverlay edit-mode label (which loads before this
+-- file) can share the exact same table instead of a second, independently-
+-- maintained copy. GetBarDisplayName below delegates to BTV:GetBarDisplayName
+-- for the default-bar/Extra-Bar case.
 
 -- Friendly names for the Stance Bar / Bag Bar / Micro Menu (features 2/3)
 -- - these use distinct STRING keys ("stance"/"bagbar"/"micromenu"),
@@ -160,11 +157,11 @@ local function GetBarDisplayName(barId, isDefault)
 		return SIMPLE_BAR_NAMES[barId]
 	end
 
-	if isDefault then
-		return DEFAULT_BAR_NAMES[barId] or ("Bar " .. tostring(barId))
-	end
-
-	return "Extra Bar " .. tostring(barId - 5)
+	-- isDefault is unused here now (round 36) - every call site already
+	-- computes it as exactly `barId >= 1 and barId <= 5` (IsDefaultBarId),
+	-- the same numeric range BTV:GetBarDisplayName itself checks, so
+	-- delegating unconditionally produces an identical result.
+	return BTV:GetBarDisplayName(barId)
 end
 
 -- Layout indent constants, used instead of scattering magic numbers
@@ -3874,6 +3871,7 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.hotkeyResetButton)
 	n = AppendCandidate(candidates, n, panel.countValueText)
 	n = AppendCandidate(candidates, n, panel.countResetButton)
+	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
@@ -4949,6 +4947,89 @@ function BTV:GetOrCreateGeneralPanel()
 
 	panel.countResetButton = countResetButton
 
+	-------------------------------------------------------------------------
+	-- Snap to Adjacent Elements (round 35)
+	--
+	-- BTVanillaDB.snapToAdjacentElements (default false, Core.lua's
+	-- EnsureDB) - gates BOTH of this addon's snap injection points
+	-- (Bar.lua's StopBarDrag drop-time snap, DefaultBars.lua's live
+	-- OnUpdate-driven snap) via the single shared BTV:ComputeSnapAdjustment
+	-- utility, which reads this field directly - no separate Apply/refresh
+	-- call is needed here the way disableBlizzardArtCheckbox's OnClick
+	-- needs one, since this setting only ever affects the NEXT drag, never
+	-- anything already on screen.
+	--
+	-- Styled/positioned like the two font-size sections above, but
+	-- anchored via a real anchor chain off countTitle (a fixed-X FontString,
+	-- same Fix-1 reasoning as countTitle's own anchor off hotkeyTitle above)
+	-- rather than off countResetButton/countValueText directly - countValueText
+	-- uses a "TOP" anchor (centered under countSlider), so its LEFT edge
+	-- shifts with the displayed digit count/width exactly like
+	-- hotkeyValueText's did (see countTitle's own comment).
+	-------------------------------------------------------------------------
+
+	local snapToAdjacentCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralSnapToAdjacentCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	snapToAdjacentCheckbox:SetWidth(24)
+	snapToAdjacentCheckbox:SetHeight(24)
+
+	snapToAdjacentCheckbox:SetPoint(
+		"TOPLEFT",
+		countTitle,
+		"BOTTOMLEFT",
+		0,
+		-12 - countSlider:GetHeight() - 2 - countValueText:GetHeight() - 18
+	)
+
+	snapToAdjacentCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.snapToAdjacentElements = checked
+		end
+	)
+
+	local snapToAdjacentLabel = getglobal(
+		snapToAdjacentCheckbox:GetName() .. "Text"
+	)
+
+	if snapToAdjacentLabel then
+		snapToAdjacentLabel:SetText("Snap to Adjacent Elements")
+	end
+
+	panel.snapToAdjacentCheckbox = snapToAdjacentCheckbox
+
+	local snapToAdjacentDescription = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontHighlightSmall"
+	)
+
+	snapToAdjacentDescription:SetPoint(
+		"TOPLEFT",
+		snapToAdjacentCheckbox,
+		"BOTTOMLEFT",
+		4,
+		-10
+	)
+
+	snapToAdjacentDescription:SetWidth(520)
+	snapToAdjacentDescription:SetJustifyH("LEFT")
+
+	snapToAdjacentDescription:SetText(
+		"When enabled, elements moved in Edit Layout Mode snap to nearby " ..
+		"screen edges/corners and to adjacent elements' edges for pixel-" ..
+		"perfect alignment and stacking."
+	)
+
+	panel.snapToAdjacentDescription = snapToAdjacentDescription
+
 	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
 	-- to the Experience Bar's own settings page (round 17 item 5,
 	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
@@ -5018,6 +5099,12 @@ function BTV:RefreshGeneralPanel()
 	panel.countSlider:SetValue(countSize)
 	panel.countValueText:SetText(tostring(countSize))
 	panel.countSlider.suppressApply = nil
+
+	-- Default false (Core.lua's EnsureDB) - only an explicit true ever
+	-- checks this.
+	panel.snapToAdjacentCheckbox:SetChecked(
+		BTVanillaDB.snapToAdjacentElements == true
+	)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5); refreshed from
