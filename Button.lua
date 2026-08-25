@@ -211,6 +211,23 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self.parentBar = parent
 	self.slotIndex = slotIndex
 
+	-- Round 34 fix: explicit "HIGH" strata, matching the parent bar's own
+	-- round-34 strata (Bar.lua's CreateBarFromConfig - see its comment for
+	-- the full history of why a same-"MEDIUM"-tier level race against
+	-- MainMenuBarArtFrame was never fully robust). Set here explicitly
+	-- rather than assumed to inherit from `parent` - whether a plain
+	-- child FRAME's strata actually cascades from its parent's on this
+	-- client is still an open, not-live-confirmed question (see
+	-- docs/01-Environment-Capability-Analysis.md's round-34 entry and its
+	-- one-line `/run` verification script), so this follows the same
+	-- "set it explicitly, don't depend on inheritance" convention every
+	-- other frame in this codebase that needs a non-default strata
+	-- already uses. This button IS the actual visible content racing the
+	-- art frame (the bar frame itself has a fully transparent backdrop),
+	-- so this is the frame that actually needs to move, not just its
+	-- container, regardless of how inheritance turns out to work.
+	self:SetFrameStrata("HIGH")
+
 	-- Fixed-slot default bars (2-5, major architecture migration) and the
 	-- Main Bar (bar 1, dynamic slots - Main Bar migration): these buttons
 	-- are already dispatched by a real, native keybind action name -
@@ -391,6 +408,14 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self.cooldown:ClearAllPoints()
 	self.cooldown:SetPoint("TOPLEFT", self, "TOPLEFT", 2, -2)
 	self.cooldown:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -2, 2)
+
+	-- Round 34: explicit "HIGH", matching this button's own strata (set
+	-- above) for the same "child strata is independent of parent, set it
+	-- explicitly" reason - without this the cooldown swipe would default
+	-- back to "MEDIUM" and render BEHIND this now-"HIGH" button's own
+	-- icon/border instead of on top of it, regardless of its relative
+	-- frame level below.
+	self.cooldown:SetFrameStrata("HIGH")
 	self.cooldown:SetFrameLevel(self:GetFrameLevel() + 1)
 
 	-- Issue 1 (bug-fix batch v6): the backdrop TEMPLATE (texture/tile/edge
@@ -804,6 +829,28 @@ local HOTKEY_MODIFIER_ABBREVIATIONS = {
 	CTRL = "c",
 }
 
+-- Round 28 bug fix: the final (base key) token was left completely
+-- untouched above, which is fine for a real printable key ("F", "5", "^")
+-- but not for a mouse-button binding - vanilla's own binding-key naming
+-- for every mouse button (left/right/middle/side buttons alike) is the
+-- literal prefix "BUTTON" followed by digits (BUTTON1-BUTTON5+, confirmed
+-- vanilla convention, no other shape to handle), which is wide enough to
+-- overflow past the button's own border when shown verbatim (e.g.
+-- "BUTTON5"). Matched with string.find/its capture (Lua 5.0-safe, same
+-- pattern-matching library string.gfind above already relies on) rather
+-- than string.gsub's implicit-nil-on-no-match footgun, so a non-mouse
+-- final token (no match) falls straight through to the untouched
+-- tokens[n] it always used before this fix.
+local function CompactFinalKeyToken(finalToken)
+	local _, _, mouseButtonNumber = string.find(finalToken, "^BUTTON(%d+)$")
+
+	if mouseButtonNumber then
+		return "MB" .. mouseButtonNumber
+	end
+
+	return finalToken
+end
+
 local function CompactBindingKeyText(key)
 	if not key then
 		return ""
@@ -832,7 +879,7 @@ local function CompactBindingKeyText(key)
 		parts[i] = HOTKEY_MODIFIER_ABBREVIATIONS[tokens[i]] or tokens[i]
 	end
 
-	parts[n] = tokens[n]
+	parts[n] = CompactFinalKeyToken(tokens[n])
 
 	return table.concat(parts, "-")
 end
@@ -1020,7 +1067,8 @@ end
 function BTVButtonMixin.OnClick()
 	-- Edit-mode interaction (right-click-to-settings, bar drag) is now
 	-- fully owned by Bar.lua's per-bar overlay (EnsureBarOverlay), which
-	-- sits at HIGH strata - above this button's own MEDIUM strata - and is
+	-- sits at TOOLTIP strata - above this button's own round-34 HIGH
+	-- strata (see this function's own SetFrameStrata call above) - and is
 	-- mouse-enabled for the entire duration of edit mode. Since that
 	-- overlay spans the bar's whole cols x rows bounding box (which
 	-- necessarily contains every button), it wins every hit-test here
@@ -1044,13 +1092,14 @@ end
 
 -- Edit-mode guards that used to live in this file's OnReceiveDrag/
 -- OnDragStart/OnDragStop were removed in the overlay-consolidation pass:
--- Bar.lua's per-bar overlay (EnsureBarOverlay) now sits at HIGH strata -
--- above every button's own MEDIUM strata - and is mouse-enabled for the
--- entire BTV:IsEditMode() window, spanning the bar's whole cols x rows
--- bounding box (which necessarily contains every button). That overlay
--- therefore wins every hit-test at any position within the bar during
--- edit mode, so none of these handlers can fire at all while editing -
--- the drag-to-move-bar and right-click-to-settings behavior they used to
+-- Bar.lua's per-bar overlay (EnsureBarOverlay) now sits at TOOLTIP strata -
+-- above every button's own round-34 HIGH strata (see BTVButtonMixin:Init's
+-- own SetFrameStrata call) - and is mouse-enabled for the entire
+-- BTV:IsEditMode() window, spanning the bar's whole cols x rows bounding
+-- box (which necessarily contains every button). That overlay therefore
+-- wins every hit-test at any position within the bar during edit mode, so
+-- none of these handlers can fire at all while editing - the
+-- drag-to-move-bar and right-click-to-settings behavior they used to
 -- special-case here is now handled exclusively by the overlay's own
 -- OnDragStart/OnDragStop/OnMouseUp scripts.
 function BTVButtonMixin.OnReceiveDrag()

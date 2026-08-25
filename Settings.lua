@@ -70,6 +70,47 @@ local FONT_SIZE_MIN = 6
 local FONT_SIZE_MAX = 24
 local FONT_SIZE_STEP = 1
 
+-- Clamps a saved/native font size into the sliders' fixed [MIN, MAX]
+-- display range - a saved value from a build with a different range (or a
+-- captured native size that happens to sit outside 6-24 on some other
+-- client build) still needs a sane slider position rather than an error.
+--
+-- Fix 2 (bug-fix batch): also ROUNDS via math.floor(value + 0.5) - a
+-- captured native default (GetFont() off a real FontString/Font object,
+-- see Button.lua's hasCapturedFontDefaults block and DefaultBars.lua's
+-- BTV:CaptureNativeExpBarFontIfNeeded) can itself come back with float
+-- imprecision (e.g. 11.999999726451 instead of 12) on this client - this
+-- is the single place every display path (RefreshGeneralPanel, both
+-- General-tab Reset buttons, RefreshSimpleBarPage's Experience Bar Font
+-- Size slider - round 22 item 2) funnels a size through before it ever
+-- reaches a value-label FontString.
+--
+-- Declared here, immediately after FONT_SIZE_MIN/MAX/STEP (moved up from
+-- its original position further down the file, round 22): Lua 5.0
+-- resolves locals lexically at parse time, so a closure/function body can
+-- only capture a local already declared earlier in the file, never one
+-- declared later even if it runs afterward - and this now needs to be
+-- visible to BTV:RefreshSimpleBarPage (declared well before the General
+-- panel's own builder), not just GetOrCreateGeneralPanel's Reset button
+-- closures.
+local function ClampFontSize(size)
+	if not size then
+		return FONT_SIZE_MIN
+	end
+
+	size = math.floor(size + 0.5)
+
+	if size < FONT_SIZE_MIN then
+		return FONT_SIZE_MIN
+	end
+
+	if size > FONT_SIZE_MAX then
+		return FONT_SIZE_MAX
+	end
+
+	return size
+end
+
 -- Shared by both bar kinds' Spacing slider (bug-fix batch Fix 4 added it
 -- to true custom bars 6+ too, alongside default bars 1-5's existing one -
 -- see the spacing slider block below).
@@ -1990,12 +2031,19 @@ local function CreateExpBarTextToggleCheckbox(page, name, labelText, y, dbKey)
 	return checkbox
 end
 
--- Gates the 5 text-toggle checkboxes + 2 color swatches + Reset Colors
--- button on whether "Enable Better Experience Bar" is currently checked -
--- these 8 sub-controls are meaningless while that's off, same
--- EnableMouse(false)+SetAlpha(0.5) treatment ApplyDefaultLayoutGating uses
--- above (controls stay visible, showing their current value, just not
--- interactive) rather than hiding them outright.
+-- Gates the 5 text-toggle checkboxes + Font Size slider + 3 color
+-- swatches + Reset Colors button + Pulse Interval slider on whether
+-- "Enable Better Experience Bar" is currently checked - these sub-controls
+-- are meaningless while that's off, same EnableMouse(false)+SetAlpha(0.5)
+-- treatment ApplyDefaultLayoutGating uses above (controls stay visible,
+-- showing their current value, just not interactive) rather than hiding
+-- them outright. Round 22 items 2/3/4 added the Font Size slider and the
+-- Overlay Text Color swatch to this same list; round 31 item 2 added the
+-- Pulse Interval slider - genuinely meaningless while the feature is off,
+-- since the rested-glow pulse it controls only ever runs while the rested
+-- tick/glow itself is shown, which is itself gated on this same checkbox
+-- (BTV:ApplyExpBarRestedOverlay's own `not BTVanillaDB.betterExpBarEnabled`
+-- early-return, DefaultBars.lua).
 local function ApplyBetterExpBarGating(page)
 	if not page or not page.betterExpBarCheckbox then
 		return
@@ -2010,9 +2058,12 @@ local function ApplyBetterExpBarGating(page)
 		page.expBarShowPercentCheckbox,
 		page.expBarShowRestedPercentCheckbox,
 		page.expBarShowRestedTotalCheckbox,
+		page.expBarFontSizeSlider,
 		page.earnedColorSwatch,
 		page.restedColorSwatch,
+		page.expBarTextColorSwatch,
 		page.resetColorsButton,
+		page.expBarGlowPulseIntervalSlider,
 	}
 
 	local i
@@ -2499,6 +2550,87 @@ local function CreateSimpleBarPage(key)
 		cursorY = cursorY - 24 - 6 - 24 - 14
 
 		-------------------------------------------------------------------------
+		-- Overlay Text Size slider (round 22 item 2) - directly below the
+		-- "Enable Better Experience Bar" checkbox/description above. Range/
+		-- step (FONT_SIZE_MIN/MAX/STEP) and ClampFontSize match this file's
+		-- only other font-size controls, the General panel's Hotkey/Count
+		-- Text Size sliders - not a new convention. Layout (title/slider/
+		-- value-text via this page's own cursorY tracking, no separate
+		-- Reset button) mirrors the Key Ring Scale slider further below in
+		-- this same function instead, since that already lives in this
+		-- exact page-builder idiom rather than the General panel's
+		-- different chain-anchor one.
+		-------------------------------------------------------------------------
+
+		local fontSizeTitleY = cursorY
+		local fontSizeSliderY = fontSizeTitleY - 26
+
+		local fontSizeTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+
+		fontSizeTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, fontSizeTitleY)
+		fontSizeTitle:SetText(
+			"Overlay Text Size (" .. tostring(FONT_SIZE_MIN) ..
+			" to " .. tostring(FONT_SIZE_MAX) .. ")"
+		)
+
+		local fontSizeSlider = CreateSettingSlider(
+			page,
+			"BTVanillaSimplePageExpBarFontSizeSlider",
+			290
+		)
+
+		fontSizeSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, fontSizeSliderY)
+		fontSizeSlider:SetMinMaxValues(FONT_SIZE_MIN, FONT_SIZE_MAX)
+		fontSizeSlider:SetValueStep(FONT_SIZE_STEP)
+
+		SetSliderLabel(fontSizeSlider, "Overlay Text Size")
+
+		local fontSizeSliderLow = getglobal(fontSizeSlider:GetName() .. "Low")
+
+		if fontSizeSliderLow then
+			fontSizeSliderLow:SetText(tostring(FONT_SIZE_MIN))
+		end
+
+		local fontSizeSliderHigh = getglobal(fontSizeSlider:GetName() .. "High")
+
+		if fontSizeSliderHigh then
+			fontSizeSliderHigh:SetText(tostring(FONT_SIZE_MAX))
+		end
+
+		local fontSizeValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		fontSizeValueText:SetPoint("TOP", fontSizeSlider, "BOTTOM", 0, -2)
+
+		-- Placeholder only - RefreshSimpleBarPage overwrites this with the
+		-- real saved/native value before this page is ever visible.
+		fontSizeValueText:SetText(tostring(FONT_SIZE_MIN))
+
+		page.expBarFontSizeValueText = fontSizeValueText
+
+		fontSizeSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor(value + 0.5)
+
+				fontSizeValueText:SetText(tostring(value))
+
+				if not this.suppressApply then
+					BTV:SetExpBarFontSize(value)
+				end
+			end
+		)
+
+		page.expBarFontSizeSlider = fontSizeSlider
+
+		cursorY = fontSizeSliderY - 36
+
+		-------------------------------------------------------------------------
 		-- 5 text-segment toggles (item 4)
 		-------------------------------------------------------------------------
 
@@ -2588,6 +2720,43 @@ local function CreateSimpleBarPage(key)
 
 		cursorY = cursorY - 24 - 14
 
+		-------------------------------------------------------------------------
+		-- Overlay Text Color swatch (round 22 item 3) - directly below the
+		-- Rested XP Bar Color picker above. Reuses the EXACT SAME
+		-- CreateColorSwatchButton/OpenExpBarColorPicker mechanic as the two
+		-- bar-fill color pickers above, just wired to
+		-- BTVanillaDB.expBarTextColor/BTV:SetExpBarTextColor instead of a
+		-- bar-fill color - OpenExpBarColorPicker is already a generic
+		-- getter/setter-driven helper despite its name (see its own
+		-- comment), not something specific to the two bar-fill pickers.
+		-------------------------------------------------------------------------
+
+		local textColorLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		textColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
+		textColorLabel:SetText("Overlay Text Color")
+
+		local textColorSwatch = CreateColorSwatchButton(
+			page, "BTVanillaSimplePageExpBarTextColorSwatch"
+		)
+
+		textColorSwatch:SetPoint("LEFT", textColorLabel, "RIGHT", 12, 0)
+
+		textColorSwatch:SetScript(
+			"OnClick",
+			function()
+				OpenExpBarColorPicker(
+					textColorSwatch,
+					function() return BTVanillaDB.expBarTextColor end,
+					function(r, g, b) BTV:SetExpBarTextColor(r, g, b) end
+				)
+			end
+		)
+
+		page.expBarTextColorSwatch = textColorSwatch
+
+		cursorY = cursorY - 24 - 14
+
 		local resetColorsButton = CreateFrame(
 			"Button",
 			nil,
@@ -2613,6 +2782,85 @@ local function CreateSimpleBarPage(key)
 		page.resetColorsButton = resetColorsButton
 
 		cursorY = cursorY - 22 - 26
+
+		-------------------------------------------------------------------------
+		-- Rested Glow Pulse Interval slider (round 31 item 2) - directly below
+		-- the Reset Colors button above. Layout/step mirrors the Overlay Text
+		-- Size slider above (title/slider/value-text via this page's own
+		-- cursorY tracking) rather than the shared config.hasScale block
+		-- further up this function, since this is a Better-Experience-Bar-only
+		-- sub-control (gated by ApplyBetterExpBarGating below, not
+		-- config-driven). Range/step (0.5 to 5.0 seconds, step 0.1) matches
+		-- how granular the Key Ring Scale slider elsewhere on this page's
+		-- sibling pages already is - fine enough to dial in a "roughly
+		-- 1-2 second" pulse precisely without an impractically long slider
+		-- track.
+		-------------------------------------------------------------------------
+
+		local pulseIntervalTitleY = cursorY
+		local pulseIntervalSliderY = pulseIntervalTitleY - 26
+
+		local pulseIntervalTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+
+		pulseIntervalTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, pulseIntervalTitleY)
+		pulseIntervalTitle:SetText("Rested Glow Pulse Interval (0.5 to 5.0 sec)")
+
+		local pulseIntervalSlider = CreateSettingSlider(
+			page,
+			"BTVanillaSimplePageExpBarPulseIntervalSlider",
+			290
+		)
+
+		pulseIntervalSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, pulseIntervalSliderY)
+		pulseIntervalSlider:SetMinMaxValues(0.5, 5.0)
+		pulseIntervalSlider:SetValueStep(0.1)
+
+		SetSliderLabel(pulseIntervalSlider, "Pulse Interval")
+
+		local pulseIntervalSliderLow = getglobal(pulseIntervalSlider:GetName() .. "Low")
+
+		if pulseIntervalSliderLow then
+			pulseIntervalSliderLow:SetText("0.5")
+		end
+
+		local pulseIntervalSliderHigh = getglobal(pulseIntervalSlider:GetName() .. "High")
+
+		if pulseIntervalSliderHigh then
+			pulseIntervalSliderHigh:SetText("5.0")
+		end
+
+		local pulseIntervalValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		pulseIntervalValueText:SetPoint("TOP", pulseIntervalSlider, "BOTTOM", 0, -2)
+
+		-- Placeholder only - RefreshSimpleBarPage overwrites this with the
+		-- real saved value before this page is ever visible.
+		pulseIntervalValueText:SetText("1.5")
+
+		page.expBarGlowPulseIntervalValueText = pulseIntervalValueText
+
+		pulseIntervalSlider:SetScript(
+			"OnValueChanged",
+			function()
+				local value = this:GetValue()
+
+				if not value then
+					return
+				end
+
+				value = math.floor((value * 10) + 0.5) / 10
+
+				pulseIntervalValueText:SetText(string.format("%.1f", value))
+
+				if not this.suppressApply then
+					BTV:SetExpBarGlowPulseInterval(value)
+				end
+			end
+		)
+
+		page.expBarGlowPulseIntervalSlider = pulseIntervalSlider
+
+		cursorY = pulseIntervalSliderY - 36
 	end
 
 	-------------------------------------------------------------------------
@@ -2896,12 +3144,14 @@ function BTV:RefreshSimpleBarPage(key)
 	end
 
 	-------------------------------------------------------------------------
-	-- "Better Experience Bar" + its 5 text toggles + 2 color swatches
-	-- (round 17, items 3-5, Experience Bar page only) - independent of
-	-- config.getEnabled above (that's the container's OWN enable flag), so
-	-- these read BTVanillaDB.betterExpBarEnabled/expBarShow*/expBarColor*
-	-- directly, same non-config-driven treatment as Key Ring's own fields
-	-- above.
+	-- "Better Experience Bar" + its 5 text toggles + Font Size slider +
+	-- 3 color swatches (round 17 items 3-5; round 22 items 2-4 added the
+	-- Font Size slider and Overlay Text Color swatch, Experience Bar page
+	-- only) - independent of config.getEnabled above (that's the
+	-- container's OWN enable flag), so these read
+	-- BTVanillaDB.betterExpBarEnabled/expBarShow*/expBarFontSize/
+	-- expBarColor*/expBarTextColor directly, same non-config-driven
+	-- treatment as Key Ring's own fields above.
 	-------------------------------------------------------------------------
 
 	if page.betterExpBarCheckbox then
@@ -2927,6 +3177,31 @@ function BTV:RefreshSimpleBarPage(key)
 			page.expBarShowRestedTotalCheckbox:SetChecked(BTVanillaDB.expBarShowRestedTotal == true)
 		end
 
+		-- Round 22 item 2: BTVanillaDB.expBarFontSize stays nil until the
+		-- user actually moves this slider (same lazy-default idiom as
+		-- hotkeyFontSize/countFontSize) - BTV:CaptureNativeExpBarFontIfNeeded
+		-- guarantees BTV.NATIVE_EXPBAR_FONT is populated (it reads the real
+		-- vanilla GameFontNormalSmall Font object directly, not a live
+		-- FontString instance, so it's safe to call here even before this
+		-- overlay has ever been built - see its own comment,
+		-- DefaultBars.lua) so a real "native default minus one" placeholder
+		-- shows even before the feature has ever been turned on this
+		-- session.
+		if page.expBarFontSizeSlider then
+			BTV:CaptureNativeExpBarFontIfNeeded()
+
+			local nativeDefault = BTV.NATIVE_EXPBAR_FONT and (BTV.NATIVE_EXPBAR_FONT.size - 1)
+			local fontSize = ClampFontSize(BTVanillaDB.expBarFontSize or nativeDefault)
+
+			page.expBarFontSizeSlider.suppressApply = true
+			page.expBarFontSizeSlider:SetValue(fontSize)
+			page.expBarFontSizeSlider.suppressApply = nil
+
+			if page.expBarFontSizeValueText then
+				page.expBarFontSizeValueText:SetText(tostring(fontSize))
+			end
+		end
+
 		-- BTV:CaptureExpBarColorsIfNeeded (via BTV:ApplyExpBarColors,
 		-- called unconditionally from Core.lua's login sequence) has
 		-- already guaranteed both fields are non-nil by the time Settings
@@ -2939,6 +3214,29 @@ function BTV:RefreshSimpleBarPage(key)
 
 		if page.restedColorSwatch then
 			SetColorSwatchColor(page.restedColorSwatch, BTVanillaDB.expBarColorRested)
+		end
+
+		-- Round 22 item 3: BTVanillaDB.expBarTextColor is always seeded by
+		-- Core.lua's EnsureDB (a straight default, no live-frame capture
+		-- needed - see its own comment there), so it's never nil here.
+		if page.expBarTextColorSwatch then
+			SetColorSwatchColor(page.expBarTextColorSwatch, BTVanillaDB.expBarTextColor)
+		end
+
+		-- Round 31 item 2: BTVanillaDB.expBarGlowPulseInterval is always
+		-- seeded by Core.lua's EnsureDB (a straight default, no live-frame
+		-- capture needed - same as expBarTextColor above), so it's never nil
+		-- here.
+		if page.expBarGlowPulseIntervalSlider then
+			local interval = BTVanillaDB.expBarGlowPulseInterval or 1.5
+
+			page.expBarGlowPulseIntervalSlider.suppressApply = true
+			page.expBarGlowPulseIntervalSlider:SetValue(interval)
+			page.expBarGlowPulseIntervalSlider.suppressApply = nil
+
+			if page.expBarGlowPulseIntervalValueText then
+				page.expBarGlowPulseIntervalValueText:SetText(string.format("%.1f", interval))
+			end
 		end
 
 		ApplyBetterExpBarGating(page)
@@ -3488,13 +3786,20 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	n = AppendCandidate(candidates, n, page.keyRingCheckbox)
 	n = AppendCandidate(candidates, n, page.keyRingScaleValueText)
 
-	-- "Better Experience Bar" + its 5 text toggles + 2 color pickers +
-	-- Reset Colors button (round 17, items 3-5, Experience Bar page only) -
-	-- resetColorsButton is the effective lowest control on this page (below
-	-- even resetPositionButton above), so it's what actually drives this
-	-- page's real fitted height.
+	-- "Better Experience Bar" + its 5 text toggles + Font Size slider + 3
+	-- color pickers + Reset Colors button + Pulse Interval slider (round 17,
+	-- items 3-5; round 22 items 2-4; round 31 item 2, Experience Bar page
+	-- only) - expBarGlowPulseIntervalValueText is now the effective lowest
+	-- control on this page (below even resetPositionButton above, and below
+	-- resetColorsButton, which used to hold that title before round 31 item
+	-- 2 added a control beneath it), so it's what actually drives this
+	-- page's real fitted height; every other entry here is still listed for
+	-- the same "include every real candidate" thoroughness this list
+	-- already follows.
 	n = AppendCandidate(candidates, n, page.betterExpBarCheckbox)
 	n = AppendCandidate(candidates, n, page.betterExpBarDescription)
+	n = AppendCandidate(candidates, n, page.expBarFontSizeSlider)
+	n = AppendCandidate(candidates, n, page.expBarFontSizeValueText)
 	n = AppendCandidate(candidates, n, page.expBarShowLevelCheckbox)
 	n = AppendCandidate(candidates, n, page.expBarShowCurrentOverMaxCheckbox)
 	n = AppendCandidate(candidates, n, page.expBarShowPercentCheckbox)
@@ -3502,7 +3807,10 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	n = AppendCandidate(candidates, n, page.expBarShowRestedTotalCheckbox)
 	n = AppendCandidate(candidates, n, page.earnedColorSwatch)
 	n = AppendCandidate(candidates, n, page.restedColorSwatch)
+	n = AppendCandidate(candidates, n, page.expBarTextColorSwatch)
 	n = AppendCandidate(candidates, n, page.resetColorsButton)
+	n = AppendCandidate(candidates, n, page.expBarGlowPulseIntervalSlider)
+	n = AppendCandidate(candidates, n, page.expBarGlowPulseIntervalValueText)
 
 	-- Stance/Page Bar Assignment rows (relocated here from the General tab,
 	-- bug-fix batch round 4, Issue 5) - only ever present on bar 1's page.
@@ -3628,40 +3936,8 @@ end
 -- together, since the bar list has no meaning in this view.
 -------------------------------------------------------------------------
 
--- Clamps a saved/native font size into the slider's fixed [MIN, MAX]
--- display range - a saved value from a build with a different range (or a
--- captured native size that happens to sit outside 6-24 on some other
--- client build) still needs a sane slider position rather than an error.
---
--- Fix 2 (bug-fix batch): also ROUNDS via math.floor(value + 0.5) - the
--- captured native default (GetFont() off a real FontString, see Button.lua's
--- hasCapturedFontDefaults block) can itself come back with float
--- imprecision (e.g. 11.999999726451 instead of 12) on this client - this is
--- the single place every display path (RefreshGeneralPanel, both Reset
--- buttons) funnels a size through before it ever reaches a value-label
--- FontString. Declared above GetOrCreateGeneralPanel (moved from its
--- original position further down the file) so its own Reset button
--- closures - defined inside that function, below - can see this local as a
--- real upvalue: Lua 5.0 resolves locals lexically at parse time, so a
--- closure can only capture a local already declared earlier in the file,
--- never one declared later even if it runs afterward.
-local function ClampFontSize(size)
-	if not size then
-		return FONT_SIZE_MIN
-	end
-
-	size = math.floor(size + 0.5)
-
-	if size < FONT_SIZE_MIN then
-		return FONT_SIZE_MIN
-	end
-
-	if size > FONT_SIZE_MAX then
-		return FONT_SIZE_MAX
-	end
-
-	return size
-end
+-- ClampFontSize now lives near FONT_SIZE_MIN/MAX/STEP's own declaration,
+-- at the top of this file (round 22) - see that copy's comment for why.
 
 -------------------------------------------------------------------------
 -- Stance / Page Bar Assignment cyclic value (Part 2)

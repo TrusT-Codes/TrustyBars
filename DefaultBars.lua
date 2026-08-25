@@ -379,18 +379,35 @@ end)
 -- "MEDIUM" live, meaning BACKGROUND was low enough to expose some other
 -- native texture/frame that normally sits hidden behind the art at its
 -- true native strata (also live-confirmed as "MEDIUM", via a fresh reload
--- with TrustyBars fully disabled). Reverting all the way back to "MEDIUM"
--- isn't safe either - our own bars also sit at "MEDIUM" (Bar.lua's
--- CreateBarFromConfig/ApplyBarShape) with only an explicit FrameLevel to
--- break the tie, which is exactly the less-reliable same-tier ordering
--- this BACKGROUND pin was introduced to replace. "LOW" is the corrected
--- middle ground: a real, distinct frame-strata tier that sits below
--- "MEDIUM" (still guaranteeing every TrustyBars bar renders above it,
--- strata alone deciding the tie, no level race) but above "BACKGROUND"
--- (no longer pushed all the way down to whatever tier was hiding that
--- native artifact). Applied once here (this function itself is only ever
--- called once, at PLAYER_LOGIN, per Core.lua) rather than needing its own
--- separate call site.
+-- with TrustyBars fully disabled). Round 15 then moved this to "LOW" - a
+-- middle ground below "MEDIUM" (so TrustyBars bars would still win the
+-- strata tier alone) but above "BACKGROUND" (so the blue-bar artifact
+-- would stay hidden).
+--
+-- Round 24: "LOW" turned out to break a second, previously-unrelated
+-- relationship. Real vanilla FrameXML relies on MainMenuBarArtFrame
+-- sitting ABOVE MainMenuExpBar (the XP bar) to mask/cap that bar's own
+-- colored StatusBar fill from visually overflowing past its intended
+-- edges - live-confirmed via screenshot: with the art frame pinned to
+-- "LOW", the XP bar's colored fill bled past the art even at the bar's
+-- default native position. MainMenuExpBar itself is live-confirmed to sit
+-- at strata "MEDIUM", level 2 - a strictly lower tier than "LOW" can never
+-- mask, since "LOW" always renders below every "MEDIUM" frame regardless
+-- of level. Since "MEDIUM" was already separately live-confirmed correct
+-- for the blue-bar artifact (above), and TrustyBars bars are confirmed to
+-- sit at "MEDIUM" level 10 (Bar.lua's CreateBarFromConfig/ApplyBarShape),
+-- the actual fix is to keep the art frame at "MEDIUM" - the same tier as
+-- both bars and the XP bar - and use an explicit frame LEVEL between the
+-- two to control ordering instead of trying to separate them by strata
+-- tier: level 5 sits strictly above MainMenuExpBar's confirmed level 2
+-- (restoring the XP-fill masking) and strictly below TrustyBars bars'
+-- confirmed level 10 (preserving the original bars-render-above-art fix
+-- this whole saga started from). This resolves both relationships at once
+-- within the one confirmed-correct "MEDIUM" strata tier, rather than
+-- chasing a third strata tier that can't simultaneously sit above one
+-- "MEDIUM" frame and below another. Applied once here (this function
+-- itself is only ever called once, at PLAYER_LOGIN, per Core.lua) rather
+-- than needing its own separate call site.
 --
 -- MultiBarBottomLeft/MultiBarBottomRight/MultiBarRight/MultiBarLeft (bars
 -- 2-5) have no equivalent decorative art frame of their own in real
@@ -408,7 +425,13 @@ function BTV:ApplyBlizzardArtVisibility()
 
 	self:EnsureDB()
 
-	artFrame:SetFrameStrata("LOW")
+	artFrame:SetFrameStrata("MEDIUM")
+
+	-- Explicit level, not left to whatever Blizzard's own FrameXML
+	-- happens to assign - see this function's round-24 comment above for
+	-- why 5 is chosen (strictly between MainMenuExpBar's confirmed level 2
+	-- and TrustyBars bars' confirmed level 10).
+	artFrame:SetFrameLevel(5)
 
 	local hide = BTVanillaDB.disableBlizzardArt
 
@@ -2404,6 +2427,146 @@ end
 -- that count can have changed, instead of only ever building once.
 -------------------------------------------------------------------------
 
+-- Round 32 fix: the real, permanent vertical clearance real vanilla leaves
+-- between whichever default bar (1 or 2) is topmost and the Stance Bar's
+-- own real native ShapeshiftBarFrame - captured ONCE, here, while
+-- ShapeshiftBarFrame is still queryable at its true native position. This
+-- addon only ever reparents its BUTTONS (ShapeshiftButton1-N, into our own
+-- container, below) - the ShapeshiftBarFrame frame itself is never touched/
+-- moved, so it keeps reporting its real native GetBottom() for as long as
+-- we read it here, at container-build time.
+--
+-- Live-confirmed (round 32 diagnostic session, real numbers): with bar 2
+-- (Action Bar 1) enabled, ShapeshiftBarFrame:GetBottom() = 98.0000040,
+-- bar 2's own nativeAnchor.y = 93.0000017 - a fixed ~5-unit gap, NOT
+-- GetDefaultBarRowHeight() (that measures the spacing between two
+-- IDENTICALLY-SIZED standard bars; the Stance Bar's own footprint is a
+-- different size, so it needs its own gap constant - see
+-- GetStanceBarBaselineY's own comment below for the full derivation and
+-- verification). Same real-screen-pixel GetEffectiveScale() round-trip
+-- conversion Core.lua's CaptureNativeAnchor uses for any cross-frame native
+-- position read - applied here defensively even though this round's
+-- diagnostic happened to show both frames at the same 0.9 effective scale,
+-- since this addon's established convention is to never skip that
+-- conversion for a cross-frame measurement just because two samples agreed.
+--
+-- referenceY is whichever of bar 1/bar 2's own nativeAnchor.y
+-- ShapeshiftBarFrame is CURRENTLY sitting above - bar 2 if TrustyBars' own
+-- cfg2.enabled is true at this exact moment, else bar 1 (same selection
+-- rule GetStanceBarBaselineY itself uses below). The resulting gap is
+-- stored as a single state-independent constant either way - real vanilla
+-- leaves the same fixed clearance above whichever bar is topmost, it isn't
+-- a different constant per state.
+--
+-- Lazy-capture-once, guarded on BTVanillaDB.stanceBarNativeGap already
+-- being present - same idiom as stanceBarNativeAnchor/stanceBarNativeSpacing
+-- just above/below this function. CreateStanceBarContainer's own
+-- `if self.stanceBarContainer then return end` guard only blocks
+-- re-running THIS SESSION (self.stanceBarContainer is a runtime field,
+-- always nil at a fresh login) - so an existing save with no
+-- stanceBarNativeGap field yet (every save that predates this fix) simply
+-- captures it fresh on its very next login, with no separate one-time
+-- marker/reseed needed.
+--
+-- Round 33 fix: this used to be a local function only ever invoked from
+-- inside CreateStanceBarContainer, itself only ever called (the first,
+-- and only-once-per-session, successful time) from RunLoginSequence
+-- AFTER BTV:CreateFixedSlotDefaultBars() had already run. That ordering
+-- was the actual corruption root cause: CreateFixedSlotDefaultBars
+-- permanently Hide()s bar 2's real MultiBarBottomLeftButton1-12 frames,
+-- and this file's own SetDefaultBarEnabled comment above (Issue 3, round
+-- 14) already documents, as an established vanilla 1.12.1 FrameXML fact,
+-- that MultiActionBarFrame.lua's ShapeshiftBar_UpdatePosition() runs as a
+-- side effect whenever MultiBarBottomLeft's buttons' shown state changes,
+-- reflowing ShapeshiftBarFrame's own real anchor. So by the time this
+-- capture ran, ShapeshiftBarFrame had ALREADY been reflowed by that native
+-- side effect into a collapsed/unanchored state (GetBottom() reading back
+-- exactly 0 - live-confirmed, see the corrupted stanceBarNativeGap report:
+-- -40.000000547098, exactly 0 minus bar 1's own nativeAnchor.y), not its
+-- true native "resting above MultiBarBottomLeft" position - and this
+-- happened on EVERY login, unconditionally, regardless of forms/timing,
+-- since CreateFixedSlotDefaultBars always precedes CreateStanceBarContainer
+-- in RunLoginSequence's fixed call order.
+--
+-- Fixed by promoting this to its own BTV method, callable directly, and
+-- having Core.lua's RunLoginSequence call it BEFORE
+-- BTV:CreateFixedSlotDefaultBars() runs - this measurement needs nothing
+-- from GetStanceBarButtons()/forms at all (it only reads
+-- ShapeshiftBarFrame itself plus BTVanillaDB.defaultBars' already-captured
+-- nativeAnchor.y), so there is no reason it should ever have depended on
+-- being called from inside the forms-gated CreateStanceBarContainer path.
+-- The call from CreateStanceBarContainer (below) is kept too, purely as a
+-- harmless no-op safety net for any future call path - the guard at the
+-- top of this function makes a second call from later in the same login
+-- always a no-op once the early call already succeeded.
+function BTV:CaptureStanceBarNativeGap()
+	if BTVanillaDB.stanceBarNativeGap then
+		return
+	end
+
+	local frame = ShapeshiftBarFrame
+
+	if not frame then
+		return
+	end
+
+	local bottom = frame:GetBottom()
+
+	if not bottom then
+		return
+	end
+
+	local frameScale = frame:GetEffectiveScale()
+	local targetScale = UIParent:GetEffectiveScale()
+
+	if not frameScale or not targetScale or targetScale == 0 then
+		return
+	end
+
+	local screenBottom = (bottom * frameScale) / targetScale
+
+	local defaults = BTVanillaDB.defaultBars
+	local cfg1 = defaults and defaults[1]
+	local cfg2 = defaults and defaults[2]
+
+	local referenceY = cfg1 and cfg1.nativeAnchor and cfg1.nativeAnchor.y
+
+	if cfg2 and cfg2.enabled and cfg2.nativeAnchor then
+		referenceY = cfg2.nativeAnchor.y
+	end
+
+	if not referenceY then
+		return
+	end
+
+	local gap = screenBottom - referenceY
+
+	-- Round 33 defensive sanity check: a real inter-row gap on this
+	-- addon's own default-bar cluster is never negative (that would mean
+	-- the Stance Bar sits BELOW its reference bar's top edge, i.e.
+	-- overlapping it) and never anywhere near a full button's size (the
+	-- live-confirmed real value is ~5 - see GetStanceBarBaselineY's own
+	-- round-32 comment below - so this addon's own BUTTON_SIZE constant
+	-- is a generous, structurally-justified upper bound rather than an
+	-- arbitrary guess). A value outside this range means the read above
+	-- hit exactly the ShapeshiftBarFrame-already-reflowed corruption this
+	-- round fixed (or some other future timing hazard) - never persist a
+	-- bad read, so a good EARLIER capture (or a good LATER one, since the
+	-- guard above only blocks once a value is actually stored) is never
+	-- overwritten, and GetStanceBarBaselineY's own `or 5` fallback covers
+	-- the gap (pun intended) until a good capture lands.
+	if gap <= 0 or gap >= self.BUTTON_SIZE then
+		self:Print(
+			"WARNING: Stance Bar native gap capture produced an implausible " ..
+			"value (" .. tostring(gap) .. ") and was discarded - falling back " ..
+			"to a default clearance until a later capture succeeds."
+		)
+		return
+	end
+
+	BTVanillaDB.stanceBarNativeGap = gap
+end
+
 -- Builds the Stance Bar's synthetic container the first time this session
 -- there are any active stance/form buttons to show - mirrors
 -- CreateBagBarAndMicroMenu's per-element structure exactly (native anchor/
@@ -2426,6 +2589,14 @@ function BTV:CreateStanceBarContainer()
 	if not buttons then
 		return
 	end
+
+	-- Round 33: the REAL capture now happens earlier, from Core.lua's
+	-- RunLoginSequence, before BTV:CreateFixedSlotDefaultBars() ever runs
+	-- (see BTV:CaptureStanceBarNativeGap's own comment above for why that
+	-- ordering matters) - this call is just a harmless no-op safety net
+	-- (guarded on BTVanillaDB.stanceBarNativeGap already being set) for
+	-- any path that could reach here without that early call having run.
+	self:CaptureStanceBarNativeGap()
 
 	SortButtonsByNativeLeft(buttons)
 
@@ -2625,11 +2796,17 @@ end
 -- from their real Blizzard frames at login (Core.lua's CaptureNativeAnchor/
 -- seedDefaultBars), regardless of either bar's enabled state, so this is
 -- always available. Real vanilla's default action-bar cluster stacks every
--- row (Main, Bottom Left, Bottom Right, and the Stance Bar when shown) at
--- this same uniform vertical spacing, so the gap between bar 1 and bar 2 is
--- the same amount of room the Stance Bar needs to open up above bar 2 when
--- it becomes visible - see ReflowStanceBarForBar2Toggle below, its only
--- caller.
+-- row of IDENTICALLY-SIZED standard bars (Main, Bottom Left, Bottom Right)
+-- at this same uniform vertical spacing.
+--
+-- Round 32: no longer used by GetStanceBarBaselineY - live-confirmed this
+-- constant is the wrong clearance unit for the Stance Bar specifically
+-- (its own footprint isn't the same size as a standard bar row - see
+-- GetStanceBarBaselineY's own round-32 comment for the real fix). Kept
+-- defined/unchanged since it remains correct for what it actually measures
+-- (standard-bar-row-to-row spacing) and costs nothing to leave available
+-- for any future standard-bar-stacking need - currently has no caller
+-- anywhere in this codebase.
 function BTV:GetDefaultBarRowHeight()
 	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
 	local cfg1 = defaults and defaults[1]
@@ -2642,20 +2819,94 @@ function BTV:GetDefaultBarRowHeight()
 	return cfg2.nativeAnchor.y - cfg1.nativeAnchor.y
 end
 
+-- Round 30 fix: the objectively-correct ABSOLUTE Stance Bar top-edge Y
+-- (UIParent-bottom-left-origin, y increases upward - see Core.lua's
+-- CaptureNativeAnchor comment) for a given bar-2 enabled state, computed
+-- fresh from live-captured native baselines every time - NEVER derived from
+-- whatever BTVanillaDB.stanceBarPosition.y currently holds.
+--
+-- Round 32 fix: round 30's formula (referenceBar.top + 1x/2x
+-- GetDefaultBarRowHeight()) turned out wrong - live-confirmed via a fresh
+-- diagnostic dump it overshot by a clean 16 units in the bar-2-enabled case
+-- (146.0 computed vs 130.0 actual, the real still-native ShapeshiftBarFrame's
+-- own GetTop()). Root cause: GetDefaultBarRowHeight() is the right constant
+-- for stacking two IDENTICALLY-SIZED standard bars, but the Stance Bar's own
+-- footprint isn't the same size as a standard bar row - reusing rowHeight as
+-- its clearance was the wrong tool for this specific measurement.
+--
+-- The correct relationship, decomposed from that same diagnostic's real
+-- numbers (bar2 enabled): SBF.bottom - bar2.top = 98.0000040 - 93.0000017
+-- ~= 5 - a fixed native gap CONSTANT between the reference bar's top edge
+-- and the Stance Bar's own bottom edge (captured once as
+-- BTVanillaDB.stanceBarNativeGap - see CaptureStanceBarNativeGap above).
+-- SBF.top - SBF.bottom = 130.0000062 - 98.0000040 ~= 32 - the Stance Bar's
+-- own native occupied height, which this codebase's own container reaches
+-- too once built (self.stanceBarContainer:GetHeight(), read LIVE rather
+-- than hardcoded, so this stays correct if the user scales the Stance Bar
+-- via its own Settings page). Verification: bar2.top + gap + SBF_height =
+-- 93.0000017 + 5 + 32 = 130.0000017 ~= 130.00000615485 (SBF's real
+-- GetTop()) - matches within floating-point noise.
+--
+-- referenceY is bar 2's own nativeAnchor.y if bar 2 is enabled, else bar
+-- 1's - same reference-bar selection round 30 already used, only the
+-- CLEARANCE term (gap + container height, not rowHeight) changed.
+function BTV:GetStanceBarBaselineY(bar2Enabled)
+	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
+	local cfg1 = defaults and defaults[1]
+	local cfg2 = defaults and defaults[2]
+
+	local referenceY = cfg1 and cfg1.nativeAnchor and cfg1.nativeAnchor.y
+
+	if bar2Enabled and cfg2 and cfg2.nativeAnchor then
+		referenceY = cfg2.nativeAnchor.y
+	end
+
+	if not referenceY then
+		return nil
+	end
+
+	local container = self.stanceBarContainer
+
+	if not container then
+		return nil
+	end
+
+	-- Literal 5 fallback only for the near-impossible case the lazy
+	-- capture above never ran (e.g. ShapeshiftBarFrame missing on some
+	-- other client build) - see CaptureStanceBarNativeGap's own comment for
+	-- why every normal login (existing save or fresh) captures the real
+	-- value instead of ever needing to fall back to this.
+	local gap = BTVanillaDB.stanceBarNativeGap or 5
+
+	return referenceY + gap + container:GetHeight()
+end
+
 -- Issue 3 (round 14): replicates real vanilla's ShapeshiftBar_UpdatePosition
 -- side effect against the Stance Bar's own synthetic container instead of
 -- the (now purely internal, no-longer-visually-relevant) real
 -- ShapeshiftBarFrame - see SetDefaultBarEnabled's own comment above for why
--- the native call stopped doing anything useful post-migration. Applies a
--- symmetric +/- delta on every actual bar-2 enabled-state CHANGE (never a
--- from-scratch recompute) so any number of toggles in either order stays
--- exactly in sync with no drift - each enable is undone by exactly one
--- later disable of equal, opposite magnitude, and vice versa. Only ever
--- called while useDefaultLayout ~= false (SetDefaultBarEnabled's own gate,
--- mirroring the pre-migration implementation's identical gate) - once the
--- user has switched the Stance Bar to manual positioning
--- (CanDragDefaultLayout() == true), this must never fight their own
--- dragged position.
+-- the native call stopped doing anything useful post-migration.
+--
+-- Round 30 fix: this used to apply a symmetric +/- delta to whatever
+-- BTVanillaDB.stanceBarPosition.y already held, relying on "each enable is
+-- undone by exactly one later disable of equal, opposite magnitude" to stay
+-- in sync - live-confirmed broken, since that only ever preserves whatever
+-- baseline was already stored, even if that baseline was wrong to begin with
+-- (see GetStanceBarBaselineY's own comment above). Now an absolute,
+-- self-correcting recompute instead: pos.y is always overwritten with
+-- GetStanceBarBaselineY's fresh result for the CURRENT bar2Enabled state, so
+-- calling this can never accumulate drift and always lands on the
+-- objectively correct value regardless of what was previously stored. Only
+-- x is left untouched here - horizontal alignment was never part of this
+-- vertical-stacking mechanism and has no equivalent bad-capture symptom.
+--
+-- Only ever called while useDefaultLayout ~= false (SetDefaultBarEnabled's
+-- own gate, mirroring the pre-migration implementation's identical gate, and
+-- Core.lua's RunLoginSequence, which now also calls this once every login/
+-- reload against bar 2's current state - see its own comment there) - once
+-- the user has switched the Stance Bar to manual positioning
+-- (CanDragDefaultLayout() == true), this must never fight their own dragged
+-- position.
 function BTV:ReflowStanceBarForBar2Toggle(bar2Enabled)
 	local pos = BTVanillaDB.stanceBarPosition
 	local container = self.stanceBarContainer
@@ -2664,17 +2915,13 @@ function BTV:ReflowStanceBarForBar2Toggle(bar2Enabled)
 		return
 	end
 
-	local rowHeight = self:GetDefaultBarRowHeight()
+	local y = self:GetStanceBarBaselineY(bar2Enabled)
 
-	if not rowHeight then
+	if not y then
 		return
 	end
 
-	-- UIParent-bottom-left-origin coordinates (y increases upward - see
-	-- Core.lua's CaptureNativeAnchor comment): bar 2 sitting ABOVE bar 1
-	-- means becoming shown means the Stance Bar above IT must move further
-	-- up (y increases) to keep clearing it; becoming hidden reverses that.
-	pos.y = pos.y + (bar2Enabled and rowHeight or -rowHeight)
+	pos.y = y
 
 	self:ApplyStanceBarPosition()
 
@@ -2938,6 +3185,25 @@ function BTV:ApplyKeyRingPosition()
 	if not frame then
 		return
 	end
+
+	-- Round 34 fix: unlike Bag Bar/Micro Menu/Stance Bar/Page Indicator
+	-- (all built on BuildChainAnchoredContainer, which already gives its
+	-- synthetic container an explicit "HIGH" strata), KeyRingButton is a
+	-- single real native Blizzard frame repositioned in place - it never
+	-- received any explicit strata of its own at all, so it was left
+	-- sitting at whatever this client's plain-Frame default is (most
+	-- likely "MEDIUM" - see Bar.lua's CreateBarFromConfig/Button.lua's
+	-- BTVButtonMixin:Init, which needed the exact same explicit-"HIGH"
+	-- treatment this round for the same underlying reason, and
+	-- docs/01-Environment-Capability-Analysis.md's round-34 entry for why
+	-- this is still an inference rather than a live-confirmed fact), only
+	-- ever rendering above MainMenuBarArtFrame by coincidence of the art
+	-- frame's own level happening to stay below it. Fixed the same way as
+	-- every other element in this file that needs to permanently out-rank
+	-- the art frame: an explicit "HIGH" strata on the real frame itself, applied
+	-- on every call (cheap/idempotent) rather than only once at login, so
+	-- nothing can ever silently reset it back to a lower tier.
+	frame:SetFrameStrata("HIGH")
 
 	local pos = BTVanillaDB.keyRingPosition
 
@@ -3322,9 +3588,11 @@ end
 -- MainMenuExpBar - the well-established real vanilla 1.12.1 FrameXML name
 -- for the player's XP bar (a StatusBar) - is structurally the same KIND of
 -- element as MainMenuBarPerformanceBarFrame above: a single self-contained
--- real Blizzard frame whose own child regions (MainMenuExpText,
--- ExhaustionLevelFillBar/ExhaustionTick/ExhaustionTickGlow for the
--- "rested" shaded portion) are all anchored RELATIVE TO IT, not
+-- real Blizzard frame whose own child regions/frames (MainMenuBarOverlayFrame
+-- - itself owning the native "XP current / max" FontString, see
+-- BTV:GetNativeExpOverlayText further below -, ExhaustionLevelFillBar/
+-- ExhaustionTick/ExhaustionTickGlow for the "rested" shaded portion) are all
+-- anchored RELATIVE TO IT, not
 -- independently to UIParent - so repositioning/scaling this one frame
 -- carries its whole native visual along, exactly like the Latency Bar.
 -- UNCONFIRMED on this specific modded client build (same tolerance as the
@@ -3343,23 +3611,68 @@ end
 
 BTV.EXP_BAR_FRAME_NAME = "MainMenuExpBar"
 
--- Round 17 item 1: real vanilla FrameXML name for the native percent-of-
--- level label MainMenuExpBar shows by default - confirmed ALWAYS visible
--- on this client (not hover-only, as originally assumed when Part B was
--- first built), so it duplicates/overlaps BTV:ApplyBetterExpBarVisual's own
--- text overlay whenever that's enabled. Hidden/restored live from that
--- function below.
-BTV.EXP_TEXT_FRAME_NAME = "MainMenuExpText"
+-- Round 21 fix: the native percent-of-level "XP current / max" label that
+-- duplicates/overlaps BTV:ApplyBetterExpBarVisual's own text overlay is NOT
+-- a frame named MainMenuExpText - the user live-confirmed via
+-- `/run print(MainMenuExpText, getglobal("MainMenuExpText"))` that this
+-- global does not exist at all on this client, meaning rounds 17-18's
+-- entire hide/restore mechanism against it silently did nothing for two
+-- full rounds (the actual duplication bug this was meant to fix). The
+-- user's own follow-up region enumeration found the real source instead:
+-- MainMenuBarOverlayFrame - a real child frame of MainMenuExpBar - owns a
+-- FontString region directly (confirmed live: `overlay 1 XP 1962 / 2800`)
+-- that Blizzard's own FrameXML uses to draw this exact label. See
+-- BTV:GetNativeExpOverlayText below, which resolves and caches that
+-- FontString region (found by GetObjectType(), never a hardcoded region
+-- index - GetRegions() ordering is that frame's own internal creation
+-- order, not a documented/stable contract).
+BTV.EXP_OVERLAY_FRAME_NAME = "MainMenuBarOverlayFrame"
+
+-- Resolves MainMenuBarOverlayFrame's own native "XP current / max"
+-- FontString region (see EXP_OVERLAY_FRAME_NAME's comment above for why
+-- this replaces the old, nonexistent MainMenuExpText target), caching the
+-- result on self once found - mirrors this same feature's own
+-- self.betterExpBarText lazy-cache further below (BTV:ApplyBetterExpBarVisual),
+-- just for a native region instead of one this addon creates itself.
+function BTV:GetNativeExpOverlayText()
+	if self.nativeExpOverlayText then
+		return self.nativeExpOverlayText
+	end
+
+	local overlayFrame = getglobal(self.EXP_OVERLAY_FRAME_NAME)
+
+	if not overlayFrame then
+		return nil
+	end
+
+	local regions = { overlayFrame:GetRegions() }
+	local i
+
+	for i = 1, table.getn(regions) do
+		local region = regions[i]
+
+		if region and region.GetObjectType and region:GetObjectType() == "FontString" then
+			self.nativeExpOverlayText = region
+			return region
+		end
+	end
+
+	return nil
+end
 
 -- Round 17 item 3: real vanilla FrameXML name for the native "how far the
--- rested bonus would carry the player" blue overlay bar - a StatusBar
--- child of MainMenuExpBar per real vanilla 1.12.1 FrameXML
--- (MainMenuBarXP.xml). UNCONFIRMED on this specific modded client build in
--- the same sense as EXP_BAR_FRAME_NAME below - every accessor that uses
--- this is defensively nil/method-checked via getglobal, so a wrong/missing
--- name or unexpected widget type just means the rested-color picker
--- silently has nothing to apply to, never a hard error. Flagged in this
--- feature's own task report as worth a live check.
+-- rested bonus would carry the player" blue overlay - a region directly on
+-- MainMenuExpBar. Round 19 fix: live-confirmed via the user's own /run
+-- diagnostics (GetObjectType()) that this is a Texture, NOT a StatusBar -
+-- its color comes from a solid-color fill (GetTexture() returns "Solid
+-- Texture"), not a file-based bar texture. SetStatusBarColor/
+-- GetStatusBarColor (StatusBar-only methods) therefore never had any
+-- effect on it - this was the confirmed root cause of the non-functional
+-- rested-XP color picker. SetVertexColor/GetVertexColor (the correct
+-- Texture-region API) is used instead below. Every accessor that uses this
+-- name is still defensively nil/method-checked via getglobal, so a wrong/
+-- missing name just means the rested-color picker silently has nothing to
+-- apply to, never a hard error.
 BTV.EXP_RESTED_FRAME_NAME = "ExhaustionLevelFillBar"
 
 -- Mirrors CaptureLatencyBarPositionIfNeeded/CaptureKeyRingPositionIfNeeded
@@ -3425,58 +3738,95 @@ function BTV:CaptureExpBarPositionIfNeeded()
 	end
 end
 
--- New item (round 17, added mid-round alongside the 5 originally assigned
--- items): MainMenuExpBar has no real bottom border/edge texture of its
--- own in real vanilla - stock UI relies on MainMenuBarArtFrame (sitting
--- beneath the bar at its one fixed native position) to visually cap the
--- bar's raw bottom edge. Once this container is dragged away from that
--- native position - the whole point of this feature - that art no longer
--- sits underneath, exposing the same class of stray native-texture
--- artifact already investigated once before near this exact spot (see
--- BTV:ApplyBlizzardArtVisibility's own "blue bar" comment further above in
--- this file). Fixed by giving the bar its own permanent bottom-edge cap,
--- parented directly to MainMenuExpBar itself - NOT the edit-mode-only
--- btvOverlay square EnsureContainerOverlay creates below, which is only
--- ever shown while actively dragging/editing - so it inherits the real
--- frame's position/scale/show-hide state automatically and stays correct
--- in any dragged position without any extra tracking.
+-- Round 17 item added a permanent flat-black EnsureExpBarBottomCap overlay
+-- here, on the theory that MainMenuExpBar has no bottom-edge art of its own
+-- once dragged away from MainMenuBarArtFrame's one fixed native position.
+-- Round 19 REMOVED it: the user's live region enumeration on MainMenuExpBar
+-- confirmed MainMenuXPBarTexture0-3 (the race-themed border/end-cap art,
+-- e.g. "Interface\MainMenuBar\UI-MainMenuBar-Dwarf") are real Texture
+-- REGIONS owned directly BY MainMenuExpBar itself, not by MainMenuBarArtFrame
+-- - regions always render relative to and move/scale with their owning
+-- frame automatically, so this native art already correctly follows
+-- MainMenuExpBar to wherever this container repositions/rescales it.
 --
--- A real child FRAME (not a bare texture parented straight onto
--- MainMenuExpBar's own OVERLAY layer) - explicit FrameLevel, not creation
--- order or region-layer enum, is what reliably wins same-strata ties on
--- this client (confirmed live - see Bar.lua's CreateBarFromConfig Issue C
--- comment) - guarantees this cap renders above ExhaustionLevelFillBar/
--- ExhaustionTick (real sibling child FRAMES of MainMenuExpBar, whose own
--- frame level a same-frame OVERLAY-layer texture cannot reliably out-
--- render) regardless of whatever level Blizzard's own FrameXML happens to
--- assign them.
-local function EnsureExpBarBottomCap(frame)
-	if frame.btvBottomCap then
-		return frame.btvBottomCap
+-- Round 20 found the real bug the flat cap had accidentally been masking:
+-- a live GetPoint()/GetWidth()/GetHeight() dump of MainMenuXPBarTexture0-3
+-- showed each piece anchors its own "BOTTOM" point to MainMenuExpBar's
+-- "BOTTOM" point at y=+3 - so each piece's vertical span is y=+3 (its own
+-- bottom edge) to y=+13 (its own top edge), relative to MainMenuExpBar's
+-- TRUE bottom edge at y=0. That leaves the real y=0-to-+3 strip of the
+-- frame permanently uncovered by ANY native texture - a thin gap that was
+-- only ever invisible because MainMenuBarArtFrame's own art used to sit
+-- directly beneath it at the bar's one fixed native screen position.
+--
+-- Round 20's fix (EnsureExpBarBottomBorderExtension, REMOVED round 22) had
+-- tried to clone MainMenuXPBarTexture0-3 downward, copying their real
+-- GetTexCoord() sub-rectangle of the shared "UI-MainMenuBar-Dwarf" atlas
+-- file. Live testing showed this rendering as an unintended crop of that
+-- shared atlas image - described by the user as looking like "another
+-- whole experience bar" duplicated below the real one - most likely
+-- because the tex-coord copy silently failed or didn't mean what this
+-- addon assumed for an atlas-packed texture. Round 22 replaced it with a
+-- simple, universal, custom-built gradient strip instead (not tied to any
+-- race's specific border art).
+--
+-- Round 27 retried the native-clone technique a second time (gradient strip
+-- removed outright for that retry), on the theory that drawing on the wrong
+-- layer and a silently-failed GetTexCoord() call were round 20's real root
+-- causes.
+--
+-- Round 29: the user live-tested round 27's retry and confirmed it rendered
+-- "completely distorted" - visibly worse than BOTH the original gradient
+-- AND round 20's own "duplicate bar" failure. Per explicit owner direction
+-- this reverts to the gradient strip below, and the native-clone technique
+-- (cloning MainMenuXPBarTexture0-3's texture/GetTexCoord()) is now
+-- abandoned outright for this element - two independent live-tested
+-- failures (round 20, round 27) is enough evidence that atlas-cloning
+-- doesn't work as this addon assumes on this client; do not retry a third
+-- time without materially new information.
+local function EnsureExpBarBottomBorderStrip(frame)
+	if frame.btvBottomBorderStrip then
+		return frame.btvBottomBorderStrip
 	end
 
-	local cap = CreateFrame("Frame", nil, frame)
+	-- "OVERLAY": must render on top of the bar's own StatusBar fill (round
+	-- 23 item 2's own confirmed-correct reasoning for this element,
+	-- unchanged by this revert) - the bar's native fill texture layer sits
+	-- below OVERLAY, so drawing here keeps the strip visible over a full
+	-- or near-full bar instead of being painted over by the fill.
+	local strip = frame:CreateTexture(nil, "OVERLAY")
+	strip:SetTexture("Interface\\Buttons\\WHITE8X8")
 
-	cap:SetFrameLevel((frame:GetFrameLevel() or 0) + 20)
-	cap:SetHeight(2)
-	cap:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
-	cap:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+	-- BOTTOMLEFT/BOTTOMRIGHT dual anchor: pins the strip to exactly the
+	-- bar's own current width and bottom edge, auto-tracking any width
+	-- change (grid/layout edits) or BTV:SetExpBarScale rescale without
+	-- this function needing to be re-run on every such change. A fixed
+	-- height with only the bottom two corners anchored grows the texture
+	-- upward from the bar's true bottom edge (y=0) - 4 units safely
+	-- overshoots the confirmed 3-unit-tall y=0-to-+3 native gap (round 20's
+	-- own GetPoint()/GetWidth()/GetHeight() dump of MainMenuXPBarTexture0-3,
+	-- still the correct measurement - this revert only changes HOW the gap
+	-- is covered, not the gap's own confirmed size/location).
+	strip:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+	strip:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+	strip:SetHeight(4)
 
-	local tex = cap:CreateTexture(nil, "OVERLAY")
-	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+	-- SetGradientAlpha is a real vanilla 1.12 Texture method - a light-to-
+	-- dark vertical fade over the flat WHITE8X8 base texture gives a
+	-- subtle beveled look rather than a flat block of color. Guarded
+	-- (rather than assumed present) since this exact method has no prior
+	-- live confirmation on this client; a solid dark-gray SetVertexColor
+	-- is the fallback so the strip is never left invisible/stark-white
+	-- either way.
+	if strip.SetGradientAlpha then
+		strip:SetGradientAlpha("VERTICAL", 0.05, 0.05, 0.05, 0.85, 0.25, 0.25, 0.25, 0.55)
+	else
+		strip:SetVertexColor(0.12, 0.12, 0.12)
+	end
 
-	-- Dark neutral rather than an attempt to color-match the bevel exactly
-	-- (unknowable without a live side-by-side screenshot) - fully opaque,
-	-- so it reliably masks whatever native texture is being exposed
-	-- underneath regardless of what it actually is. Flagged in this
-	-- feature's own task report as worth a live look in case a different
-	-- shade reads better against the user's real UI/theme.
-	tex:SetVertexColor(0.06, 0.06, 0.06, 1)
-	tex:SetAllPoints(cap)
+	frame.btvBottomBorderStrip = strip
 
-	frame.btvBottomCap = cap
-
-	return cap
+	return strip
 end
 
 -- Mirrors BTV:ApplyLatencyBarPosition exactly.
@@ -3504,7 +3854,7 @@ function BTV:ApplyExpBarPosition()
 	end
 
 	EnsureContainerOverlay(frame, self.StartExpBarDrag, self.StopExpBarDrag, "expbar", self.SetExpBarScale)
-	EnsureExpBarBottomCap(frame)
+	EnsureExpBarBottomBorderStrip(frame)
 end
 
 function BTV:SetExpBarPosition(x, y)
@@ -3536,6 +3886,22 @@ function BTV:SetExpBarEnabled(enabled)
 	if frame then
 		if enabled then
 			frame:Show()
+
+			-- Round 25 item 2: reverses the disable-branch's explicit
+			-- frame.btvTextOverlay:Hide() below - unlike frame.btvOverlay
+			-- (an edit-mode-only overlay, whose own visibility is otherwise
+			-- entirely re-derived from ApplyContainerOverlayVisual on the
+			-- next edit-mode sweep regardless of what this branch does),
+			-- the text overlay is NOT edit-mode-gated - nothing else in
+			-- this file would ever re-Show it on its own, so it must be
+			-- re-shown here explicitly or the text would stay invisible
+			-- forever after a disable/re-enable cycle even though its own
+			-- FontString child's Show/Hide state (ApplyBetterExpBarVisual)
+			-- is unaffected by any of this - a Show()'d child inside a
+			-- still-Hidden parent still doesn't render.
+			if frame.btvTextOverlay then
+				frame.btvTextOverlay:Show()
+			end
 		else
 			frame:Hide()
 
@@ -3546,6 +3912,17 @@ function BTV:SetExpBarEnabled(enabled)
 			if frame.btvOverlay then
 				frame.btvOverlay:Hide()
 				frame.btvOverlay:EnableMouse(false)
+			end
+
+			-- Round 25 item 2: same cascade problem, same fix, for the
+			-- "Better Experience Bar" text's own overlay frame
+			-- (EnsureExpBarTextOverlay, further below) - it's ALSO parented
+			-- to UIParent (not `frame`) for the exact same HIGH-strata
+			-- reason EnsureContainerOverlay's overlay is, so without this it
+			-- would keep floating on screen at MainMenuExpBar's last tracked
+			-- position even after the Experience Bar itself is disabled.
+			if frame.btvTextOverlay then
+				frame.btvTextOverlay:Hide()
 			end
 		end
 	end
@@ -3638,18 +4015,25 @@ function BTV:StopExpBarDrag()
 end
 
 -------------------------------------------------------------------------
--- Bar-fill colors (round 17 item 3)
+-- Bar-fill colors (round 17 item 3; fixed round 19)
 --
 -- MainMenuExpBar's own StatusBar fill (the earned-XP progress, a purple/
--- violet in real vanilla) and ExhaustionLevelFillBar's own StatusBar fill
--- (the native "how far the rested bonus would carry the player" overlay,
--- a blue in real vanilla) are each independently recolorable via
+-- violet in real vanilla) and ExhaustionLevelFillBar's own solid-color-fill
+-- Texture (the native "how far the rested bonus would carry the player"
+-- overlay, a blue in real vanilla) are each independently recolorable via
 -- Settings.lua's color-picker swatches on the Experience Bar's own
 -- settings page. Native baseline captured lazily from the real live
 -- frames (mirrors CaptureExpBarPositionIfNeeded's own "capture once, real
 -- live values only" idiom above) rather than seeded in Core.lua's
--- EnsureDB, since GetStatusBarColor() only returns meaningful values once
--- these frames actually exist.
+-- EnsureDB, since neither GetStatusBarColor() nor GetVertexColor() returns
+-- meaningful values until these frames actually exist.
+--
+-- Round 19 fix: ExhaustionLevelFillBar is confirmed live (GetObjectType())
+-- to be a Texture region, not a StatusBar - see EXP_RESTED_FRAME_NAME's own
+-- comment above for the full finding. Every read/write against it below
+-- uses SetVertexColor/GetVertexColor accordingly; MainMenuExpBar itself is
+-- untouched (already confirmed working via SetStatusBarColor/
+-- GetStatusBarColor, since it IS a real StatusBar).
 -------------------------------------------------------------------------
 
 function BTV:CaptureExpBarColorsIfNeeded()
@@ -3688,8 +4072,10 @@ function BTV:CaptureExpBarColorsIfNeeded()
 		local restedFrame = getglobal(self.EXP_RESTED_FRAME_NAME)
 		local r, g, b
 
-		if restedFrame and restedFrame.GetStatusBarColor then
-			r, g, b = restedFrame:GetStatusBarColor()
+		-- Texture region, not a StatusBar - see EXP_RESTED_FRAME_NAME's own
+		-- comment above.
+		if restedFrame and restedFrame.GetVertexColor then
+			r, g, b = restedFrame:GetVertexColor()
 		end
 
 		-- Fallback: real vanilla's own rested-bonus blue.
@@ -3718,37 +4104,79 @@ end
 -- unconditionally (it only READS the live frames to populate
 -- BTVanillaDB.expBarColorEarned/Rested for the Settings page's swatch
 -- preview - see Settings.lua's RefreshSimpleBarPage comment - it never
--- writes to the frame itself, so it's harmless regardless of the toggle),
--- but the actual SetStatusBarColor calls below are now gated: when the
--- feature is off, neither MainMenuExpBar nor ExhaustionLevelFillBar has its
--- color touched AT ALL, leaving vanilla's own native colors/alpha exactly
--- as they are. Called from: Core.lua's login sequence, the color-picker's
--- live-preview func/cancelFunc (SetExpBarColorEarned/SetExpBarColorRested),
--- the "Reset Colors to Default" button (ResetExpBarColors), and the
--- "Enable Better Experience Bar" checkbox's own OnClick (Settings.lua) -
--- every one of those is safe to call unconditionally now, since this
--- function itself is the single choke point that decides whether anything
--- actually happens.
+-- writes to the frame itself, so it's harmless regardless of the toggle).
+--
+-- Round 22 item 4 fix (bug): the "when the feature is off, never touch
+-- the frame at all" gate above used to be a plain early-return, which
+-- correctly kept a FRESH login native (never applying a custom color
+-- before the user ever opts in), but did NOT correctly handle turning the
+-- feature back OFF mid-session after a custom color had already been
+-- applied - the plain return simply left whatever was last applied in
+-- place, so the bar stayed custom-colored even with the feature
+-- unchecked. Fixed by making the off-branch an explicit REVERT to the
+-- captured native baseline (BTVanillaDB.expBarNativeColorEarned/
+-- expBarNativeColorRested, the same permanent pristine snapshot
+-- BTV:ResetExpBarColors already uses) via the same SetStatusBarColor/
+-- SetVertexColor calls used in the on-branch below, rather than a no-op -
+-- this is a stronger invariant than "never touch it" ("always exactly
+-- native when off," which also correctly covers this revert case) and
+-- degrades to the exact same harmless behavior on a fresh login (setting
+-- the frame to the same native value CaptureExpBarColorsIfNeeded just
+-- read off it a line above - a visual no-op, same reasoning as
+-- BTV:ApplyLatencyBarPosition's own "first call simply reasserts the
+-- frame exactly where it already natively is" comment, Core.lua). Called
+-- from: Core.lua's login sequence, the color-picker's live-preview
+-- func/cancelFunc (SetExpBarColorEarned/SetExpBarColorRested), the
+-- "Reset Colors to Default" button (ResetExpBarColors), and the "Enable
+-- Better Experience Bar" checkbox's own OnClick (Settings.lua) - every one
+-- of those is safe to call unconditionally, since this function itself is
+-- the single choke point that decides whether anything actually happens
+-- and which color it ends up applying.
 function BTV:ApplyExpBarColors()
 	self:CaptureExpBarColorsIfNeeded()
 
+	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
+	local restedFrame = getglobal(self.EXP_RESTED_FRAME_NAME)
+
 	if not BTVanillaDB.betterExpBarEnabled then
+		local nativeEarned = BTVanillaDB.expBarNativeColorEarned
+		local nativeRested = BTVanillaDB.expBarNativeColorRested
+
+		if frame and frame.SetStatusBarColor and nativeEarned then
+			frame:SetStatusBarColor(nativeEarned.r, nativeEarned.g, nativeEarned.b)
+		end
+
+		-- Texture region, not a StatusBar - see EXP_RESTED_FRAME_NAME's own
+		-- comment above.
+		if restedFrame and restedFrame.SetVertexColor and nativeRested then
+			restedFrame:SetVertexColor(nativeRested.r, nativeRested.g, nativeRested.b)
+		end
+
+		-- Round 23 item 1: our own custom rested-XP overlay (below) reuses
+		-- this exact same expBarColorRested field, and must be kept in sync
+		-- with every color change/revert this function handles - see that
+		-- function's own header comment for why it exists alongside the
+		-- (still native, still recolored here) ExhaustionLevelFillBar.
+		self:ApplyExpBarRestedOverlay()
+
 		return
 	end
 
-	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
 	local earned = BTVanillaDB.expBarColorEarned
 
 	if frame and frame.SetStatusBarColor and earned then
 		frame:SetStatusBarColor(earned.r, earned.g, earned.b)
 	end
 
-	local restedFrame = getglobal(self.EXP_RESTED_FRAME_NAME)
 	local rested = BTVanillaDB.expBarColorRested
 
-	if restedFrame and restedFrame.SetStatusBarColor and rested then
-		restedFrame:SetStatusBarColor(rested.r, rested.g, rested.b)
+	-- Texture region, not a StatusBar - see EXP_RESTED_FRAME_NAME's own
+	-- comment above.
+	if restedFrame and restedFrame.SetVertexColor and rested then
+		restedFrame:SetVertexColor(rested.r, rested.g, rested.b)
 	end
+
+	self:ApplyExpBarRestedOverlay()
 end
 
 -- Settings.lua's color-picker swatches call these directly from
@@ -3796,6 +4224,481 @@ function BTV:ResetExpBarColors()
 end
 
 -------------------------------------------------------------------------
+-- Custom rested-XP overlay (round 23 item 1)
+--
+-- Replaces reliance on ExhaustionLevelFillBar's own native WIDTH for the
+-- visible rested-XP indicator - BTV:ApplyExpBarColors above still recolors
+-- that native Texture (harmless, left in place) but live testing found its
+-- width - computed entirely by native Blizzard code this addon has no
+-- access to - degenerates to ~8 units wide specifically whenever
+-- UnitXP("player") + GetXPExhaustion() exceeds UnitXPMax("player"), a
+-- routine state (a large banked rested pool) live-confirmed via the user's
+-- own values: UnitXP=1962, UnitXPMax=2800, GetXPExhaustion()=3150 (sum
+-- 5112, far over max) rendering an ~8-unit-wide native element. Since the
+-- WIDTH itself is native-computed, this can't be fixed by recoloring - a
+-- separate custom Texture region is drawn on top instead.
+--
+-- Formula ported verbatim from BEB/BEB.lua's own
+-- BEB.UpdateElement("BEBRestedXpBar")/"BEBXpBar" branches (read directly,
+-- not reconstructed from guesswork) - BEB draws this exact same rested
+-- overlay itself rather than using ExhaustionLevelFillBar at all, and
+-- already handles the exceeds-max case correctly (fills the entire bar
+-- remainder instead of the native element's broken ~8-unit width).
+--
+-- Gated on BOTH BTVanillaDB.betterExpBarEnabled AND GetRestState() == 1
+-- (real vanilla API; confirmed via BEB/TextVars.lua's own "$rst"/"$res"
+-- entries - 1 means "currently resting," e.g. in a city/inn, gaining the
+-- rested bonus) - matching BEB's own BEBRestedXpBar branch exactly, so
+-- this overlay only ever shows in the same circumstances BEB's reference
+-- implementation would show its own. When the feature is off this stays
+-- hidden and the bar looks 100% native, per this feature's own spec - the
+-- native ExhaustionLevelFillBar element itself is untouched by this
+-- section (see BTV:ApplyExpBarColors above, unchanged).
+--
+-- Round 25 item 1 added a boundary tick marker (EnsureExpBarRestedTick,
+-- further below) at the exact x-coordinate this overlay's own width
+-- calculation already resolves as its right edge - see that function's own
+-- header comment for why this is deliberately a simple procedural marker
+-- rather than a port of BEB's own multi-level-crossing tick logic/art.
+-------------------------------------------------------------------------
+
+local function EnsureExpBarRestedOverlay(frame)
+	if frame.btvRestedOverlay then
+		return frame.btvRestedOverlay
+	end
+
+	-- "ARTWORK": above whatever layer MainMenuExpBar's own native StatusBar
+	-- fill texture renders on (the exact "renders above the fill" reasoning
+	-- behind EnsureExpBarBottomBorderStrip's own round 23 item 2 fix, just
+	-- one tier lower so BTV:ApplyBetterExpBarVisual's own text FontString -
+	-- created on "OVERLAY" further below - always stays on top of this
+	-- overlay's fill instead of being obscured by it).
+	local tex = frame:CreateTexture(nil, "ARTWORK")
+	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	frame.btvRestedOverlay = tex
+
+	return tex
+end
+
+-- Round 26: rested-XP boundary tick - full BEB parity, replacing round 25
+-- item 1's simplified procedural marker outright (removed - the two
+-- WHITE8X8-based textures/comments that used to live here are gone, not
+-- kept as dead/parallel code). Per explicit owner direction this now ports
+-- BOTH BEB's own custom art (BEB/BEB-ExhaustionTicks.tga and
+-- BEB/BEB-ExhaustionTicksGlow.tga, copied verbatim into this addon's own
+-- Textures/ folder - see BEB_TICK_TEXTURE/BEB_TICK_GLOW_TEXTURE below) AND
+-- its real multi-level-crossing position/texcoord logic (BTV:
+-- ApplyExpBarRestedOverlay's tick block further below, ported from
+-- BEB/BEB.lua's own BEB.UpdateElement "BEBRestedXpTick"/
+-- "BEBRestedXpTickGlow" branches, read directly from that file) - not a
+-- simplified stand-in.
+--
+-- BEB.TexturePath (BEB/BEB.lua) resolves its own texture names against
+-- "Interface\AddOns\BEB\Textures\" - confirming the Textures/ subfolder
+-- copies (not the duplicate root-level .tga files also present in BEB/)
+-- are the ones BEB's own code path actually loads, which is why those are
+-- the ones copied here too.
+--
+-- Both are real Texture regions (not full child Frames the way BEB's own
+-- BEBRestedXpTick/BEBRestedXpTickGlow are - BEB.SetupElement's frame-level
+-- based ordering has no equivalent need here, a plain Texture works fine
+-- since both are already parented to `frame`/MainMenuExpBar) using draw
+-- layers to reproduce BEB's own real frame-level ordering: BEB's defaults
+-- (BEB/BEB.lua Initialize, "< 0.82" migration) set
+-- BEBCharSettings.BEBRestedXpTick.level = 9 and
+-- BEBRestedXpTickGlow.level = 10, both "HIGH" strata - i.e. the glow
+-- renders ON TOP of the tick, not behind it. "ARTWORK" (tick) below
+-- "OVERLAY" (glow) reproduces that same relative order.
+-- BEB/BEB.lua's own BEB.XpPerLvl table, ported verbatim (same literal
+-- values, same index-by-level meaning: index N is the XP required to go
+-- from level N to level N+1) - read directly from BEB/BEB.lua rather than
+-- retyped from memory, since BTV:ApplyExpBarRestedOverlay's own ported
+-- tick-position formula below indexes this exactly the way BEB's own
+-- BEB.UpdateElement("BEBRestedXpTick") does.
+BTV.XP_PER_LEVEL = {
+	400, 900, 1400, 2100, 2800, 3600, 4400, 5400, 6500, 7600,
+	8800, 10100, 11400, 12900, 14400, 16000, 17700, 19400, 21300, 23200,
+	25200, 27300, 29400, 31700, 34000, 36400, 38900, 41400, 44300, 47400,
+	50800, 54500, 58600, 62800, 67100, 71600, 76100, 80800, 85700, 90700,
+	95800, 101000, 106300, 111800, 117500, 123200, 129100, 135100, 141200, 147500,
+	153900, 160400, 167100, 173900, 180800, 187900, 195000, 202300, 209800, 217400,
+}
+
+-- Round 27 fix 1: the addon's real installed folder name is "BTVanilla"
+-- (confirmed live - GetAddOnMetadata("TrustyBars", "Title") returns nil,
+-- and the actual .toc in this repo is BTVanilla.toc, matching every
+-- "[BTVanilla]" chat prefix this addon has ever printed) - "TrustyBars" is
+-- only the local dev repo/project folder's own name, never the in-game
+-- AddOns folder these SetTexture paths need to resolve against. The
+-- Textures/ subfolder itself is correctly named/located on disk already;
+-- only this path STRING was wrong.
+local BEB_TICK_TEXTURE = "Interface\\AddOns\\BTVanilla\\Textures\\BEB-ExhaustionTicks"
+local BEB_TICK_GLOW_TEXTURE = "Interface\\AddOns\\BTVanilla\\Textures\\BEB-ExhaustionTicksGlow"
+
+-- BEB's own default BEBRestedXpTick size (BEB/BEB.lua's own BEBCharSettings
+-- defaults: `size = {x=27,y=26}`) - the tick/glow art is a hand-drawn 2x2
+-- quadrant sheet (see the texcoord selection in
+-- BTV:ApplyExpBarRestedOverlay below), so its pixel dimensions are tied to
+-- that art's own intended aspect ratio, not to MainMenuExpBar's own (much
+-- thinner, ~8px) native height - kept as literal constants matching BEB's
+-- own default rather than derived from frame:GetHeight().
+local BEB_TICK_WIDTH = 27
+local BEB_TICK_HEIGHT = 26
+
+local function EnsureExpBarRestedTick(frame)
+	if frame.btvRestedTick then
+		return frame.btvRestedTick, frame.btvRestedTickGlow
+	end
+
+	local tick = frame:CreateTexture(nil, "ARTWORK")
+	tick:SetTexture(BEB_TICK_TEXTURE)
+	tick:SetWidth(BEB_TICK_WIDTH)
+	tick:SetHeight(BEB_TICK_HEIGHT)
+
+	-- BEB/BEB.lua's own BEBRestedXpTickGlow setup anchors it to exactly
+	-- cover BEBRestedXpTick's own bounds (`SetPoint("TOPLEFT",
+	-- "BEBRestedXpTick", "TOPLEFT", 0, 0)` + a matching BOTTOMRIGHT) rather
+	-- than sizing itself independently - SetAllPoints(tick) reproduces the
+	-- same result in one call once `tick` itself is positioned/sized each
+	-- update (see ApplyExpBarRestedOverlay below).
+	local glow = frame:CreateTexture(nil, "OVERLAY")
+	glow:SetTexture(BEB_TICK_GLOW_TEXTURE)
+
+	frame.btvRestedTick = tick
+	frame.btvRestedTickGlow = glow
+
+	return tick, glow
+end
+
+-- Round 29 item 2: rested-XP tick glow pulse. BEB's own source (BEB/BEB.lua,
+-- read directly, in full) has NO scripted fade/alpha-animation logic
+-- anywhere for BEBRestedXpTickGlow - the "pulsing" the user observes on real
+-- BEB isn't something BEB itself scripts, so this can't be ported from BEB's
+-- code the way the tick/glow textures and position formula above were. This
+-- is a fresh, standard vanilla-era looping alpha animation instead, driven
+-- by C_Timer.NewTicker - the established periodic-update convention already
+-- used in this codebase (Button.lua's rangeTicker, HoverBind.lua's
+-- hoverBindTintTicker) - rather than a hand-rolled OnUpdate polling frame.
+-- Only the glow's alpha is animated; the base tick texture itself is left
+-- alone (stays at constant, non-animated visibility, per this feature's own
+-- spec) - MainMenuExpBar is a single native frame with a single glow
+-- texture, so one file-local ticker (not a per-button pool) is all this
+-- ever needs.
+local EXP_BAR_RESTED_GLOW_PULSE_INTERVAL = 0.05
+local EXP_BAR_RESTED_GLOW_PULSE_LOW_ALPHA = 0.35
+local EXP_BAR_RESTED_GLOW_PULSE_HIGH_ALPHA = 1.0
+
+-- Round 31 item 2: full fade-in/fade-out cycle, seconds - "roughly 1-2
+-- seconds" per the user's own original description, now customizable via
+-- Settings.lua's Experience Bar page Pulse Interval slider
+-- (BTVanillaDB.expBarGlowPulseInterval, BTV:SetExpBarGlowPulseInterval
+-- below). This constant is now ONLY the fallback for a save file that
+-- predates that field (Core.lua's EnsureDB seeds the DB field with this
+-- exact same literal, so the fallback is otherwise never exercised) - the
+-- ticker callback below reads the DB field fresh on every 0.05s tick rather
+-- than baking a period into a closure upvalue at ticker-start time, so the
+-- slider can change the running animation's speed live without needing to
+-- Cancel()/restart the ticker.
+local EXP_BAR_RESTED_GLOW_PULSE_PERIOD_DEFAULT = 1.5
+
+local expBarRestedGlowPulseTicker
+local expBarRestedGlowPulseStartTime
+
+-- Cancels the ticker outright (not just a "pause" flag) whenever the glow
+-- isn't shown, matching HoverBind.lua's hoverBindTintTicker precedent of
+-- Cancel()-and-nil rather than leaving a ticker running with an early-out
+-- check inside it - no wasted ticks while the glow is hidden.
+local function StopExpBarRestedGlowPulse()
+	if expBarRestedGlowPulseTicker then
+		expBarRestedGlowPulseTicker:Cancel()
+		expBarRestedGlowPulseTicker = nil
+	end
+end
+
+-- Idempotent - a call while already running is a no-op (doesn't restart/
+-- reset the phase), so repeated ApplyExpBarRestedOverlay calls while resting
+-- (PLAYER_XP_UPDATE etc. can fire often) never visibly stutter the
+-- animation.
+local function StartExpBarRestedGlowPulse(glow)
+	if expBarRestedGlowPulseTicker or not C_Timer or not C_Timer.NewTicker then
+		return
+	end
+
+	expBarRestedGlowPulseStartTime = GetTime()
+
+	expBarRestedGlowPulseTicker = C_Timer.NewTicker(EXP_BAR_RESTED_GLOW_PULSE_INTERVAL, function()
+		local elapsed = GetTime() - expBarRestedGlowPulseStartTime
+
+		-- Standard sine-wave time-based oscillation (Lua 5.0 confirms
+		-- math.sin/math.pi both present - the "no % operator" and other
+		-- Lua 5.0 gaps this codebase works around don't extend to the
+		-- standard math library). t sweeps 0..1..0 once per `period`
+		-- seconds - read fresh every tick (not captured once at ticker
+		-- start) so the Settings.lua slider's live writes to
+		-- BTVanillaDB.expBarGlowPulseInterval take effect on the very next
+		-- tick, same round-31-item-2 reasoning as this section's own header
+		-- comment above.
+		local period = (BTVanillaDB and BTVanillaDB.expBarGlowPulseInterval)
+			or EXP_BAR_RESTED_GLOW_PULSE_PERIOD_DEFAULT
+
+		local t = 0.5 + 0.5 * math.sin(elapsed * ((2 * math.pi) / period))
+		local alpha = EXP_BAR_RESTED_GLOW_PULSE_LOW_ALPHA
+			+ ((EXP_BAR_RESTED_GLOW_PULSE_HIGH_ALPHA - EXP_BAR_RESTED_GLOW_PULSE_LOW_ALPHA) * t)
+
+		glow:SetAlpha(alpha)
+	end)
+end
+
+-- Called from: BTV:ApplyExpBarColors (color changes/reverts),
+-- BTV:ApplyBetterExpBarVisual (feature toggled on/off), and the
+-- betterExpBarEventFrame OnEvent handler further below (PLAYER_XP_UPDATE/
+-- UPDATE_EXHAUSTION/PLAYER_LEVEL_UP/PLAYER_UPDATE_RESTING) - every one of
+-- those is safe to call unconditionally, mirroring BTV:ApplyExpBarColors'
+-- own "single choke point" precedent (that function's header comment).
+function BTV:ApplyExpBarRestedOverlay()
+	self:EnsureDB()
+
+	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
+
+	if not frame then
+		return
+	end
+
+	local tex = frame.btvRestedOverlay
+	local tick = frame.btvRestedTick
+	local glow = frame.btvRestedTickGlow
+
+	if not BTVanillaDB.betterExpBarEnabled or not GetRestState or GetRestState() ~= 1 then
+		if tex then
+			tex:Hide()
+		end
+
+		if tick then
+			tick:Hide()
+		end
+
+		if glow then
+			glow:Hide()
+		end
+
+		StopExpBarRestedGlowPulse()
+
+		return
+	end
+
+	-- Real screen width, not a scaled one - MainMenuExpBar's own StatusBar
+	-- fill sizes itself the exact same way (against GetWidth(), unaffected
+	-- by BTV:SetExpBarScale's frame:SetScale() call - SetScale changes
+	-- RENDERING, never what GetWidth() reports), so computing this overlay
+	-- against the same value keeps it pixel-consistent with the real fill
+	-- at any configured Experience Bar scale.
+	local barWidth = frame:GetWidth()
+	local xpMax = UnitXPMax and UnitXPMax("player")
+	local xp = UnitXP and UnitXP("player")
+	local exhaustion = GetXPExhaustion and GetXPExhaustion()
+
+	if not barWidth or barWidth <= 0 or not xpMax or xpMax <= 0 or not xp or not exhaustion then
+		if tex then
+			tex:Hide()
+		end
+
+		if tick then
+			tick:Hide()
+		end
+
+		if glow then
+			glow:Hide()
+		end
+
+		StopExpBarRestedGlowPulse()
+
+		return
+	end
+
+	-- BEB/BEB.lua's own BEBXpBar branch - the earned-XP fill's own width,
+	-- needed here as the rested overlay's LEFT edge (it starts exactly
+	-- where the earned-XP fill ends).
+	local scale = barWidth / xpMax
+	local xpWidth = (xp == 0) and 1 or (scale * xp)
+
+	local width
+
+	if (xp + exhaustion) > xpMax then
+		-- Exceeds max: fill the entire remainder of the bar - BEB's own
+		-- exact branch for this case (BEB/BEB.lua), and the specific case
+		-- ExhaustionLevelFillBar's own native width degenerates on.
+		width = barWidth - xpWidth
+	else
+		local restedEdge = (xp + exhaustion) * scale
+		width = restedEdge - xpWidth
+	end
+
+	if not width or width <= 0 then
+		if tex then
+			tex:Hide()
+		end
+
+		if tick then
+			tick:Hide()
+		end
+
+		if glow then
+			glow:Hide()
+		end
+
+		StopExpBarRestedGlowPulse()
+
+		return
+	end
+
+	tex = EnsureExpBarRestedOverlay(frame)
+
+	local color = BTVanillaDB.expBarColorRested
+
+	if color then
+		tex:SetVertexColor(color.r, color.g, color.b)
+	end
+
+	tex:ClearAllPoints()
+	tex:SetPoint("TOPLEFT", frame, "TOPLEFT", xpWidth, 0)
+	tex:SetWidth(width)
+	tex:SetHeight(frame:GetHeight())
+	tex:Show()
+
+	-- Round 26: BEB parity - the tick's own position is NOT derived from the
+	-- rested-overlay fill's boundaryX above (that was round 25 item 1's own
+	-- simplification, now replaced). BEB/BEB.lua's own
+	-- BEB.UpdateElement("BEBRestedXpTick") computes an entirely independent
+	-- position formula that can represent progress INTO the next (or
+	-- next-next) level's own XP requirement, expressed as a fraction of the
+	-- SAME bar width - ported verbatim below, reusing this function's own
+	-- already-computed `scale`/`barWidth` (BEB.BEBScale/BEB.BEBMainWidth
+	-- equivalents) and `xp`/`exhaustion`/`xpMax` rather than recomputing any
+	-- of those independently.
+	local level = UnitLevel and UnitLevel("player")
+
+	if not level or level < 1 or not BTV.XP_PER_LEVEL[1] then
+		if tick then
+			tick:Hide()
+		end
+
+		if glow then
+			glow:Hide()
+		end
+
+		StopExpBarRestedGlowPulse()
+
+		return
+	end
+
+	local position
+	local restState
+
+	-- Ported verbatim from BEB/BEB.lua's own "BEBRestedXpTick" branch
+	-- (BEB.XpPerLvl-indexed) - three level brackets (level < 59 / level ==
+	-- 59 / level == 60), each with the same 3-state within-level /
+	-- crosses-one-level / crosses-two-levels sub-branching BEB itself uses,
+	-- kept exactly as found rather than collapsed or reordered.
+	if level < 59 then
+		if (xp + exhaustion - xpMax) > BTV.XP_PER_LEVEL[level + 1] then
+			position = ((xp + exhaustion - xpMax - BTV.XP_PER_LEVEL[level + 1]) / BTV.XP_PER_LEVEL[level + 2]) * barWidth
+			restState = 3
+		elseif (xp + exhaustion) > xpMax then
+			position = ((xp + exhaustion - xpMax) / BTV.XP_PER_LEVEL[level + 1]) * barWidth
+			restState = 2
+		else
+			position = (xp + exhaustion) * scale
+			restState = 1
+		end
+	elseif level == 59 then
+		-- Same 3 states, but the "crosses two levels" case has no level 61
+		-- entry in BTV.XP_PER_LEVEL to measure fractional progress against
+		-- (BEB's own table stops at level 60's requirement, i.e. the
+		-- level-60-to-61 threshold) - BEB's own source clamps this to the
+		-- bar's right edge instead, ported as-is.
+		if (xp + exhaustion - xpMax) > BTV.XP_PER_LEVEL[level + 1] then
+			position = barWidth
+			restState = 3
+		elseif (xp + exhaustion) > xpMax then
+			position = ((xp + exhaustion - xpMax) / BTV.XP_PER_LEVEL[level + 1]) * barWidth
+			restState = 2
+		else
+			position = (xp + exhaustion) * scale
+			restState = 1
+		end
+	else
+		-- level == 60 in BEB's own source (the vanilla level cap - no
+		-- further level to cross into at all, only 2 states). Also used
+		-- here as the fallback for level > 60 (e.g. a higher level cap on
+		-- this server than vanilla's own 60 - BEB's own source has no
+		-- branch for that case at all, which would otherwise leave
+		-- `position`/`restState` nil and error below; the same "no further
+		-- level to cross into, clamp at the bar's right edge" behavior BEB
+		-- itself already uses for level 60 is the correct extension, not a
+		-- new invented behavior).
+		if (xp + exhaustion) > xpMax then
+			position = barWidth
+			restState = 2
+		else
+			position = (xp + exhaustion) * scale
+			restState = 1
+		end
+	end
+
+	tick, glow = EnsureExpBarRestedTick(frame)
+
+	-- BEB's own texcoord selection (BEB/BEB.lua's "BEBRestedXpTick" branch)
+	-- - a 2x2 quadrant sheet, same mapping for both the tick and the glow
+	-- (BEB/BEB.lua's own "BEBRestedXpTickGlow" branch uses the identical 3
+	-- SetTexCoord calls keyed off the same BEB.BEBRestState value).
+	local left, right, top, bottom
+
+	if restState == 3 then
+		left, right, top, bottom = 0, 0.5, 0.5, 1
+	elseif restState == 2 then
+		left, right, top, bottom = 0.5, 1, 0, 0.5
+	else
+		left, right, top, bottom = 0, 0.5, 0, 0.5
+	end
+
+	tick:SetTexCoord(left, right, top, bottom)
+	glow:SetTexCoord(left, right, top, bottom)
+
+	-- BEB's own anchor: `BEBRestedXpTick:SetPoint("CENTER", "BEBMain",
+	-- "LEFT", position, 0)` (BEBCharSettings.BEBRestedXpTick.location
+	-- offsets, both 0 by default - not ported as a separate user-facing
+	-- offset setting, per this feature's own scope).
+	tick:ClearAllPoints()
+	tick:SetPoint("CENTER", frame, "LEFT", position, 0)
+	tick:Show()
+
+	glow:ClearAllPoints()
+	glow:SetAllPoints(tick)
+
+	-- BEB's own "BEBRestedXpTickGlow" branch gates on IsResting() == 1 in
+	-- ADDITION to (GetRestState() == 1 and BEBRestState ~= 0) - both of
+	-- which are already guaranteed true at this point in this function
+	-- (the early-return above already requires GetRestState() == 1, and
+	-- restState is always 1/2/3 here, never BEB's own "0" meaning hidden).
+	-- IsResting() (distinct from GetRestState()) reports whether the player
+	-- is CURRENTLY standing in a rest area (inn/city) right now, so this is
+	-- the one remaining real distinction: a player who banked rest XP but
+	-- has since left the inn keeps GetRestState() == 1 (the tick itself
+	-- stays visible) while IsResting() drops to nil/0 (the glow highlight
+	-- turns off) - confirmed real vanilla API per this addon's environment
+	-- doc (IsResting/GetRestState already confirmed reusable via BEB's own
+	-- proven usage on this client).
+	if IsResting and IsResting() == 1 then
+		glow:Show()
+		StartExpBarRestedGlowPulse(glow)
+	else
+		glow:Hide()
+		StopExpBarRestedGlowPulse()
+	end
+end
+
+-------------------------------------------------------------------------
 -- "Better Experience Bar" text overlay (round 16 part 2, Part B; heavily
 -- expanded round 17 items 1/2/4)
 --
@@ -3813,10 +4716,115 @@ end
 -- reimplemented, just read the same way BEB already does.
 --
 -- Entirely independent of the Experience Bar container above
--- (BTV:ApplyExpBarPosition/SetExpBarScale) - this text is parented AND
--- anchored directly to MainMenuExpBar itself, so it automatically follows
--- that frame's position/scale with no separate tracking needed.
+-- (BTV:ApplyExpBarPosition/SetExpBarScale) - this text automatically
+-- follows MainMenuExpBar's position/scale with no separate tracking needed
+-- (see EnsureExpBarTextOverlay's own comment for exactly how, and why it's
+-- no longer a plain region ON MainMenuExpBar itself).
+--
+-- Round 25 item 2 fix: this FontString used to be created directly ON
+-- MainMenuExpBar (`frame:CreateFontString(...)`) - a region of that frame,
+-- which meant it inherited MainMenuExpBar's own cross-frame ordering
+-- against MainMenuBarArtFrame (frame LEVEL governs ordering BETWEEN
+-- frames; a region's own draw layer only orders regions WITHIN the same
+-- frame - it has no say over a different frame's art rendering on top of
+-- it). MainMenuExpBar is confirmed to sit at strata "MEDIUM" level 2 (see
+-- ApplyBlizzardArtVisibility's own round-24 comment), strictly BELOW
+-- MainMenuBarArtFrame's now-explicit level 5 within that same tier - so
+-- this text was structurally unable to out-rank the art while it remained
+-- a region of the bar itself, live-confirmed by the user (the fill/border
+-- masking is correct, but the text got swallowed by the same art too, even
+-- though only the FILL is supposed to be capped by native art - the text
+-- is new information this addon adds, which should always stay legible).
+-- Fixed by moving the FontString onto its own dedicated overlay FRAME
+-- (EnsureExpBarTextOverlay below) at "HIGH" strata - this file's own
+-- established Bag Bar/Micro Menu container precedent
+-- (BuildChainAnchoredContainer's `SetFrameStrata("HIGH")`) for "must always
+-- render above the art frame's MEDIUM tier" - which is a strictly more
+-- robust separation than chasing another explicit frame LEVEL number
+-- within the same MEDIUM tier the way MainMenuBarArtFrame's own round-24
+-- fix does for the bar's fill/border (which, unlike this text, genuinely
+-- does need to stay capped in that same MEDIUM tier).
 -------------------------------------------------------------------------
+
+-- Round 25 item 2: dedicated overlay frame the "Better Experience Bar"
+-- text FontString is now created on, instead of directly on MainMenuExpBar
+-- - see this section's own header comment above for the full reasoning.
+-- SetAllPoints(frame) means this overlay always exactly tracks
+-- MainMenuExpBar's own position/size (wherever the Experience Bar
+-- container above repositions/rescales it), the same "one real frame,
+-- SetAllPoints-tracked" technique EnsureContainerOverlay already uses
+-- elsewhere in this file for edit-mode drag overlays - unlike that overlay
+-- (transient, edit-mode-only), this one has no texture of its own, only
+-- the text FontString as a child, whose own Show/Hide
+-- (BTV:ApplyBetterExpBarVisual/UpdateBetterExpBarText) is what actually
+-- controls the text's visibility session-to-session.
+--
+-- This overlay's OWN Show/Hide only matters for one specific edge case:
+-- EnsureContainerOverlay's own overlay is created already Hidden (its own
+-- `overlay:Hide()` at the end) specifically so a freshly-created edit-mode
+-- overlay is never accidentally visible before ApplyEditModeVisual/
+-- ApplyContainerOverlayVisual first runs - mirrored here the same way,
+-- keyed off the CURRENT BTVanillaDB.expBarEnabled rather than
+-- unconditionally hidden: Core.lua's login sequence calls
+-- BTV:SetExpBarEnabled BEFORE BTV:ApplyBetterExpBarVisual (the only call
+-- site that lazily creates this overlay), so if the Experience Bar starts
+-- disabled, SetExpBarEnabled's own frame.btvTextOverlay:Hide() call runs
+-- against a still-nil field and can't do anything - this overlay would
+-- otherwise default to CreateFrame's normal "shown" state and the text
+-- would float on screen at MainMenuExpBar's last position even though the
+-- bar itself is disabled. Reading the live flag here at creation time
+-- (rather than a fixed Hide()) means whichever state is actually current
+-- wins, matching what SetExpBarEnabled would have already set had this
+-- overlay existed yet.
+local function EnsureExpBarTextOverlay(frame)
+	if frame.btvTextOverlay then
+		return frame.btvTextOverlay
+	end
+
+	-- Round 27 fix 2: parented to `frame` (MainMenuExpBar) itself, not
+	-- UIParent. Live-confirmed scale-chain mismatch: this overlay's own
+	-- GetWidth()/GetHeight() (921.6 x 11.7) came out to exactly a 0.9x
+	-- ratio of MainMenuExpBar's (1024 x 13.0) despite SetAllPoints
+	-- visually aligning them and both frames reporting the same
+	-- GetEffectiveScale() - GetWidth()/GetHeight() report a frame's SIZE
+	-- in its OWN local coordinate units, and that only numerically matches
+	-- another frame's when both share the identical scale ancestry chain,
+	-- which UIParent-parented did not (MainMenuExpBar sits under
+	-- MainMenuBar/etc instead). Parenting directly to MainMenuExpBar puts
+	-- this overlay in the IDENTICAL ancestry, eliminating the mismatch
+	-- structurally (and, as a side effect, fixing the "text slightly off-
+	-- centered" symptom, since a container genuinely smaller than the bar
+	-- centers its contents around the wrong point).
+	--
+	-- This does NOT reintroduce the original art-masking bug this overlay
+	-- was created to escape (round 25 item 2, see this section's header
+	-- comment): frame STRATA/LEVEL for a real child FRAME (as opposed to a
+	-- REGION like a Texture/FontString) are independent of the parent's
+	-- own strata/level - rendering order is governed by the CHILD's own
+	-- explicit values. Confirmed by MainMenuBarOverlayFrame (real native
+	-- child of MainMenuExpBar, see docs/01-Environment-Capability-
+	-- Analysis.md's round 21 findings) successfully drawing its own XP
+	-- text FontString on top of the bar's art despite being parented to
+	-- the very frame that art sits on - the same principle this overlay
+	-- now relies on. SetFrameStrata("HIGH") below is unchanged - it was
+	-- already correct, only the PARENT (this CreateFrame's 3rd arg)
+	-- changes.
+	local overlay = CreateFrame("Frame", "BTVanillaExpBarTextOverlay", frame)
+
+	overlay:SetFrameStrata("HIGH")
+	overlay:SetAllPoints(frame)
+
+	-- See this function's own header comment above - matches whatever
+	-- SetExpBarEnabled would already have set had this overlay existed at
+	-- login time, instead of defaulting to CreateFrame's normal "shown".
+	if BTVanillaDB and BTVanillaDB.expBarEnabled == false then
+		overlay:Hide()
+	end
+
+	frame.btvTextOverlay = overlay
+
+	return overlay
+end
 
 -- Lua 5.0 has no math.round - same simple floor(x + 0.5) idiom used
 -- throughout this addon (e.g. Core.lua's CaptureNativeSpacing), rather
@@ -3886,12 +4894,12 @@ end
 
 -- Round 18 Bug 3 fix: a plain reversed Hide() call (round 17 item 1's
 -- original fix, reasserted on every PLAYER_XP_UPDATE/UPDATE_EXHAUSTION/
--- PLAYER_LEVEL_UP) was live-confirmed to NOT stick - MainMenuExpText kept
--- showing regardless. This means Blizzard's native XP bar code re-Shows
--- this FontString on some OTHER trigger these three events don't cover -
--- most likely an OnUpdate script (XP bar text commonly refreshes every
--- frame rather than only on discrete events), which would silently undo a
--- same-frame Hide() no matter which events we listen to.
+-- PLAYER_LEVEL_UP) was live-confirmed to NOT stick - the native overlay
+-- label kept showing regardless. This means Blizzard's native XP bar code
+-- re-Shows this FontString on some OTHER trigger these three events don't
+-- cover - most likely an OnUpdate script (XP bar text commonly refreshes
+-- every frame rather than only on discrete events), which would silently
+-- undo a same-frame Hide() no matter which events we listen to.
 --
 -- Fixed using this codebase's own established precedent for exactly this
 -- class of problem (a permanently-re-shown native element) - see the 48
@@ -3901,9 +4909,16 @@ end
 -- back the instant the user disables the setting - so the real Show
 -- method is captured exactly once, lazily, here in
 -- BTV:ApplyBetterExpBarVisual (not at file-load time, since
--- MainMenuExpText may not exist yet that early), and restored verbatim
--- when the feature is turned back off.
-local realExpTextShow
+-- MainMenuBarOverlayFrame's FontString region may not exist yet that
+-- early), and restored verbatim when the feature is turned back off.
+--
+-- Round 21 fix: this used to be captured/applied against a global named
+-- MainMenuExpText, which the user live-confirmed does not exist at all on
+-- this client - see EXP_OVERLAY_FRAME_NAME's own comment above for the
+-- full finding. Retargeted to BTV:GetNativeExpOverlayText's resolved
+-- FontString region; the reversible Show-neutering technique itself is
+-- unchanged, only the target reference is corrected.
+local realExpOverlayTextShow
 
 local function UpdateBetterExpBarText()
 	local text = BTV.betterExpBarText
@@ -3917,11 +4932,21 @@ local function UpdateBetterExpBarText()
 	-- largely defense-in-depth at this point rather than the actual fix -
 	-- kept because it's harmless and matches the original round 17 item 1
 	-- reassert-on-every-update idiom.
-	local nativeText = getglobal(BTV.EXP_TEXT_FRAME_NAME)
+	local nativeText = BTV:GetNativeExpOverlayText()
 
 	if nativeText and BTVanillaDB.betterExpBarEnabled then
 		nativeText:Hide()
 	end
+end
+
+-- Round 23 item 1: shared OnEvent handler for betterExpBarEventFrame below -
+-- refreshes both the text overlay AND the custom rested-XP overlay
+-- (BTV:ApplyExpBarRestedOverlay) on the same event set, since both are
+-- gated on the same BTVanillaDB.betterExpBarEnabled toggle and both need to
+-- stay live as XP/exhaustion/resting state changes.
+local function BetterExpBarOnEvent()
+	UpdateBetterExpBarText()
+	BTV:ApplyExpBarRestedOverlay()
 end
 
 -- Created lazily, once - shared by every later BTV:ApplyBetterExpBarVisual
@@ -3934,6 +4959,42 @@ local betterExpBarEventFrame
 -- and from the Experience Bar's own settings page (Settings.lua,
 -- simpleBarPageConfigs["expbar"] - relocated off the General tab in round
 -- 17 item 5).
+-- Round 22 item 2: unlike Button.lua's hotkey/count text (whose
+-- NATIVE_HOTKEY_FONT/NATIVE_COUNT_FONT are captured off a REAL FontString
+-- created unconditionally at every button's Init, since every button
+-- always exists from login onward - see Core.lua's EnsureDB comment on
+-- hotkeyFontSize/countFontSize), this overlay is deliberately never
+-- created until "Enable Better Experience Bar" is turned on for the first
+-- time (see the early-return below) - so there may be no live FontString
+-- to sample a size from yet the first time Settings.lua's Experience Bar
+-- page itself needs a value to show. GameFontNormalSmall is the same real
+-- vanilla FrameXML global Font OBJECT this overlay's own
+-- CreateFontString(..., "GameFontNormalSmall") call below always inherits
+-- from - Font objects support GetFont() directly, with no FontString
+-- instance required - so it's read once here, lazily, from wherever a
+-- size is first needed (this function, or Settings.lua's
+-- RefreshSimpleBarPage) rather than only after this overlay's own first
+-- creation.
+function BTV:CaptureNativeExpBarFontIfNeeded()
+	if self.NATIVE_EXPBAR_FONT then
+		return self.NATIVE_EXPBAR_FONT
+	end
+
+	if not GameFontNormalSmall or not GameFontNormalSmall.GetFont then
+		return nil
+	end
+
+	local path, size = GameFontNormalSmall:GetFont()
+
+	if not path then
+		return nil
+	end
+
+	self.NATIVE_EXPBAR_FONT = { path = path, size = size }
+
+	return self.NATIVE_EXPBAR_FONT
+end
+
 function BTV:ApplyBetterExpBarVisual()
 	self:EnsureDB()
 
@@ -3943,14 +5004,25 @@ function BTV:ApplyBetterExpBarVisual()
 		return
 	end
 
-	local nativeText = getglobal(self.EXP_TEXT_FRAME_NAME)
+	-- Round 21 fix: resolved via BTV:GetNativeExpOverlayText (the real
+	-- MainMenuBarOverlayFrame FontString region) instead of the old,
+	-- nonexistent MainMenuExpText global - see EXP_OVERLAY_FRAME_NAME's own
+	-- comment above for the full finding.
+	local nativeText = self:GetNativeExpOverlayText()
+
+	-- Round 22 item 2: captured unconditionally here (not inside the
+	-- enabled-only branch further below) so BTV.NATIVE_EXPBAR_FONT is
+	-- populated on every login regardless of whether the feature itself is
+	-- currently on.
+	self:CaptureNativeExpBarFontIfNeeded()
 
 	-- Capture the real Show method exactly once, lazily, the first time
-	-- this runs after MainMenuExpText actually exists - see this feature's
-	-- own header comment above realExpTextShow's declaration for why this
-	-- must happen before it's ever neutered below.
-	if nativeText and not realExpTextShow then
-		realExpTextShow = nativeText.Show
+	-- this runs after MainMenuBarOverlayFrame's FontString region actually
+	-- exists - see this feature's own header comment above
+	-- realExpOverlayTextShow's declaration for why this must happen before
+	-- it's ever neutered below.
+	if nativeText and not realExpOverlayTextShow then
+		realExpOverlayTextShow = nativeText.Show
 	end
 
 	if not BTVanillaDB.betterExpBarEnabled then
@@ -3963,12 +5035,19 @@ function BTV:ApplyBetterExpBarVisual()
 		-- before calling Show(), so real vanilla's own label comes straight
 		-- back rather than silently no-oping against its own neutered method.
 		if nativeText then
-			if realExpTextShow then
-				nativeText.Show = realExpTextShow
+			if realExpOverlayTextShow then
+				nativeText.Show = realExpOverlayTextShow
 			end
 
 			nativeText:Show()
 		end
+
+		-- Round 23 item 1: hides the custom rested-XP overlay too - it's
+		-- gated on this same BTVanillaDB.betterExpBarEnabled toggle (see its
+		-- own header comment), so turning the feature off must hide it
+		-- immediately rather than leaving it showing until the next XP/
+		-- resting-state event happens to fire.
+		self:ApplyExpBarRestedOverlay()
 
 		return
 	end
@@ -3979,7 +5058,7 @@ function BTV:ApplyBetterExpBarVisual()
 		-- from under us, regardless of what triggers it - a plain Hide()
 		-- alone (round 17's fix) was confirmed NOT to stick. Reversed above
 		-- the moment betterExpBarEnabled goes back to false.
-		if realExpTextShow then
+		if realExpOverlayTextShow then
 			nativeText.Show = function() end
 		end
 
@@ -3987,9 +5066,18 @@ function BTV:ApplyBetterExpBarVisual()
 	end
 
 	if not self.betterExpBarText then
-		local text = frame:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+		-- Round 25 item 2: created on the dedicated text-overlay frame
+		-- (EnsureExpBarTextOverlay above), not on `frame` (MainMenuExpBar)
+		-- itself - see this section's own header comment for why. The
+		-- overlay SetAllPoints(frame), so anchoring CENTER to the overlay's
+		-- own CENTER at a plain 0,0 offset lands this exactly in the middle
+		-- of the bar both horizontally and vertically, same as anchoring to
+		-- `frame` directly would have - the overlay's bounds are identical
+		-- to the bar's own.
+		local textOverlay = EnsureExpBarTextOverlay(frame)
+		local text = textOverlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
-		text:SetPoint("CENTER", frame, "CENTER", 0, 0)
+		text:SetPoint("CENTER", textOverlay, "CENTER", 0, 0)
 
 		-- OUTLINE flag keeps this readable regardless of whatever's
 		-- underneath it (the earned-XP fill vs. the rested-bonus fill can
@@ -3997,8 +5085,33 @@ function BTV:ApplyBetterExpBarVisual()
 		-- to sample/react to the bar's current fill color).
 		local fontPath, fontSize = text:GetFont()
 
+		-- Round 22 item 2: starts ONE SIZE SMALLER than GameFontNormalSmall's
+		-- own native default (BTV.NATIVE_EXPBAR_FONT, captured above this
+		-- function's own early-return so it's already available here) per
+		-- this feature's own spec, until BTVanillaDB.expBarFontSize holds a
+		-- real saved value (stays nil until the user moves Settings.lua's
+		-- Experience Bar page Font Size slider - same lazy-default idiom as
+		-- BTVanillaDB.hotkeyFontSize/countFontSize, Core.lua's EnsureDB).
+		local applySize = BTVanillaDB.expBarFontSize
+
+		if not applySize and self.NATIVE_EXPBAR_FONT then
+			applySize = self.NATIVE_EXPBAR_FONT.size - 1
+		end
+
 		if fontPath then
-			text:SetFont(fontPath, fontSize, "OUTLINE")
+			text:SetFont(fontPath, applySize or fontSize, "OUTLINE")
+		end
+
+		-- Round 22 item 3: BTVanillaDB.expBarTextColor (default gold,
+		-- Core.lua's EnsureDB) - unlike expBarColorEarned/Rested above, this
+		-- has no native vanilla equivalent to preserve/revert to (it's this
+		-- addon's own FontString, not a native region), so a straight
+		-- default is seeded unconditionally rather than lazily captured
+		-- from a live frame.
+		local textColor = BTVanillaDB.expBarTextColor
+
+		if textColor then
+			text:SetTextColor(textColor.r, textColor.g, textColor.b)
 		end
 
 		self.betterExpBarText = text
@@ -4015,12 +5128,95 @@ function BTV:ApplyBetterExpBarVisual()
 			betterExpBarEventFrame:RegisterEvent("PLAYER_XP_UPDATE")
 			betterExpBarEventFrame:RegisterEvent("UPDATE_EXHAUSTION")
 			betterExpBarEventFrame:RegisterEvent("PLAYER_LEVEL_UP")
-			betterExpBarEventFrame:SetScript("OnEvent", UpdateBetterExpBarText)
+
+			-- Round 23 item 1: PLAYER_UPDATE_RESTING added alongside the
+			-- three pre-existing events above - the real vanilla event that
+			-- fires when the player's resting state itself changes (entering/
+			-- leaving an inn or city), confirmed via BEB/TextVars.lua's own
+			-- "$res" entry - needed so BTV:ApplyExpBarRestedOverlay's
+			-- GetRestState() gate re-evaluates the instant resting starts/
+			-- stops, not just on the next XP/exhaustion change.
+			betterExpBarEventFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
+
+			betterExpBarEventFrame:SetScript("OnEvent", BetterExpBarOnEvent)
 		end
 	end
 
 	self.betterExpBarText:Show()
 	UpdateBetterExpBarText()
+
+	-- Round 23 item 1: shows/refreshes the custom rested-XP overlay the
+	-- instant the feature is turned on, rather than waiting for the next
+	-- PLAYER_XP_UPDATE/UPDATE_EXHAUSTION/PLAYER_LEVEL_UP/PLAYER_UPDATE_RESTING
+	-- event - mirrors UpdateBetterExpBarText's own call just above.
+	self:ApplyExpBarRestedOverlay()
+end
+
+-- Settings.lua's Experience Bar page Font Size slider calls this directly
+-- on every OnValueChanged - mirrors Button.lua's BTV:SetHotkeyFontSize/
+-- SetCountFontSize's exact round-then-write template (single FontString
+-- here instead of a sweep across every button's hotkey/count, but the
+-- same "funnel every caller through one rounding point" reasoning
+-- applies - GetFont()'s own float imprecision, e.g. 11.999999726451
+-- instead of 12, on this client).
+function BTV:SetExpBarFontSize(size)
+	self:EnsureDB()
+
+	size = math.floor(size + 0.5)
+
+	BTVanillaDB.expBarFontSize = size
+
+	if self.betterExpBarText and self.NATIVE_EXPBAR_FONT then
+		self.betterExpBarText:SetFont(self.NATIVE_EXPBAR_FONT.path, size, "OUTLINE")
+	end
+end
+
+-- Round 31 item 2: Settings.lua's Experience Bar page Pulse Interval slider
+-- calls this directly on every OnValueChanged - mirrors SetExpBarFontSize's
+-- round-then-write template just above, except rounded to 1 decimal place
+-- (the slider's own 0.1 step) instead of a whole number, and clamped to the
+-- slider's own 0.5-5.0 range so a stray direct-write (e.g. hand-edited
+-- SavedVariables) can't hand the sine formula above a zero/negative period.
+-- Writing BTVanillaDB.expBarGlowPulseInterval here is already sufficient to
+-- reach the running animation - StartExpBarRestedGlowPulse's own ticker
+-- callback reads this same field fresh every 0.05s tick (see its own
+-- comment), so there is no separate "push to the live animation" step
+-- needed and no need to Cancel()/restart the ticker.
+function BTV:SetExpBarGlowPulseInterval(interval)
+	self:EnsureDB()
+
+	interval = tonumber(interval)
+
+	if not interval then
+		return
+	end
+
+	interval = math.floor((interval * 10) + 0.5) / 10
+
+	if interval < 0.5 then
+		interval = 0.5
+	end
+
+	if interval > 5 then
+		interval = 5
+	end
+
+	BTVanillaDB.expBarGlowPulseInterval = interval
+end
+
+-- Settings.lua's Experience Bar page's own text-color swatch calls this
+-- directly from ColorPickerFrame.func/cancelFunc - same mechanic as
+-- BTV:SetExpBarColorEarned/SetExpBarColorRested above, just against this
+-- addon's own FontString via SetTextColor instead of a native bar-fill
+-- region.
+function BTV:SetExpBarTextColor(r, g, b)
+	self:EnsureDB()
+
+	BTVanillaDB.expBarTextColor = { r = r, g = g, b = b }
+
+	if self.betterExpBarText then
+		self.betterExpBarText:SetTextColor(r, g, b)
+	end
 end
 
 -------------------------------------------------------------------------

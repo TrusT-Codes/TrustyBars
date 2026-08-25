@@ -913,6 +913,25 @@ function BTV:EnsureDB()
 	-- exist meaningfully (or reliably report an active count) yet at
 	-- EnsureDB time.
 
+	-- Round 33 self-heal: BTV:CaptureStanceBarNativeGap's own sanity check
+	-- (same `<= 0 or >= BUTTON_SIZE` bound) only guards FUTURE captures -
+	-- it does nothing for a value already corrupted and persisted by the
+	-- round-32 ordering bug this round fixed (live-confirmed real save:
+	-- stanceBarNativeGap = -40.000000547098). An unconditional check-and-
+	-- heal every EnsureDB call, rather than a one-shot migration marker, is
+	-- deliberate - this session's own experience is that one-shot markers
+	-- can fail to fire when expected under SavedVariables' account-wide
+	-- semantics, and this check is cheap enough to just always run. Nil'ing
+	-- a bad value simply makes it look like a fresh, never-captured save to
+	-- BTV:CaptureStanceBarNativeGap's own guard, so the next login attempts
+	-- a real capture again (now correctly ordered before
+	-- CreateFixedSlotDefaultBars) instead of ever writing/leaving a bad
+	-- number in place.
+	if BTVanillaDB.stanceBarNativeGap
+		and (BTVanillaDB.stanceBarNativeGap <= 0 or BTVanillaDB.stanceBarNativeGap >= self.BUTTON_SIZE) then
+		BTVanillaDB.stanceBarNativeGap = nil
+	end
+
 	-- Tint-whole-button-on-range (Settings.lua General tab): default true
 	-- preserves the behavior this addon has always shipped (whole-icon red
 	-- tint on out-of-range) rather than switching everyone over to real
@@ -1031,6 +1050,41 @@ function BTV:EnsureDB()
 	-- native color can only be read via GetStatusBarColor() off the real
 	-- live MainMenuExpBar/ExhaustionLevelFillBar frames, which don't exist
 	-- meaningfully at EnsureDB time.
+
+	-- Round 22 item 2: BTVanillaDB.expBarFontSize follows the exact same
+	-- lazy-capture idiom as hotkeyFontSize/countFontSize just above (this
+	-- file's own comment on those two) - deliberately NOT seeded with a
+	-- guessed numeric value here. The true native GameFontNormalSmall size
+	-- can only be read via GetFont() (DefaultBars.lua's
+	-- BTV:CaptureNativeExpBarFontIfNeeded), and this overlay's own spec is
+	-- to start ONE SIZE SMALLER than that native default, not at some
+	-- hardcoded constant that could drift from the real template's actual
+	-- size on a different client build. Stays nil until the user moves
+	-- Settings.lua's Experience Bar page Font Size slider; every apply path
+	-- (BTV:ApplyBetterExpBarVisual's first-build, BTV:SetExpBarFontSize)
+	-- treats nil as "native captured default minus one."
+
+	-- Round 22 item 3: BTVanillaDB.expBarTextColor - unlike
+	-- expBarColorEarned/Rested above, this is this addon's OWN FontString's
+	-- color, not a native vanilla region's, so there is no live frame to
+	-- lazily capture a "native" baseline from - a straight default (gold,
+	-- matching typical WoW UI informational-text convention) is safe to
+	-- seed unconditionally here, same as any other simple addon-owned
+	-- default (e.g. expBarScale above).
+	if not BTVanillaDB.expBarTextColor then
+		BTVanillaDB.expBarTextColor = { r = 1, g = 0.82, b = 0 }
+	end
+
+	-- Round 31 item 2: rested-XP tick glow pulse's full fade-in/fade-out
+	-- cycle length, seconds - customizable via Settings.lua's Experience Bar
+	-- page Pulse Interval slider. Straight default (no live-frame capture
+	-- needed, same as expBarTextColor above) matching the value this was
+	-- hardcoded to before this round (DefaultBars.lua's
+	-- EXP_BAR_RESTED_GLOW_PULSE_PERIOD_DEFAULT, kept in sync as the same
+	-- literal in both places).
+	if BTVanillaDB.expBarGlowPulseInterval == nil then
+		BTVanillaDB.expBarGlowPulseInterval = 1.5
+	end
 
 	-- Key Ring Scale (bug-fix batch round 2, Issue B): default 1 (no
 	-- scaling), same safe-to-seed-unconditionally reasoning as
@@ -1606,6 +1660,24 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:EnsureDB()
 	BTV:CreateAllBars()
 
+	-- Round 33 fix: must run BEFORE BTV:CreateFixedSlotDefaultBars() below,
+	-- not after it (which is where this used to happen, nested inside
+	-- DefaultBars.lua's CreateStanceBarContainer) - CreateFixedSlotDefaultBars
+	-- permanently Hide()s bar 2's real MultiBarBottomLeftButton1-12 frames,
+	-- and real vanilla 1.12.1 FrameXML reflows ShapeshiftBarFrame's own
+	-- native anchor as a documented side effect of that bar's buttons'
+	-- shown state changing (see DefaultBars.lua's SetDefaultBarEnabled
+	-- comment, Issue 3/round 14) - so capturing the Stance Bar's native gap
+	-- AFTER that Hide() pass reads ShapeshiftBarFrame back in an already-
+	-- reflowed, collapsed state instead of its true native position. Live-
+	-- confirmed corruption from the old ordering: stanceBarNativeGap =
+	-- -40.000000547098 (screenBottom read as exactly 0). This capture needs
+	-- nothing from CreateFixedSlotDefaultBars/CreateStanceBarContainer -
+	-- only ShapeshiftBarFrame itself plus BTVanillaDB.defaultBars'
+	-- nativeAnchor.y, both already available immediately after EnsureDB -
+	-- so there's no reason to delay it any further than this.
+	BTV:CaptureStanceBarNativeGap()
+
 	-- Bars 1-5 (major architecture migration, Phases 1 and 2): builds each
 	-- bar's own Bar.lua/Button.lua button pool - bars 2-5 from
 	-- cfg.fixedActionSlots, bar 1 from cfg.dynamicMainBar (schema version
@@ -1639,6 +1711,25 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- DefaultBars.lua's UPDATE_SHAPESHIFT_FORMS listener calls
 	-- RebuildStanceBarContainer later if/when that changes.
 	BTV:CreateStanceBarContainer()
+
+	-- Round 30 fix: force a one-time absolute recompute of the Stance Bar's
+	-- Y baseline against bar 2's CURRENT enabled state every login/reload -
+	-- not just the next time the user happens to toggle Action Bar 1
+	-- themselves. DefaultBars.lua's ReflowStanceBarForBar2Toggle is only
+	-- otherwise invoked from SetDefaultBarEnabled on an actual bar-2
+	-- enabled-state CHANGE, so without this a stale/bad stanceBarPosition.y
+	-- left over from a previous session's own capture-timing bug (see
+	-- GetStanceBarBaselineY's own comment in DefaultBars.lua) would silently
+	-- persist until the user manually toggled bar 2 once. Calling it here is
+	-- always safe/idempotent - it's an absolute recompute, not a delta, so
+	-- repeating it every login lands on the same correct value every time.
+	-- Same useDefaultLayout gate as the toggle call site - a no-op once the
+	-- user has taken manual control of the Stance Bar's position, so this
+	-- can never fight a manually-dragged position.
+	if BTVanillaDB.useDefaultLayout ~= false then
+		local bar2Cfg = BTVanillaDB.defaultBars[2]
+		BTV:ReflowStanceBarForBar2Toggle(bar2Cfg and bar2Cfg.enabled)
+	end
 
 	-- Bag Bar / Micro Menu (feature 3, DefaultBars.lua): builds the two
 	-- synthetic chain-anchored containers once from the real live
