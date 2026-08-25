@@ -3343,6 +3343,25 @@ end
 
 BTV.EXP_BAR_FRAME_NAME = "MainMenuExpBar"
 
+-- Round 17 item 1: real vanilla FrameXML name for the native percent-of-
+-- level label MainMenuExpBar shows by default - confirmed ALWAYS visible
+-- on this client (not hover-only, as originally assumed when Part B was
+-- first built), so it duplicates/overlaps BTV:ApplyBetterExpBarVisual's own
+-- text overlay whenever that's enabled. Hidden/restored live from that
+-- function below.
+BTV.EXP_TEXT_FRAME_NAME = "MainMenuExpText"
+
+-- Round 17 item 3: real vanilla FrameXML name for the native "how far the
+-- rested bonus would carry the player" blue overlay bar - a StatusBar
+-- child of MainMenuExpBar per real vanilla 1.12.1 FrameXML
+-- (MainMenuBarXP.xml). UNCONFIRMED on this specific modded client build in
+-- the same sense as EXP_BAR_FRAME_NAME below - every accessor that uses
+-- this is defensively nil/method-checked via getglobal, so a wrong/missing
+-- name or unexpected widget type just means the rested-color picker
+-- silently has nothing to apply to, never a hard error. Flagged in this
+-- feature's own task report as worth a live check.
+BTV.EXP_RESTED_FRAME_NAME = "ExhaustionLevelFillBar"
+
 -- Mirrors CaptureLatencyBarPositionIfNeeded/CaptureKeyRingPositionIfNeeded
 -- structurally, but - unlike those two (real vanilla SIBLINGS of
 -- MainMenuBarArtFrame, not MainMenuBar descendants, which have never shown
@@ -3406,6 +3425,60 @@ function BTV:CaptureExpBarPositionIfNeeded()
 	end
 end
 
+-- New item (round 17, added mid-round alongside the 5 originally assigned
+-- items): MainMenuExpBar has no real bottom border/edge texture of its
+-- own in real vanilla - stock UI relies on MainMenuBarArtFrame (sitting
+-- beneath the bar at its one fixed native position) to visually cap the
+-- bar's raw bottom edge. Once this container is dragged away from that
+-- native position - the whole point of this feature - that art no longer
+-- sits underneath, exposing the same class of stray native-texture
+-- artifact already investigated once before near this exact spot (see
+-- BTV:ApplyBlizzardArtVisibility's own "blue bar" comment further above in
+-- this file). Fixed by giving the bar its own permanent bottom-edge cap,
+-- parented directly to MainMenuExpBar itself - NOT the edit-mode-only
+-- btvOverlay square EnsureContainerOverlay creates below, which is only
+-- ever shown while actively dragging/editing - so it inherits the real
+-- frame's position/scale/show-hide state automatically and stays correct
+-- in any dragged position without any extra tracking.
+--
+-- A real child FRAME (not a bare texture parented straight onto
+-- MainMenuExpBar's own OVERLAY layer) - explicit FrameLevel, not creation
+-- order or region-layer enum, is what reliably wins same-strata ties on
+-- this client (confirmed live - see Bar.lua's CreateBarFromConfig Issue C
+-- comment) - guarantees this cap renders above ExhaustionLevelFillBar/
+-- ExhaustionTick (real sibling child FRAMES of MainMenuExpBar, whose own
+-- frame level a same-frame OVERLAY-layer texture cannot reliably out-
+-- render) regardless of whatever level Blizzard's own FrameXML happens to
+-- assign them.
+local function EnsureExpBarBottomCap(frame)
+	if frame.btvBottomCap then
+		return frame.btvBottomCap
+	end
+
+	local cap = CreateFrame("Frame", nil, frame)
+
+	cap:SetFrameLevel((frame:GetFrameLevel() or 0) + 20)
+	cap:SetHeight(2)
+	cap:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
+	cap:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
+
+	local tex = cap:CreateTexture(nil, "OVERLAY")
+	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	-- Dark neutral rather than an attempt to color-match the bevel exactly
+	-- (unknowable without a live side-by-side screenshot) - fully opaque,
+	-- so it reliably masks whatever native texture is being exposed
+	-- underneath regardless of what it actually is. Flagged in this
+	-- feature's own task report as worth a live look in case a different
+	-- shade reads better against the user's real UI/theme.
+	tex:SetVertexColor(0.06, 0.06, 0.06, 1)
+	tex:SetAllPoints(cap)
+
+	frame.btvBottomCap = cap
+
+	return cap
+end
+
 -- Mirrors BTV:ApplyLatencyBarPosition exactly.
 function BTV:ApplyExpBarPosition()
 	self:CaptureExpBarPositionIfNeeded()
@@ -3431,6 +3504,7 @@ function BTV:ApplyExpBarPosition()
 	end
 
 	EnsureContainerOverlay(frame, self.StartExpBarDrag, self.StopExpBarDrag, "expbar", self.SetExpBarScale)
+	EnsureExpBarBottomCap(frame)
 end
 
 function BTV:SetExpBarPosition(x, y)
@@ -3564,16 +3638,179 @@ function BTV:StopExpBarDrag()
 end
 
 -------------------------------------------------------------------------
--- "Better Experience Bar" text overlay (round 16 part 2, Part B)
+-- Bar-fill colors (round 17 item 3)
 --
--- Modeled on the BEB reference addon (BEB/TextVars.lua's own "$pdl"/"$prt"
--- variable formulas, per this feature's own task instructions) rather than
--- copied 1:1 - a single centered FontString showing percent-of-current-
--- level and percent-of-fully-rested, kept live via the same two events
--- each formula actually depends on (BEB's own events table). UnitXP/
--- UnitXPMax/GetXPExhaustion are real native vanilla API functions (BEB's
--- own proven usage on this exact client) - not reimplemented, just read
--- the same way BEB already does.
+-- MainMenuExpBar's own StatusBar fill (the earned-XP progress, a purple/
+-- violet in real vanilla) and ExhaustionLevelFillBar's own StatusBar fill
+-- (the native "how far the rested bonus would carry the player" overlay,
+-- a blue in real vanilla) are each independently recolorable via
+-- Settings.lua's color-picker swatches on the Experience Bar's own
+-- settings page. Native baseline captured lazily from the real live
+-- frames (mirrors CaptureExpBarPositionIfNeeded's own "capture once, real
+-- live values only" idiom above) rather than seeded in Core.lua's
+-- EnsureDB, since GetStatusBarColor() only returns meaningful values once
+-- these frames actually exist.
+-------------------------------------------------------------------------
+
+function BTV:CaptureExpBarColorsIfNeeded()
+	self:EnsureDB()
+
+	if not BTVanillaDB.expBarColorEarned then
+		local frame = getglobal(self.EXP_BAR_FRAME_NAME)
+		local r, g, b
+
+		if frame and frame.GetStatusBarColor then
+			r, g, b = frame:GetStatusBarColor()
+		end
+
+		-- Fallback: a reasonable vanilla-matching purple/violet, only ever
+		-- used if the live frame isn't available yet at capture time - see
+		-- this feature's own task report flagging that the true native
+		-- default should still be confirmed via a live GetStatusBarColor()
+		-- check.
+		BTVanillaDB.expBarColorEarned = {
+			r = r or 0.58,
+			g = g or 0.0,
+			b = b or 0.55,
+		}
+
+		-- Permanent pristine snapshot ("Reset Colors to Default"), mirroring
+		-- expBarNativeAnchor's own capture-once/never-rewritten pattern
+		-- above.
+		BTVanillaDB.expBarNativeColorEarned = {
+			r = BTVanillaDB.expBarColorEarned.r,
+			g = BTVanillaDB.expBarColorEarned.g,
+			b = BTVanillaDB.expBarColorEarned.b,
+		}
+	end
+
+	if not BTVanillaDB.expBarColorRested then
+		local restedFrame = getglobal(self.EXP_RESTED_FRAME_NAME)
+		local r, g, b
+
+		if restedFrame and restedFrame.GetStatusBarColor then
+			r, g, b = restedFrame:GetStatusBarColor()
+		end
+
+		-- Fallback: real vanilla's own rested-bonus blue.
+		BTVanillaDB.expBarColorRested = {
+			r = r or 0.0,
+			g = g or 0.39,
+			b = b or 0.88,
+		}
+
+		BTVanillaDB.expBarNativeColorRested = {
+			r = BTVanillaDB.expBarColorRested.r,
+			g = BTVanillaDB.expBarColorRested.g,
+			b = BTVanillaDB.expBarColorRested.b,
+		}
+	end
+end
+
+-- Round 18 Bug 1 fix (CRITICAL REGRESSION): this used to be called
+-- unconditionally from Core.lua's login sequence and unconditionally
+-- applied whatever was captured/fell back to, regardless of
+-- BTVanillaDB.betterExpBarEnabled - meaning EVERY user's native XP bar got
+-- recolored on every login, even with the "Better Experience Bar" feature
+-- fully off (the default). Live-confirmed symptom: the native translucent
+-- rested-XP overlay went completely invisible for a tester who never
+-- touched this feature at all. CaptureExpBarColorsIfNeeded is still called
+-- unconditionally (it only READS the live frames to populate
+-- BTVanillaDB.expBarColorEarned/Rested for the Settings page's swatch
+-- preview - see Settings.lua's RefreshSimpleBarPage comment - it never
+-- writes to the frame itself, so it's harmless regardless of the toggle),
+-- but the actual SetStatusBarColor calls below are now gated: when the
+-- feature is off, neither MainMenuExpBar nor ExhaustionLevelFillBar has its
+-- color touched AT ALL, leaving vanilla's own native colors/alpha exactly
+-- as they are. Called from: Core.lua's login sequence, the color-picker's
+-- live-preview func/cancelFunc (SetExpBarColorEarned/SetExpBarColorRested),
+-- the "Reset Colors to Default" button (ResetExpBarColors), and the
+-- "Enable Better Experience Bar" checkbox's own OnClick (Settings.lua) -
+-- every one of those is safe to call unconditionally now, since this
+-- function itself is the single choke point that decides whether anything
+-- actually happens.
+function BTV:ApplyExpBarColors()
+	self:CaptureExpBarColorsIfNeeded()
+
+	if not BTVanillaDB.betterExpBarEnabled then
+		return
+	end
+
+	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
+	local earned = BTVanillaDB.expBarColorEarned
+
+	if frame and frame.SetStatusBarColor and earned then
+		frame:SetStatusBarColor(earned.r, earned.g, earned.b)
+	end
+
+	local restedFrame = getglobal(self.EXP_RESTED_FRAME_NAME)
+	local rested = BTVanillaDB.expBarColorRested
+
+	if restedFrame and restedFrame.SetStatusBarColor and rested then
+		restedFrame:SetStatusBarColor(rested.r, rested.g, rested.b)
+	end
+end
+
+-- Settings.lua's color-picker swatches call these directly from
+-- ColorPickerFrame.func/cancelFunc.
+function BTV:SetExpBarColorEarned(r, g, b)
+	self:CaptureExpBarColorsIfNeeded()
+
+	BTVanillaDB.expBarColorEarned = { r = r, g = g, b = b }
+
+	self:ApplyExpBarColors()
+end
+
+function BTV:SetExpBarColorRested(r, g, b)
+	self:CaptureExpBarColorsIfNeeded()
+
+	BTVanillaDB.expBarColorRested = { r = r, g = g, b = b }
+
+	self:ApplyExpBarColors()
+end
+
+-- Settings.lua's "Reset Colors to Default" button.
+function BTV:ResetExpBarColors()
+	self:CaptureExpBarColorsIfNeeded()
+
+	local nativeEarned = BTVanillaDB.expBarNativeColorEarned
+	local nativeRested = BTVanillaDB.expBarNativeColorRested
+
+	if nativeEarned then
+		BTVanillaDB.expBarColorEarned = {
+			r = nativeEarned.r,
+			g = nativeEarned.g,
+			b = nativeEarned.b,
+		}
+	end
+
+	if nativeRested then
+		BTVanillaDB.expBarColorRested = {
+			r = nativeRested.r,
+			g = nativeRested.g,
+			b = nativeRested.b,
+		}
+	end
+
+	self:ApplyExpBarColors()
+end
+
+-------------------------------------------------------------------------
+-- "Better Experience Bar" text overlay (round 16 part 2, Part B; heavily
+-- expanded round 17 items 1/2/4)
+--
+-- Modeled on the BEB reference addon (BEB/TextVars.lua's own "$plv"/"$pdl"/
+-- "$prt"/"$rxp" variable formulas) rather than copied 1:1 - a single
+-- centered FontString assembled from up to 5 independently toggleable
+-- segments (BTVanillaDB.expBarShowLevel/expBarShowCurrentOverMax/
+-- expBarShowPercent/expBarShowRestedPercent/expBarShowRestedTotal,
+-- Settings.lua's Experience Bar page), kept live via PLAYER_XP_UPDATE/
+-- UPDATE_EXHAUSTION/PLAYER_LEVEL_UP - all three registered unconditionally
+-- regardless of which segments are currently on, simpler and safer than
+-- churning RegisterEvent/UnregisterEvent on every checkbox click.
+-- UnitLevel/UnitXP/UnitXPMax/GetXPExhaustion are real native vanilla API
+-- functions (BEB's own proven usage on this exact client) - not
+-- reimplemented, just read the same way BEB already does.
 --
 -- Entirely independent of the Experience Bar container above
 -- (BTV:ApplyExpBarPosition/SetExpBarScale) - this text is parented AND
@@ -3590,33 +3827,100 @@ local function ExpBarRound(n)
 	return math.floor(n + 0.5)
 end
 
--- "$pdl"/"$prt" from BEB/TextVars.lua, ported verbatim (just Lua-5.0-safe
--- string.format instead of concatenation).
+-- Round 17 items 2/4: assembles only the currently-enabled segments into
+-- one space-joined line. Each segment is already self-labeled ("Lvl 2",
+-- "26/900", "3%", "Rested: 3%", "27 Rested Xp"), so a plain space join
+-- never needs separator/punctuation logic for whichever subset happens to
+-- be off - no double-spaces or dangling separators regardless of which
+-- combination of the 5 toggles is active (including all-off, which simply
+-- yields an empty string). "$plv"/"$pdl"/"$prt"/"$rxp" from
+-- BEB/TextVars.lua are the exact source formulas for the level/percent/
+-- rested-percent/rested-total segments respectively, ported Lua-5.0-safe.
 local function ComputeBetterExpBarText()
 	local cur = UnitXP and UnitXP("player")
 	local max = UnitXPMax and UnitXPMax("player")
-
-	local levelPct = 0
-
-	if cur and max and max > 0 then
-		levelPct = ExpBarRound((cur / max) * 100)
-	end
-
-	local restedPct = 0
 	local exhaustion = GetXPExhaustion and GetXPExhaustion()
 
-	if exhaustion and max and max > 0 then
-		restedPct = ExpBarRound((exhaustion * 100) / (max * 1.5))
+	local segments = {}
+	local n = 0
+
+	if BTVanillaDB.expBarShowLevel then
+		n = n + 1
+		segments[n] = "Lvl " .. tostring(UnitLevel("player"))
 	end
 
-	return string.format("%d%% (Rested: %d%%)", levelPct, restedPct)
+	if BTVanillaDB.expBarShowCurrentOverMax and cur and max then
+		n = n + 1
+		segments[n] = tostring(cur) .. "/" .. tostring(max)
+	end
+
+	if BTVanillaDB.expBarShowPercent then
+		local levelPct = 0
+
+		if cur and max and max > 0 then
+			levelPct = ExpBarRound((cur / max) * 100)
+		end
+
+		n = n + 1
+		segments[n] = tostring(levelPct) .. "%"
+	end
+
+	if BTVanillaDB.expBarShowRestedPercent then
+		local restedPct = 0
+
+		if exhaustion and max and max > 0 then
+			restedPct = ExpBarRound((exhaustion * 100) / (max * 1.5))
+		end
+
+		n = n + 1
+		segments[n] = "Rested: " .. tostring(restedPct) .. "%"
+	end
+
+	if BTVanillaDB.expBarShowRestedTotal then
+		n = n + 1
+		segments[n] = tostring(exhaustion or 0) .. " Rested Xp"
+	end
+
+	return table.concat(segments, " ")
 end
+
+-- Round 18 Bug 3 fix: a plain reversed Hide() call (round 17 item 1's
+-- original fix, reasserted on every PLAYER_XP_UPDATE/UPDATE_EXHAUSTION/
+-- PLAYER_LEVEL_UP) was live-confirmed to NOT stick - MainMenuExpText kept
+-- showing regardless. This means Blizzard's native XP bar code re-Shows
+-- this FontString on some OTHER trigger these three events don't cover -
+-- most likely an OnUpdate script (XP bar text commonly refreshes every
+-- frame rather than only on discrete events), which would silently undo a
+-- same-frame Hide() no matter which events we listen to.
+--
+-- Fixed using this codebase's own established precedent for exactly this
+-- class of problem (a permanently-re-shown native element) - see the 48
+-- real default-bar buttons and BonusActionBarFrame, both neutered via a
+-- `Show = function() end` override. Unlike those two (permanent,
+-- one-way), this one must be REVERSIBLE - the native label needs to come
+-- back the instant the user disables the setting - so the real Show
+-- method is captured exactly once, lazily, here in
+-- BTV:ApplyBetterExpBarVisual (not at file-load time, since
+-- MainMenuExpText may not exist yet that early), and restored verbatim
+-- when the feature is turned back off.
+local realExpTextShow
 
 local function UpdateBetterExpBarText()
 	local text = BTV.betterExpBarText
 
 	if text then
 		text:SetText(ComputeBetterExpBarText())
+	end
+
+	-- Round 18 Bug 3 fix: Show() itself is now neutered while the feature
+	-- is on (see BTV:ApplyBetterExpBarVisual below), so this Hide() call is
+	-- largely defense-in-depth at this point rather than the actual fix -
+	-- kept because it's harmless and matches the original round 17 item 1
+	-- reassert-on-every-update idiom.
+	local nativeText = getglobal(BTV.EXP_TEXT_FRAME_NAME)
+
+	if nativeText and BTVanillaDB.betterExpBarEnabled then
+		nativeText:Hide()
 	end
 end
 
@@ -3627,9 +3931,9 @@ local betterExpBarEventFrame
 
 -- Creates (once)/shows/hides/live-updates the text overlay per
 -- BTVanillaDB.betterExpBarEnabled - called from Core.lua's login sequence
--- and directly from Settings.lua's General tab checkbox (BTVanillaDB's own
--- live-toggle convention: no reload needed, mirrors useDefaultLayout's own
--- immediate-apply pattern).
+-- and from the Experience Bar's own settings page (Settings.lua,
+-- simpleBarPageConfigs["expbar"] - relocated off the General tab in round
+-- 17 item 5).
 function BTV:ApplyBetterExpBarVisual()
 	self:EnsureDB()
 
@@ -3639,12 +3943,47 @@ function BTV:ApplyBetterExpBarVisual()
 		return
 	end
 
+	local nativeText = getglobal(self.EXP_TEXT_FRAME_NAME)
+
+	-- Capture the real Show method exactly once, lazily, the first time
+	-- this runs after MainMenuExpText actually exists - see this feature's
+	-- own header comment above realExpTextShow's declaration for why this
+	-- must happen before it's ever neutered below.
+	if nativeText and not realExpTextShow then
+		realExpTextShow = nativeText.Show
+	end
+
 	if not BTVanillaDB.betterExpBarEnabled then
 		if self.betterExpBarText then
 			self.betterExpBarText:Hide()
 		end
 
+		-- Round 17 item 1 / Round 18 Bug 3 fix: reversible restore - undo
+		-- the Show() neutering below (if it was ever applied this session)
+		-- before calling Show(), so real vanilla's own label comes straight
+		-- back rather than silently no-oping against its own neutered method.
+		if nativeText then
+			if realExpTextShow then
+				nativeText.Show = realExpTextShow
+			end
+
+			nativeText:Show()
+		end
+
 		return
+	end
+
+	if nativeText then
+		-- Round 18 Bug 3 fix: neuter Show() itself (not just call Hide())
+		-- so no native OnUpdate/event handler can re-show this label out
+		-- from under us, regardless of what triggers it - a plain Hide()
+		-- alone (round 17's fix) was confirmed NOT to stick. Reversed above
+		-- the moment betterExpBarEnabled goes back to false.
+		if realExpTextShow then
+			nativeText.Show = function() end
+		end
+
+		nativeText:Hide()
 	end
 
 	if not self.betterExpBarText then
@@ -3653,9 +3992,9 @@ function BTV:ApplyBetterExpBarVisual()
 		text:SetPoint("CENTER", frame, "CENTER", 0, 0)
 
 		-- OUTLINE flag keeps this readable regardless of whatever's
-		-- underneath it (the green level-progress fill vs the purple
-		-- rested-bonus fill use different colors) without needing to
-		-- sample/react to the bar's current fill color.
+		-- underneath it (the earned-XP fill vs. the rested-bonus fill can
+		-- now be any user-chosen color - round 17 item 3 - without needing
+		-- to sample/react to the bar's current fill color).
 		local fontPath, fontSize = text:GetFont()
 
 		if fontPath then
@@ -3667,11 +4006,15 @@ function BTV:ApplyBetterExpBarVisual()
 		if not betterExpBarEventFrame then
 			betterExpBarEventFrame = CreateFrame("Frame", "BTVanillaBetterExpBarEventFrame")
 
-			-- Matches BEB/TextVars.lua's own "$pdl"/"$prt" event lists
-			-- exactly - PLAYER_XP_UPDATE for the level-percent formula,
-			-- UPDATE_EXHAUSTION for the rested-percent formula.
+			-- Round 17 item 4: PLAYER_LEVEL_UP added alongside BEB's own
+			-- "$pdl"/"$prt" event list ("$plv"'s own event list covers this
+			-- one) so the new Level segment stays live too. All three kept
+			-- unconditionally registered regardless of which of the 5
+			-- segment toggles are currently on - simpler and safer than
+			-- churning registration on every checkbox click.
 			betterExpBarEventFrame:RegisterEvent("PLAYER_XP_UPDATE")
 			betterExpBarEventFrame:RegisterEvent("UPDATE_EXHAUSTION")
+			betterExpBarEventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 			betterExpBarEventFrame:SetScript("OnEvent", UpdateBetterExpBarText)
 		end
 	end

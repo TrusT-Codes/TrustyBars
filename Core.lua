@@ -989,14 +989,48 @@ function BTV:EnsureDB()
 
 	-- "Better Experience Bar" text overlay (round 16 part 2, Part B) -
 	-- default false: the XP bar looks and behaves exactly like vanilla
-	-- (no extra text) until the user explicitly opts in via the General
-	-- tab (Settings.lua). Fully independent of expBarEnabled/expBarScale
-	-- above - this only governs DefaultBars.lua's
-	-- BTV:ApplyBetterExpBarVisual text overlay, never the container's own
-	-- movability/scalability.
+	-- (no extra text) until the user explicitly opts in via the Experience
+	-- Bar's own settings page (Settings.lua's simpleBarPageConfigs["expbar"]
+	-- - relocated off the General tab in round 17 item 5). Fully
+	-- independent of expBarEnabled/expBarScale above - this only governs
+	-- DefaultBars.lua's BTV:ApplyBetterExpBarVisual text overlay, never the
+	-- container's own movability/scalability.
 	if BTVanillaDB.betterExpBarEnabled == nil then
 		BTVanillaDB.betterExpBarEnabled = false
 	end
+
+	-- Round 17 items 2/4: the 5 independently toggleable text segments
+	-- (Settings.lua's Experience Bar page). All 5 default true - since the
+	-- feature itself already defaults off via betterExpBarEnabled above,
+	-- there's no "surprise new text" risk in defaulting every segment on;
+	-- the user only ever sees any of this after explicitly opting in, at
+	-- which point showing the fullest, most informative line by default
+	-- (rather than guessing which subset they'd prefer) is the more useful
+	-- starting point - they can trim it down per-segment from there.
+	if BTVanillaDB.expBarShowCurrentOverMax == nil then
+		BTVanillaDB.expBarShowCurrentOverMax = true
+	end
+	if BTVanillaDB.expBarShowPercent == nil then
+		BTVanillaDB.expBarShowPercent = true
+	end
+	if BTVanillaDB.expBarShowLevel == nil then
+		BTVanillaDB.expBarShowLevel = true
+	end
+	if BTVanillaDB.expBarShowRestedPercent == nil then
+		BTVanillaDB.expBarShowRestedPercent = true
+	end
+	if BTVanillaDB.expBarShowRestedTotal == nil then
+		BTVanillaDB.expBarShowRestedTotal = true
+	end
+
+	-- Round 17 item 3: BTVanillaDB.expBarColorEarned/expBarColorRested
+	-- (plus their expBarNativeColor* pristine-snapshot counterparts) are
+	-- deliberately NOT seeded here - same lazy-capture-on-first-real-use
+	-- idiom as expBarPosition/expBarNativeAnchor above
+	-- (DefaultBars.lua's BTV:CaptureExpBarColorsIfNeeded), since a real
+	-- native color can only be read via GetStatusBarColor() off the real
+	-- live MainMenuExpBar/ExhaustionLevelFillBar frames, which don't exist
+	-- meaningfully at EnsureDB time.
 
 	-- Key Ring Scale (bug-fix batch round 2, Issue B): default 1 (no
 	-- scaling), same safe-to-seed-unconditionally reasoning as
@@ -1682,6 +1716,17 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:SetExpBarEnabled(BTVanillaDB.expBarEnabled ~= false)
 	BTV:SetExpBarScale(BTVanillaDB.expBarScale or 1)
 	BTV:ApplyExpBarPosition()
+
+	-- Bar-fill colors (round 17 item 3). Round 18 Bug 1 fix: this call
+	-- itself is still unconditional, but BTV:ApplyExpBarColors (DefaultBars.lua)
+	-- now internally gates on BTVanillaDB.betterExpBarEnabled before ever
+	-- touching MainMenuExpBar/ExhaustionLevelFillBar's color - calling it
+	-- unconditionally here used to ALSO apply unconditionally, which broke
+	-- the native rested-XP overlay for every user regardless of whether they
+	-- ever touched this feature. Safe to keep calling from here every login
+	-- now that the function itself is the single choke point deciding
+	-- whether anything actually happens.
+	BTV:ApplyExpBarColors()
 
 	-- "Better Experience Bar" text overlay (round 16 part 2, Part B) -
 	-- creates/shows/hides the live percent-complete/percent-rested

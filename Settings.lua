@@ -1843,6 +1843,191 @@ function BTV:RefreshDefaultLayoutGatingOnAllPages()
 end
 
 -------------------------------------------------------------------------
+-- Experience Bar page-only helpers (round 17, items 3-5)
+--
+-- Declared here (real Lua 5.0 locals, ahead of CreateSimpleBarPage's own
+-- definition below) rather than inline in the "expbar"-only block inside
+-- it, since Lua 5.0 has no forward-declaration/hoisting for local
+-- functions - a local must exist before whatever references it.
+-------------------------------------------------------------------------
+
+-- A small clickable color swatch: a bordered square button (same
+-- backdrop/insets convention CreateGridSwatch above already uses) with a
+-- solid WHITE8X8 texture inside that gets tinted to whatever color it
+-- currently represents.
+local function CreateColorSwatchButton(parent, name)
+	local swatch = CreateFrame("Button", name, parent)
+
+	swatch:SetWidth(24)
+	swatch:SetHeight(24)
+
+	swatch:SetBackdrop({
+		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = {
+			left = 1,
+			right = 1,
+			top = 1,
+			bottom = 1
+		},
+	})
+
+	swatch:SetBackdropBorderColor(0.4, 0.4, 0.4, 1)
+
+	local tex = swatch:CreateTexture(nil, "ARTWORK")
+
+	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
+	tex:SetPoint("TOPLEFT", swatch, "TOPLEFT", 2, -2)
+	tex:SetPoint("BOTTOMRIGHT", swatch, "BOTTOMRIGHT", -2, 2)
+
+	swatch.colorTexture = tex
+
+	return swatch
+end
+
+local function SetColorSwatchColor(swatch, color)
+	if not swatch or not swatch.colorTexture or not color then
+		return
+	end
+
+	swatch.colorTexture:SetVertexColor(color.r or 1, color.g or 1, color.b or 1)
+end
+
+-- Opens vanilla's standard native ColorPickerFrame, wired to `getter`
+-- (BTVanillaDB.expBarColorEarned/expBarColorRested) for the initial value
+-- and `setter` (BTV:SetExpBarColorEarned/SetExpBarColorRested) for both
+-- live-drag updates (func) and Cancel (cancelFunc, restoring whatever was
+-- active before the picker opened) - the well-documented vanilla 1.12
+-- ColorPickerFrame API (SetColorRGB/func/opacityFunc/cancelFunc/
+-- hasOpacity), not a modern/Classic-only equivalent. `swatch` is kept in
+-- sync live too, so the button's own color always reflects the current
+-- value without needing to close/reopen the settings page.
+local function OpenExpBarColorPicker(swatch, getter, setter)
+	local current = getter() or { r = 1, g = 1, b = 1 }
+
+	ColorPickerFrame.func = function()
+		local r, g, b = ColorPickerFrame:GetColorRGB()
+
+		setter(r, g, b)
+		SetColorSwatchColor(swatch, getter())
+	end
+
+	-- hasOpacity = false (round 17 item 3 - bar-fill colors have no
+	-- meaningful separate alpha channel here), but opacityFunc is still
+	-- assigned defensively to a no-op per ColorPickerFrame's documented
+	-- field set, in case the client ever calls it regardless.
+	ColorPickerFrame.opacityFunc = function() end
+	ColorPickerFrame.hasOpacity = false
+
+	ColorPickerFrame.cancelFunc = function(previousValues)
+		if previousValues then
+			setter(previousValues.r, previousValues.g, previousValues.b)
+			SetColorSwatchColor(swatch, getter())
+		end
+	end
+
+	ColorPickerFrame:SetColorRGB(current.r, current.g, current.b)
+
+	-- Round 18 Bug 4 fix: anchor the native picker right next to this
+	-- addon's own Settings window instead of wherever it last was/centered
+	-- on screen, so the user never has to manually drag the Settings window
+	-- out of the way to see it. `settingsFrame` (this file's own module
+	-- local, set once by CreateSettingsFrame) is guaranteed non-nil here -
+	-- this function is only ever reachable by clicking a swatch on an
+	-- already-open Experience Bar settings page.
+	ColorPickerFrame:ClearAllPoints()
+	ColorPickerFrame:SetPoint("TOPLEFT", settingsFrame, "TOPRIGHT", 10, 0)
+
+	-- CreateSettingsFrame pins the Settings window itself to "DIALOG"
+	-- strata. "FULLSCREEN_DIALOG" is the next tier up in this client's
+	-- fixed FRAME_STRATA ordering (BACKGROUND < LOW < MEDIUM < HIGH <
+	-- DIALOG < FULLSCREEN < FULLSCREEN_DIALOG < TOOLTIP - a stock client
+	-- enum, not something any of this addon's four mods change), which
+	-- guarantees the picker renders above the Settings window regardless of
+	-- whatever strata ColorPickerFrame's own native FrameXML definition
+	-- already uses - no need to guess/check its prior value first.
+	ColorPickerFrame:SetFrameStrata("FULLSCREEN_DIALOG")
+
+	ShowUIPanel(ColorPickerFrame)
+end
+
+-- One row: a label + a 24x24 CheckButton for one of the 5 independently
+-- toggleable text segments (round 17 item 4). Returns the checkbox so the
+-- caller can stash it on `page` for RefreshSimpleBarPage/gating.
+local function CreateExpBarTextToggleCheckbox(page, name, labelText, y, dbKey)
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaSimplePageExpBar" .. name .. "Checkbox",
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	checkbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB[dbKey] = checked
+
+			BTV:ApplyBetterExpBarVisual()
+		end
+	)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText(labelText)
+	end
+
+	return checkbox
+end
+
+-- Gates the 5 text-toggle checkboxes + 2 color swatches + Reset Colors
+-- button on whether "Enable Better Experience Bar" is currently checked -
+-- these 8 sub-controls are meaningless while that's off, same
+-- EnableMouse(false)+SetAlpha(0.5) treatment ApplyDefaultLayoutGating uses
+-- above (controls stay visible, showing their current value, just not
+-- interactive) rather than hiding them outright.
+local function ApplyBetterExpBarGating(page)
+	if not page or not page.betterExpBarCheckbox then
+		return
+	end
+
+	local interactive = page.betterExpBarCheckbox:GetChecked() and true or false
+	local alpha = interactive and 1 or 0.5
+
+	local controls = {
+		page.expBarShowLevelCheckbox,
+		page.expBarShowCurrentOverMaxCheckbox,
+		page.expBarShowPercentCheckbox,
+		page.expBarShowRestedPercentCheckbox,
+		page.expBarShowRestedTotalCheckbox,
+		page.earnedColorSwatch,
+		page.restedColorSwatch,
+		page.resetColorsButton,
+	}
+
+	local i
+
+	for i = 1, table.getn(controls) do
+		local control = controls[i]
+
+		if control then
+			control:EnableMouse(interactive)
+			control:SetAlpha(alpha)
+		end
+	end
+end
+
+-------------------------------------------------------------------------
 -- Simple bar pages (Stance Bar / Bag Bar / Micro Menu, features 2/3)
 --
 -- Shares one builder, parameterized via simpleBarPageConfigs, rather than
@@ -2232,6 +2417,205 @@ local function CreateSimpleBarPage(key)
 	end
 
 	-------------------------------------------------------------------------
+	-- "Better Experience Bar" + its 5 text toggles + 2 bar-fill color
+	-- pickers (round 17, items 3-5) - Experience Bar page only. Relocated
+	-- off the General tab (item 5): grouped here as this feature's own
+	-- settings home instead of scattered across General. Deliberately
+	-- independent of the "Enabled" checkbox further up this function
+	-- (config.hasEnable, the container's own Position/Scale/Enable/Reset) -
+	-- BTVanillaDB.betterExpBarEnabled only ever governed the text overlay,
+	-- never the container's own movability, per this feature's own spec.
+	-------------------------------------------------------------------------
+
+	if key == "expbar" then
+		local betterExpBarCheckbox = CreateFrame(
+			"CheckButton",
+			"BTVanillaSimplePageExpBarBetterCheckbox",
+			page,
+			"UICheckButtonTemplate"
+		)
+
+		betterExpBarCheckbox:SetWidth(24)
+		betterExpBarCheckbox:SetHeight(24)
+
+		betterExpBarCheckbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, cursorY)
+
+		betterExpBarCheckbox:SetScript(
+			"OnClick",
+			function()
+				local checked = this:GetChecked() and true or false
+
+				BTVanillaDB.betterExpBarEnabled = checked
+
+				BTV:ApplyBetterExpBarVisual()
+
+				-- Round 18 Bug 1 fix: this call site was previously missing
+				-- entirely - toggling the feature ON never applied whatever
+				-- color (custom or default) was already saved in
+				-- BTVanillaDB.expBarColorEarned/Rested, leaving the bar
+				-- looking native until the user separately touched a color
+				-- picker or the Reset Colors button. BTV:ApplyExpBarColors
+				-- now internally gates on betterExpBarEnabled itself, so this
+				-- is safe to call unconditionally here too - it applies the
+				-- saved color when turning the feature on, and does nothing
+				-- when turning it off (leaving native colors untouched).
+				BTV:ApplyExpBarColors()
+
+				ApplyBetterExpBarGating(page)
+			end
+		)
+
+		local betterExpBarLabel = getglobal(betterExpBarCheckbox:GetName() .. "Text")
+
+		if betterExpBarLabel then
+			betterExpBarLabel:SetText("Enable Better Experience Bar")
+		end
+
+		page.betterExpBarCheckbox = betterExpBarCheckbox
+
+		local betterExpBarDescription = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+		betterExpBarDescription:SetPoint("TOPLEFT", betterExpBarCheckbox, "BOTTOMLEFT", 4, -6)
+		betterExpBarDescription:SetWidth(440)
+		betterExpBarDescription:SetJustifyH("LEFT")
+
+		betterExpBarDescription:SetText(
+			"Replaces the native percent label with a customizable text " ..
+			"line, and lets you recolor the bar's own fill and rested-" ..
+			"bonus fill below."
+		)
+
+		page.betterExpBarDescription = betterExpBarDescription
+
+		-- Fixed vertical budget for the checkbox+description pair above
+		-- (24px checkbox, up to 2 wrapped lines of GameFontHighlightSmall)
+		-- rather than an anchor-chained follow-up section - this function
+		-- positions every other control here via computed cursorY math, and
+		-- the description text above is short/width-bounded enough to
+		-- reliably stay within 2 lines, so a generous fixed offset is
+		-- simpler than switching this one section to real-anchor-chaining
+		-- (the General tab's own approach, only needed there because ITS
+		-- description text length isn't controlled/bounded the same way).
+		cursorY = cursorY - 24 - 6 - 24 - 14
+
+		-------------------------------------------------------------------------
+		-- 5 text-segment toggles (item 4)
+		-------------------------------------------------------------------------
+
+		local showLevelCheckbox = CreateExpBarTextToggleCheckbox(
+			page, "ShowLevel", "Show Current Lvl", cursorY, "expBarShowLevel"
+		)
+		page.expBarShowLevelCheckbox = showLevelCheckbox
+		cursorY = cursorY - 24 - 6
+
+		local showCurrentOverMaxCheckbox = CreateExpBarTextToggleCheckbox(
+			page, "ShowCurrentOverMax", "Show Current XP / Max", cursorY, "expBarShowCurrentOverMax"
+		)
+		page.expBarShowCurrentOverMaxCheckbox = showCurrentOverMaxCheckbox
+		cursorY = cursorY - 24 - 6
+
+		local showPercentCheckbox = CreateExpBarTextToggleCheckbox(
+			page, "ShowPercent", "Show Current % / Max", cursorY, "expBarShowPercent"
+		)
+		page.expBarShowPercentCheckbox = showPercentCheckbox
+		cursorY = cursorY - 24 - 6
+
+		local showRestedPercentCheckbox = CreateExpBarTextToggleCheckbox(
+			page, "ShowRestedPercent", "Show Current Rested XP %", cursorY, "expBarShowRestedPercent"
+		)
+		page.expBarShowRestedPercentCheckbox = showRestedPercentCheckbox
+		cursorY = cursorY - 24 - 6
+
+		local showRestedTotalCheckbox = CreateExpBarTextToggleCheckbox(
+			page, "ShowRestedTotal", "Show Current Total Rested XP", cursorY, "expBarShowRestedTotal"
+		)
+		page.expBarShowRestedTotalCheckbox = showRestedTotalCheckbox
+		cursorY = cursorY - 24 - 18
+
+		-------------------------------------------------------------------------
+		-- 2 bar-fill color pickers (item 3)
+		-------------------------------------------------------------------------
+
+		local earnedColorLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		earnedColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
+		earnedColorLabel:SetText("Earned XP Bar Color")
+
+		local earnedColorSwatch = CreateColorSwatchButton(
+			page, "BTVanillaSimplePageExpBarEarnedColorSwatch"
+		)
+
+		earnedColorSwatch:SetPoint("LEFT", earnedColorLabel, "RIGHT", 12, 0)
+
+		earnedColorSwatch:SetScript(
+			"OnClick",
+			function()
+				OpenExpBarColorPicker(
+					earnedColorSwatch,
+					function() return BTVanillaDB.expBarColorEarned end,
+					function(r, g, b) BTV:SetExpBarColorEarned(r, g, b) end
+				)
+			end
+		)
+
+		page.earnedColorSwatch = earnedColorSwatch
+
+		cursorY = cursorY - 24 - 14
+
+		local restedColorLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		restedColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
+		restedColorLabel:SetText("Rested XP Bar Color")
+
+		local restedColorSwatch = CreateColorSwatchButton(
+			page, "BTVanillaSimplePageExpBarRestedColorSwatch"
+		)
+
+		restedColorSwatch:SetPoint("LEFT", restedColorLabel, "RIGHT", 12, 0)
+
+		restedColorSwatch:SetScript(
+			"OnClick",
+			function()
+				OpenExpBarColorPicker(
+					restedColorSwatch,
+					function() return BTVanillaDB.expBarColorRested end,
+					function(r, g, b) BTV:SetExpBarColorRested(r, g, b) end
+				)
+			end
+		)
+
+		page.restedColorSwatch = restedColorSwatch
+
+		cursorY = cursorY - 24 - 14
+
+		local resetColorsButton = CreateFrame(
+			"Button",
+			nil,
+			page,
+			"UIPanelButtonTemplate"
+		)
+
+		resetColorsButton:SetWidth(200)
+		resetColorsButton:SetHeight(22)
+
+		resetColorsButton:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, cursorY)
+		resetColorsButton:SetText("Reset Colors to Default")
+
+		resetColorsButton:SetScript(
+			"OnClick",
+			function()
+				BTV:ResetExpBarColors()
+
+				BTV:RefreshBarSettingsPage("expbar")
+			end
+		)
+
+		page.resetColorsButton = resetColorsButton
+
+		cursorY = cursorY - 22 - 26
+	end
+
+	-------------------------------------------------------------------------
 	-- Show Key Ring (Bag Bar page only, bug-fix batch Fix 2) - KeyRingButton
 	-- is independently toggleable/positionable (DefaultBars.lua's
 	-- BTV:SetKeyRingEnabled/SetKeyRingPosition), but the user explicitly
@@ -2511,6 +2895,55 @@ function BTV:RefreshSimpleBarPage(key)
 		page.orientationCheckbox:SetChecked(config.getOrientation() == true)
 	end
 
+	-------------------------------------------------------------------------
+	-- "Better Experience Bar" + its 5 text toggles + 2 color swatches
+	-- (round 17, items 3-5, Experience Bar page only) - independent of
+	-- config.getEnabled above (that's the container's OWN enable flag), so
+	-- these read BTVanillaDB.betterExpBarEnabled/expBarShow*/expBarColor*
+	-- directly, same non-config-driven treatment as Key Ring's own fields
+	-- above.
+	-------------------------------------------------------------------------
+
+	if page.betterExpBarCheckbox then
+		page.betterExpBarCheckbox:SetChecked(BTVanillaDB.betterExpBarEnabled == true)
+
+		if page.expBarShowLevelCheckbox then
+			page.expBarShowLevelCheckbox:SetChecked(BTVanillaDB.expBarShowLevel == true)
+		end
+
+		if page.expBarShowCurrentOverMaxCheckbox then
+			page.expBarShowCurrentOverMaxCheckbox:SetChecked(BTVanillaDB.expBarShowCurrentOverMax == true)
+		end
+
+		if page.expBarShowPercentCheckbox then
+			page.expBarShowPercentCheckbox:SetChecked(BTVanillaDB.expBarShowPercent == true)
+		end
+
+		if page.expBarShowRestedPercentCheckbox then
+			page.expBarShowRestedPercentCheckbox:SetChecked(BTVanillaDB.expBarShowRestedPercent == true)
+		end
+
+		if page.expBarShowRestedTotalCheckbox then
+			page.expBarShowRestedTotalCheckbox:SetChecked(BTVanillaDB.expBarShowRestedTotal == true)
+		end
+
+		-- BTV:CaptureExpBarColorsIfNeeded (via BTV:ApplyExpBarColors,
+		-- called unconditionally from Core.lua's login sequence) has
+		-- already guaranteed both fields are non-nil by the time Settings
+		-- can even be opened, so no nil fallback is needed here the way
+		-- the color picker's own OpenExpBarColorPicker call defensively
+		-- has one.
+		if page.earnedColorSwatch then
+			SetColorSwatchColor(page.earnedColorSwatch, BTVanillaDB.expBarColorEarned)
+		end
+
+		if page.restedColorSwatch then
+			SetColorSwatchColor(page.restedColorSwatch, BTVanillaDB.expBarColorRested)
+		end
+
+		ApplyBetterExpBarGating(page)
+	end
+
 	-- Same gating window as bar 1 (CanDragDefaultLayout's underlying
 	-- rule) - the enable checkbox and Reset button are deliberately
 	-- excluded, mirroring ApplyDefaultLayoutGating's own established
@@ -2620,10 +3053,13 @@ simpleBarPageConfigs["latencybar"] = {
 -- Experience Bar (round 16 part 2, Part A): Scale only, same reasoning as
 -- the Latency Bar's own config above - MainMenuExpBar is a single self-
 -- contained native frame, not a TrustyBars-owned chain, so Spacing/
--- Orientation have nothing real to drive. This page's controls are
--- entirely independent of Part B's "Enable Better Experience Bar" General-
--- tab checkbox (BTVanillaDB.betterExpBarEnabled) - the two features are
--- deliberately separate per this feature's own spec.
+-- Orientation have nothing real to drive. This config only covers the
+-- container's own Position/Scale/Enable/Reset - "Enable Better Experience
+-- Bar" and its own text-toggle/color-picker controls (round 17 items 3-5)
+-- now live on this SAME settings page too (CreateSimpleBarPage's own
+-- "if key == 'expbar'" block), but remain functionally independent
+-- (BTVanillaDB.betterExpBarEnabled only ever governs the text overlay,
+-- never this container's own movability), per this feature's own spec.
 simpleBarPageConfigs["expbar"] = {
 	title = "Experience Bar",
 	hasEnable = true,
@@ -3052,6 +3488,22 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	n = AppendCandidate(candidates, n, page.keyRingCheckbox)
 	n = AppendCandidate(candidates, n, page.keyRingScaleValueText)
 
+	-- "Better Experience Bar" + its 5 text toggles + 2 color pickers +
+	-- Reset Colors button (round 17, items 3-5, Experience Bar page only) -
+	-- resetColorsButton is the effective lowest control on this page (below
+	-- even resetPositionButton above), so it's what actually drives this
+	-- page's real fitted height.
+	n = AppendCandidate(candidates, n, page.betterExpBarCheckbox)
+	n = AppendCandidate(candidates, n, page.betterExpBarDescription)
+	n = AppendCandidate(candidates, n, page.expBarShowLevelCheckbox)
+	n = AppendCandidate(candidates, n, page.expBarShowCurrentOverMaxCheckbox)
+	n = AppendCandidate(candidates, n, page.expBarShowPercentCheckbox)
+	n = AppendCandidate(candidates, n, page.expBarShowRestedPercentCheckbox)
+	n = AppendCandidate(candidates, n, page.expBarShowRestedTotalCheckbox)
+	n = AppendCandidate(candidates, n, page.earnedColorSwatch)
+	n = AppendCandidate(candidates, n, page.restedColorSwatch)
+	n = AppendCandidate(candidates, n, page.resetColorsButton)
+
 	-- Stance/Page Bar Assignment rows (relocated here from the General tab,
 	-- bug-fix batch round 4, Issue 5) - only ever present on bar 1's page.
 	-- Each individual row is included as its own candidate, same "walk the
@@ -3115,9 +3567,9 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.countValueText)
 	n = AppendCandidate(candidates, n, panel.countResetButton)
 
-	-- "Enable Better Experience Bar" (round 16 part 2, Part B).
-	n = AppendCandidate(candidates, n, panel.betterExpBarCheckbox)
-	n = AppendCandidate(candidates, n, panel.betterExpBarDescription)
+	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
+	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
+	-- for its candidate handling now.
 
 	ApplySettingsHeightFromCandidates(candidates)
 end
@@ -4221,90 +4673,11 @@ function BTV:GetOrCreateGeneralPanel()
 
 	panel.countResetButton = countResetButton
 
-	-------------------------------------------------------------------------
-	-- "Enable Better Experience Bar" (round 16 part 2, Part B)
-	--
-	-- BTVanillaDB.betterExpBarEnabled - independent of the Experience Bar
-	-- container's own Position/Scale/Enable page (Settings.lua's
-	-- simpleBarPageConfigs["expbar"], "Bars" tab) - toggling this only
-	-- shows/hides the live percent-complete/percent-rested text overlay
-	-- (DefaultBars.lua's BTV:ApplyBetterExpBarVisual), applied immediately
-	-- like every other live checkbox on this panel. Styled/positioned
-	-- exactly like the checkboxes earlier in this function, anchored off
-	-- the Item Count Text Size Reset button the same real-anchor-chain way
-	-- (its actual bottom edge isn't knowable at build time, same reasoning
-	-- as mainBarStanceSwapDescription's own anchor above).
-	-------------------------------------------------------------------------
-
-	local betterExpBarCheckbox = CreateFrame(
-		"CheckButton",
-		"BTVanillaGeneralBetterExpBarCheckbox",
-		panel,
-		"UICheckButtonTemplate"
-	)
-
-	betterExpBarCheckbox:SetWidth(24)
-	betterExpBarCheckbox:SetHeight(24)
-
-	-- X offset -4 (not 0, unlike countTitle's own anchor off hotkeyTitle) -
-	-- every OTHER checkbox on this panel sits 4px LEFT of its own
-	-- following description/title text (e.g. tintWholeButtonCheckbox is
-	-- description's BOTTOMLEFT -4, compensating for description's own +4
-	-- offset from its checkbox) - matching that same checkbox-column X here
-	-- keeps this checkbox visually aligned with the others instead of
-	-- sitting 4px further right, in line with the title text above it.
-	betterExpBarCheckbox:SetPoint(
-		"TOPLEFT",
-		countTitle,
-		"BOTTOMLEFT",
-		-4,
-		-12 - countSlider:GetHeight() - 2 - countValueText:GetHeight() - 18
-	)
-
-	betterExpBarCheckbox:SetScript(
-		"OnClick",
-		function()
-			local checked = this:GetChecked() and true or false
-
-			BTVanillaDB.betterExpBarEnabled = checked
-
-			BTV:ApplyBetterExpBarVisual()
-		end
-	)
-
-	local betterExpBarLabel = getglobal(
-		betterExpBarCheckbox:GetName() .. "Text"
-	)
-
-	if betterExpBarLabel then
-		betterExpBarLabel:SetText("Enable Better Experience Bar")
-	end
-
-	panel.betterExpBarCheckbox = betterExpBarCheckbox
-
-	local betterExpBarDescription = panel:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontHighlightSmall"
-	)
-
-	betterExpBarDescription:SetPoint(
-		"TOPLEFT",
-		betterExpBarCheckbox,
-		"BOTTOMLEFT",
-		4,
-		-10
-	)
-
-	betterExpBarDescription:SetWidth(520)
-	betterExpBarDescription:SetJustifyH("LEFT")
-
-	betterExpBarDescription:SetText(
-		"When enabled, shows percent-of-current-level and percent-of-" ..
-		"fully-rested text directly on the Experience Bar."
-	)
-
-	panel.betterExpBarDescription = betterExpBarDescription
+	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
+	-- to the Experience Bar's own settings page (round 17 item 5,
+	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
+	-- new text-toggle checkboxes and color pickers, grouped there as this
+	-- feature's own settings home instead of scattered across General.
 
 	panel:Hide()
 
@@ -4370,11 +4743,9 @@ function BTV:RefreshGeneralPanel()
 	panel.countValueText:SetText(tostring(countSize))
 	panel.countSlider.suppressApply = nil
 
-	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - default
-	-- false (Core.lua's EnsureDB) - only an explicit true ever checks this.
-	panel.betterExpBarCheckbox:SetChecked(
-		BTVanillaDB.betterExpBarEnabled == true
-	)
+	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
+	-- own settings page (round 17 item 5); refreshed from
+	-- RefreshSimpleBarPage("expbar") instead of here now.
 end
 
 -------------------------------------------------------------------------
