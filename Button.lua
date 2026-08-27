@@ -327,30 +327,21 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self:EnableMouse(true)
 	self:EnableMouseWheel(true)
 
-	-- Icon inset: round 13 tried flush 0,0 for default bars (1-5) on the
-	-- reasoning that real vanilla's own ActionButton1Icon is anchored flush
-	-- to its button frame with zero offset. Live-tested and reverted (round
-	-- 14, Issue 1): that reasoning addressed the wrong layer. self.icon is
-	-- drawn on the "ARTWORK" layer, which always renders ABOVE this
-	-- button's own SetBackdrop-drawn border (backdrop bg/edge textures are
-	-- always the bottom-most thing a frame draws, beneath every
-	-- CreateTexture-based layer including "BACKGROUND") - so a flush 0,0
-	-- icon completely covers the border on every side, regardless of how
-	-- big the border's own edgeSize is. The border was only ever visible
-	-- at all because the icon used to be smaller than the button, leaving
-	-- the backdrop's perimeter exposed in the margin - which is exactly
-	-- what a uniform inset restores here. Native vanilla avoids this
-	-- entirely by drawing its border as a SEPARATE, larger overlay texture
-	-- (its CheckButton's own NormalTexture, layered above the icon) rather
-	-- than a same-size backdrop layered below it - round 15 replicates this
-	-- properly for default bars 1-5 (self.border above), using the live-
-	-- confirmed real texture/size (Interface\Buttons\UI-Quickslot2, 66x66
-	-- against a real ~36px button - BTV.BORDER_RATIO, Core.lua). The icon
-	-- inset itself stays this same flat uniform 2px for every button
-	-- regardless (default bars 1-5 AND true custom bars 6+, which have no
-	-- native border texture to match and keep the plain SetBackdrop-drawn
-	-- border instead) - that was never actually the wrong piece; only the
-	-- (now separately solved) border-visibility problem was.
+	-- Icon inset: a flush 0,0 icon anchor was tried and reverted (round
+	-- 14) because self.icon is drawn on the "ARTWORK" layer, which always
+	-- renders ABOVE this button's own SetBackdrop-drawn border (backdrop
+	-- bg/edge textures are always the bottom-most thing a frame draws,
+	-- beneath every CreateTexture-based layer including "BACKGROUND") -
+	-- so a flush icon completely covers the border regardless of its
+	-- edgeSize. A uniform inset restores a visible margin. Native vanilla
+	-- avoids this entirely by drawing its border as a SEPARATE, larger
+	-- overlay texture layered above the icon rather than a same-size
+	-- backdrop layered below it - round 15 replicates that properly for
+	-- default bars 1-5 (self.border above, Interface\Buttons\UI-Quickslot2
+	-- at BTV.BORDER_RATIO, Core.lua). This flat 2px inset itself applies
+	-- to every button regardless (default bars 1-5 AND true custom bars
+	-- 6+, which have no native border texture to match and keep the plain
+	-- SetBackdrop-drawn border instead).
 	local iconInset = 2
 
 	self.icon = self:CreateTexture(nil, "ARTWORK")
@@ -1033,20 +1024,17 @@ function BTVButtonMixin.OnEvent()
 end
 
 function BTVButtonMixin.OnClick()
-	-- Edit-mode interaction (right-click-to-settings, bar drag) is now
-	-- fully owned by Bar.lua's per-bar overlay (EnsureBarOverlay), which
-	-- sits at TOOLTIP strata - above this button's own round-34 HIGH
-	-- strata (see this function's own SetFrameStrata call above) - and is
-	-- mouse-enabled for the entire duration of edit mode. Since that
-	-- overlay spans the bar's whole cols x rows bounding box (which
-	-- necessarily contains every button), it wins every hit-test here
-	-- first; this handler can no longer fire at all while
-	-- BTV:IsEditMode() is true, so the old edit-mode branch that used to
-	-- live here has been removed as unreachable. arg1 is the mouse button
-	-- that triggered OnClick ("LeftButton"/"RightButton") - confirmed real
-	-- vanilla convention (a global, not a passed parameter), cross-checked
-	-- against real vanilla-era addon source (Bongos_ActionBar) and
-	-- WoWWiki's own documented RegisterForClicks example.
+	-- Edit-mode interaction (right-click-to-settings, bar drag) is fully
+	-- owned by Bar.lua's per-bar overlay (EnsureBarOverlay), which sits at
+	-- TOOLTIP strata above every button's own HIGH strata and is mouse-
+	-- enabled for the entire BTV:IsEditMode() window, so it wins every
+	-- hit-test first and this handler never fires while editing (see
+	-- EnsureBarOverlay's own comment in Bar.lua for the full mechanism).
+	-- arg1 is the mouse button that triggered OnClick
+	-- ("LeftButton"/"RightButton") - confirmed real vanilla convention (a
+	-- global, not a passed parameter), cross-checked against real
+	-- vanilla-era addon source (Bongos_ActionBar) and WoWWiki's own
+	-- documented RegisterForClicks example.
 	if BTV:ButtonHasCursor() then
 		this:PlaceCursor()
 	elseif this:IsSlotFilled() and UseAction then
@@ -1058,18 +1046,11 @@ function BTVButtonMixin.OnClick()
 	end
 end
 
--- Edit-mode guards that used to live in this file's OnReceiveDrag/
--- OnDragStart/OnDragStop were removed in the overlay-consolidation pass:
--- Bar.lua's per-bar overlay (EnsureBarOverlay) now sits at TOOLTIP strata -
--- above every button's own round-34 HIGH strata (see BTVButtonMixin:Init's
--- own SetFrameStrata call) - and is mouse-enabled for the entire
--- BTV:IsEditMode() window, spanning the bar's whole cols x rows bounding
--- box (which necessarily contains every button). That overlay therefore
--- wins every hit-test at any position within the bar during edit mode, so
--- none of these handlers can fire at all while editing - the
--- drag-to-move-bar and right-click-to-settings behavior they used to
--- special-case here is now handled exclusively by the overlay's own
--- OnDragStart/OnDragStop/OnMouseUp scripts.
+-- None of the handlers below need an edit-mode guard: Bar.lua's per-bar
+-- overlay wins every hit-test within the bar while BTV:IsEditMode() is
+-- true (see OnClick's comment above / EnsureBarOverlay in Bar.lua), so
+-- drag-to-move-bar and right-click-to-settings are handled exclusively by
+-- the overlay's own OnDragStart/OnDragStop/OnMouseUp scripts instead.
 function BTVButtonMixin.OnReceiveDrag()
 	this:PlaceCursor()
 end
