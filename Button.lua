@@ -376,31 +376,6 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self.glow:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
 	self.glow:Hide()
 
-	-- Edit-mode ("Configure Layout") overlay: a plain solid-color texture,
-	-- light blue, shown only while BTVanillaDB.editMode is on. Uses the
-	-- standard blank white texture asset (universally available, used by
-	-- countless addons for solid-color overlays) tinted via vertex color
-	-- rather than a dedicated art asset, since this is our own UI
-	-- affordance, not a replication of anything Blizzard ships.
-	-- Issue 1 (bug-fix batch): this used to be an "ARTWORK"-layer texture,
-	-- which OVERLAY-layer textures (self.glow/self.equipRing, both created
-	-- above) always draw above regardless of creation order or their own
-	-- sublevel - a button with an active glow ring or equip-quality ring
-	-- painted right over the edit tint, hiding it completely. Moved to
-	-- "OVERLAY" itself, sublevel 7 (the maximum/highest sublevel within
-	-- OVERLAY - a real vanilla texture layer concept, confirmed valid via
-	-- the two-argument SetDrawLayer(layer, sublevel) form), so it reliably
-	-- renders above both of those regardless of their own (default,
-	-- untouched) sublevel - this only fixes editOverlay being hidden, it
-	-- doesn't reorder glow vs. equipRing relative to each other.
-	self.editOverlay = self:CreateTexture(nil, "OVERLAY")
-	self.editOverlay:SetDrawLayer("OVERLAY", 7)
-	self.editOverlay:SetTexture("Interface\\Buttons\\WHITE8X8")
-	self.editOverlay:SetVertexColor(0.35, 0.65, 1.0, 0.45)
-	self.editOverlay:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
-	self.editOverlay:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
-	self.editOverlay:Hide()
-
 	-- Vanilla 1.12's cooldown spiral is a Model frame using
 	-- CooldownFrameTemplate (not a "Cooldown" widget type - that came
 	-- later). Confirmed working via ButtonForge Classic's shipped source.
@@ -557,7 +532,7 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 end
 
 -- Resizes the button and everything anchored to it that isn't already
--- purely anchor-relative. icon/glow/editOverlay auto-track via their
+-- purely anchor-relative. icon/glow auto-track via their
 -- TOPLEFT/BOTTOMRIGHT anchors (see Init) so they need no code here;
 -- equipRing is single-point (CENTER) anchored, so it has no implied size
 -- of its own and is recomputed explicitly here to the real vanilla 62/36
@@ -726,14 +701,6 @@ function BTVButtonMixin:Rebind(newActionSlot)
 	end
 
 	self:Refresh()
-end
-
-function BTVButtonMixin:SetEditModeVisual(enabled)
-	if enabled then
-		self.editOverlay:Show()
-	else
-		self.editOverlay:Hide()
-	end
 end
 
 -- Named IsSlotFilled rather than HasAction to avoid any reader confusion

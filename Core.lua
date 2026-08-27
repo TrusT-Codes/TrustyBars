@@ -1459,25 +1459,18 @@ end
 -------------------------------------------------------------------------
 -- Snap to Adjacent Elements (round 35)
 --
--- One shared, mechanism-agnostic utility used by BOTH of this addon's two
--- structurally different drag mechanisms:
---
---   1. Bar.lua's StartBarDrag/StopBarDrag (bars 1-5 and every custom/Extra
---      Bar 6-9) - native bar:StartMoving()/StopMovingOrSizing(). There is
---      no per-frame hook during a native drag, so this is only ever called
---      once, at drop time, in StopBarDrag, right after bar:GetPoint() is
---      read and before it's written into bar.config.
---   2. DefaultBars.lua's shared DefaultBarDrag_OnUpdate (Stance Bar, Bag
---      Bar, Micro Menu, Key Ring, Latency Bar, Experience Bar, Page
---      Indicator - every element wrapping a real/synthetic native frame
---      instead of a bar-pool frame). This DOES give a live per-frame hook,
---      so it's called every tick, right after that function computes the
---      proposed pos.x/pos.y and before calling the Apply*Position function
---      that actually moves the real frame - giving live, real-time
---      snapping while dragging, unlike mechanism 1's drop-time-only limit
---      (an unavoidable consequence of StartMoving() having no per-frame
---      hook, not a compromise - the same limitation any other vanilla-era
---      grid/snap addon has to live with).
+-- One shared, mechanism-agnostic utility used by every draggable element in
+-- the addon via DefaultBars.lua's single shared DefaultBarDrag_OnUpdate
+-- (bars 1-9 via Bar.lua's StartBarDrag/StopBarDrag AND Stance Bar, Bag Bar,
+-- Micro Menu, Key Ring, Latency Bar, Experience Bar, Page Indicator - every
+-- element wrapping a real/synthetic native frame instead of a bar-pool
+-- frame). All of these share one live per-frame hook (round 36 unified
+-- bars 1-9 onto this same mechanism, replacing their earlier native
+-- bar:StartMoving()/StopMovingOrSizing() drop-time-only path), called every
+-- tick right after DefaultBars.lua's ApplyDragSnap computes the proposed
+-- pos.x/pos.y and before the relevant Apply*Position function actually
+-- moves the real frame - giving every element live, real-time snapping
+-- while dragging.
 --
 -- Both call sites are responsible for converting their own proposed
 -- position into real screen pixels before calling this, and converting the
@@ -1495,10 +1488,23 @@ end
 -- to 1.5x) be compared directly in one common coordinate space, with no
 -- per-pair special-casing needed. Returns nil if the region can't report a
 -- position yet (e.g. hidden/never laid out).
-local function GetRealScreenBounds(region)
+--
+-- `inset` (v1.0 polish pass, optional, defaults to 0): default bars 1-5
+-- draw a native-accurate border texture (Button.lua's self.border) sized
+-- to BTV.BORDER_RATIO (66/36) of the button - i.e. the VISIBLE border
+-- overhangs the button/bar frame by (BORDER_RATIO-1)/2 * buttonSize on
+-- every side (see BTV:GetElementVisualInset below). Without this, two
+-- default bars whose FRAMES snap flush end up with their VISIBLE borders
+-- overlapping by that overhang amount - `inset` (in the same local units
+-- as GetLeft()/GetWidth(), pre-scale) lets a caller expand the reported
+-- bounds outward on every side so the box returned actually matches the
+-- bar's visible extent, not just its frame.
+local function GetRealScreenBounds(region, inset)
 	if not region or not region.GetLeft then
 		return nil
 	end
+
+	inset = inset or 0
 
 	local left, right, top, bottom = region:GetLeft(), region:GetRight(), region:GetTop(), region:GetBottom()
 	local scale = region:GetEffectiveScale()
@@ -1507,7 +1513,28 @@ local function GetRealScreenBounds(region)
 		return nil
 	end
 
-	return left * scale, right * scale, top * scale, bottom * scale
+	return (left - inset) * scale, (right + inset) * scale, (top + inset) * scale, (bottom - inset) * scale
+end
+
+-- (v1.0 polish pass) Returns how far, in local units (pre-scale, same as
+-- GetLeft()/GetWidth()), a frame's VISIBLE extent overhangs its own frame
+-- bounds on every side - 0 for anything without such an overhang. Only
+-- default bars (id 1-5) currently have one: their buttons draw a native-
+-- accurate border texture (Button.lua's self.border) at BTV.BORDER_RATIO
+-- (66/36) of the button size, centered on the button, which is a
+-- deliberate/correct replication of real vanilla action-button art (round
+-- 15/16) - not a bug. Custom bars (id 6+) use a SetBackdrop edge inset
+-- essentially at the frame edge, and every chain-anchored container/
+-- native-wrapped element (Bag Bar, Micro Menu, Key Ring, Latency Bar, Exp
+-- Bar, Page Indicator) has no known equivalent overhang, so they all
+-- return 0 here.
+function BTV:GetElementVisualInset(frame)
+	if frame and frame.config and frame.config.id and frame.config.id >= 1 and frame.config.id <= 5 then
+		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
+		return buttonSize * (self.BORDER_RATIO - 1) / 2
+	end
+
+	return 0
 end
 
 -- Every currently visible/enabled draggable element EXCEPT `excludeElement`
@@ -1530,7 +1557,7 @@ function BTV:GetAllSnapTargetBoxes(excludeElement)
 			return
 		end
 
-		local left, right, top, bottom = GetRealScreenBounds(frame)
+		local left, right, top, bottom = GetRealScreenBounds(frame, self:GetElementVisualInset(frame))
 
 		if left then
 			table.insert(boxes, { left = left, right = right, top = top, bottom = bottom })

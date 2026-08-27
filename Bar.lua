@@ -158,13 +158,13 @@ end
 --
 -- Consolidated (simplification pass) to fully own ALL edit-mode
 -- interaction for a custom bar, exactly mirroring DefaultBars.lua's
--- EnsureDefaultBarOverlay/ApplyDefaultLayoutEditVisual pattern: while
--- BTV:IsEditMode() is true, this frame is mouse-enabled AND elevated to
--- "TOOLTIP" strata (above the bar/buttons' own round-34 "HIGH" - see
--- CreateBarFromConfig), so it wins every hit-test within its bounds and
--- intercepts drag AND right-click uniformly across the whole bar area -
--- button, gap, or beyond-buttonCount cell alike. Outside edit mode it
--- drops back to EnableMouse(false) and "HIGH" strata, becoming
+-- (since-removed) old per-default-bar overlay/ApplyDefaultLayoutEditVisual
+-- pattern: while BTV:IsEditMode() is true, this frame is mouse-enabled AND
+-- elevated to "TOOLTIP" strata (above the bar/buttons' own round-34
+-- "HIGH" - see CreateBarFromConfig), so it wins every hit-test within its
+-- bounds and intercepts drag AND right-click uniformly across the whole
+-- bar area - button, gap, or beyond-buttonCount cell alike. Outside edit
+-- mode it drops back to EnableMouse(false) and "HIGH" strata, becoming
 -- completely inert so buttons regain unobstructed native interaction
 -- (cast-on-click, native pickup-drag) exactly as if this overlay didn't
 -- exist. This replaces the earlier "always-mouse-enabled, one level below
@@ -173,30 +173,30 @@ end
 -- - see this simplification's task comment for why owning ALL interaction
 -- here removes the need for those per-button branches.
 --
--- Why a bar-level overlay is needed at all even though Button.lua's
--- per-button editOverlay already exists: custom bars lay out their
--- buttons with zero spacing (LayoutButtons above: xOff = col *
--- cfg.buttonSize, no gap term), so in principle the per-button overlays
--- should already look continuous - but a hidden pool slot (i >
--- buttonCount, SetSlotVisible(false)) leaves a real gap in the middle of
--- an otherwise-full row/column, and any button whose glow/equip-ring
--- OVERLAY-layer texture happens to still be racing the per-button tint on
--- a given frame can flash a visible seam. A single frame spanning the
--- bar's own bounding box has no such gaps by construction, and has no
--- button frame at all sitting over those beyond-buttonCount cells to
--- catch a right-click there. Kept ADDITIVE to the per-button tint
--- overlays (not a replacement) since Button.lua's editOverlay is still
--- what actually paints the individual-button tint.
+-- (v1.0 polish pass) Button.lua used to also have a per-button editOverlay
+-- texture, kept additive to this bar-level overlay - it has since been
+-- deleted outright (it had no live call site; the per-button tint "looked
+-- weird," per the round that removed its call site). This bar-level
+-- overlay is now the ONLY edit-mode hitbox tint anywhere in the addon, for
+-- every bar kind. Why a bar-level overlay (rather than only per-button) is
+-- still needed: custom bars lay out their buttons with zero spacing
+-- (LayoutButtons above: xOff = col * cfg.buttonSize, no gap term), but a
+-- hidden pool slot (i > buttonCount, SetSlotVisible(false)) leaves a real
+-- gap in the middle of an otherwise-full row/column, and per-button tints
+-- would have had no button frame at all sitting over those
+-- beyond-buttonCount cells to catch a right-click there. A single frame
+-- spanning the bar's own bounding box has no such gaps by construction.
 --
 -- BarFrameSize (cfg.buttonSize * cfg.cols/rows, plus any cfg.spacing -
 -- bug-fix batch Fix 4 gave custom bars a real, user-adjustable spacing
 -- field too) IS exactly the bar frame's own width/height, since
 -- CreateBarFromConfig/SetBarButtonSize/ApplyBarShape all size `bar` itself
--- from that same formula - so unlike the default-bar overlay (which has
--- to independently derive a bounding box from the 12 real Blizzard button
--- frames' own positions), this one can simply SetAllPoints(bar) once and
--- never needs separate position/size math of its own, regardless of
--- whatever spacing value the bar currently has.
+-- from that same formula - so this overlay never needs separate
+-- position/size math of its own, regardless of whatever spacing value the
+-- bar currently has: `SetAllPoints(bar)` for custom bars (id 6+), or the
+-- same anchor expanded by BTV:GetElementVisualInset(bar) for default bars
+-- (id 1-5, see EnsureBarOverlay below) so the tint reaches their visible
+-- border's outer edge instead of stopping at the frame.
 -------------------------------------------------------------------------
 
 local barOverlays = {}
@@ -220,7 +220,27 @@ local function EnsureBarOverlay(bar)
 	-- to TOOLTIP + EnableMouse(true) for the duration of edit mode only.
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
-	overlay:SetAllPoints(bar)
+
+	-- (v1.0 polish pass) For default bars (id 1-5), expand past `bar`'s own
+	-- frame bounds by BTV:GetElementVisualInset(bar) on every side so this
+	-- tint reaches the visible native border's outer edge (Button.lua's
+	-- self.border, ~1.83x the button size, centered on it) instead of
+	-- stopping at the frame - which sat only ~2px past the icon, making the
+	-- hitbox look like it "started at the icon." Custom bars (id 6+, inset
+	-- 0) keep the exact SetAllPoints(bar) behavior they always had. Only
+	-- computed once here at creation time since a default bar's
+	-- buttonSize only changes via a full ApplyBarShape-style rebuild, not
+	-- passive resizing - SetPoint offsets (unlike SetAllPoints) keep
+	-- tracking `bar`'s own position/size automatically as it moves/resizes
+	-- in between.
+	local inset = BTV:GetElementVisualInset(bar)
+
+	if inset ~= 0 then
+		overlay:SetPoint("TOPLEFT", bar, "TOPLEFT", -inset, inset)
+		overlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", inset, -inset)
+	else
+		overlay:SetAllPoints(bar)
+	end
 
 	local tex = overlay:CreateTexture(nil, "OVERLAY")
 	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
@@ -261,7 +281,8 @@ local function EnsureBarOverlay(bar)
 
 	-- Owns dragging directly (SetScript, not HookScript - this is
 	-- entirely our own frame with no native behavior to preserve),
-	-- exactly mirroring DefaultBars.lua's EnsureDefaultBarOverlay.
+	-- exactly mirroring DefaultBars.lua's EnsureContainerOverlay pattern
+	-- for its own chain-anchored elements.
 	-- RegisterForDrag is registered once here unconditionally - only
 	-- EnableMouse/strata are toggled per edit-mode state, in
 	-- ApplyEditModeVisual below.
@@ -326,19 +347,17 @@ function BTV:ApplyEditModeVisual()
 		end
 
 		-- Per-button tint (the old btn:SetEditModeVisual(canEdit) call
-		-- here) is REMOVED outright, not just re-gated: the user tested the
+		-- here) was REMOVED outright, not just re-gated: the user tested a
 		-- prior round's canEdit-gated fix and decided the per-button tint
 		-- "looks weird" in every state, for every bar (default 1-5 and
 		-- custom 6+ alike) - not only when useDefaultLayout == true. The
 		-- bar-level overlay hitbox tint below (EnsureBarOverlay's own
 		-- texture) is the ONLY edit-mode tint left anywhere - it already
 		-- correctly represents "this whole bar is draggable as a unit" with
-		-- no per-button redundancy needed on top of it. Button.lua's
-		-- SetEditModeVisual/self.editOverlay are now unused (confirmed by
-		-- inspection - no other call site exists anywhere in this addon);
-		-- left in place rather than deleted since removing the call site
-		-- here is the smallest, safest change, and the method does nothing
-		-- but toggle that one now-permanently-hidden texture.
+		-- no per-button redundancy needed on top of it. (v1.0 polish pass)
+		-- Button.lua's SetEditModeVisual/self.editOverlay, which had been
+		-- left in place as dead code after that round, have since been
+		-- deleted outright.
 		if bar and bar.buttons then
 			local i
 
@@ -363,19 +382,18 @@ function BTV:ApplyEditModeVisual()
 			end
 		end
 
-		-- Bar-level overlay, additive to the per-button tint overlays
-		-- above - see EnsureBarOverlay's comment. Now fully owns edit-mode
+		-- Bar-level overlay - see EnsureBarOverlay's comment; this is now
+		-- the only edit-mode hitbox tint. It fully owns edit-mode
 		-- interaction: mouse-enabled and elevated to TOOLTIP strata (above
 		-- the bar/buttons' own round-34 "HIGH" - see CreateBarFromConfig's
 		-- comment) only while editMode is true, so it intercepts every
 		-- drag/right-click within its bounds during that window and is
 		-- otherwise completely inert - mirrors DefaultBars.lua's
-		-- ApplyDefaultLayoutEditVisual gating its own overlay's EnableMouse
-		-- the same way (that overlay has needed TOOLTIP, not just HIGH,
-		-- since the "bug-fix batch" filled-multibar-button strata gap - see
-		-- EnsureDefaultBarOverlay's own comment - and this overlay now
-		-- needs the exact same headroom now that the buttons underneath it
-		-- are "HIGH" too, not "MEDIUM").
+		-- ApplyContainerOverlayVisual gating its own overlay's EnableMouse
+		-- the same way (TOOLTIP, not just HIGH, is needed since the
+		-- "bug-fix batch" filled-multibar-button strata gap, and this
+		-- overlay needs the exact same headroom now that the buttons
+		-- underneath it are "HIGH" too, not "MEDIUM").
 		if bar then
 			local overlay = EnsureBarOverlay(bar)
 
@@ -975,11 +993,10 @@ function BTV:ApplyBarShape(bar)
 
 	-- Issue 4 (bug-fix batch): ensure this bar's overlay exists as soon as
 	-- the bar itself does, rather than lazily deferring creation to the
-	-- first edit-mode toggle - mirrors ApplyDefaultBarShape keeping
-	-- EnsureDefaultBarOverlay in sync on every call. SetAllPoints(bar) at
-	-- creation (see EnsureBarOverlay) means no separate resize call is
-	-- needed here even though PixelSetSize just changed bar's own
-	-- dimensions - the overlay's anchor to `bar` already tracks that.
+	-- first edit-mode toggle. The overlay's anchor to `bar` (see
+	-- EnsureBarOverlay) means no separate resize call is needed here even
+	-- though PixelSetSize just changed bar's own dimensions - it already
+	-- tracks that.
 	EnsureBarOverlay(bar)
 
 	self:ApplyEditModeVisual()
@@ -1055,8 +1072,8 @@ function BTV:CreateBarFromConfig(cfg)
 	-- UIParent's own child-nesting default assigns it - within a shared
 	-- strata tier, frame LEVEL (not creation order) is what actually
 	-- decides stacking (same rule already established in this codebase
-	-- for EnsureDefaultBarOverlay/EnsureContainerOverlay's own explicit
-	-- high levels - see their comments on this same client-specific
+	-- for DefaultBars.lua's EnsureContainerOverlay's own explicit
+	-- high levels - see its comment on this same client-specific
 	-- tie-break behavior). Applied uniformly to every bar (all of 1-5 and
 	-- every custom bar 6+ share this one creation path) - comfortably
 	-- higher than any other "HIGH"-strata frame this bar needs to sit
