@@ -263,8 +263,8 @@ local function EnsureBarOverlay(bar)
 	-- title already shows, so there's no separate/divergent name invented
 	-- here. A plain child FontString has no Show/Hide of its own called
 	-- anywhere - it simply inherits overlay's own Show()/Hide() state
-	-- (ApplyEditModeVisual below), the same "shown exactly whenever the
-	-- blue tint is" gate the task calls for, with no separate bookkeeping.
+	-- (ApplyEditModeVisual below), so the label is shown exactly whenever
+	-- the blue tint is, with no separate bookkeeping.
 	local nameText = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	nameText:SetPoint("CENTER", overlay, "CENTER", 0, 0)
 	nameText:SetText(BTV:GetBarDisplayName(bar.config.id))
