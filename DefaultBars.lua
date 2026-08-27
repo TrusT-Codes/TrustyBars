@@ -511,144 +511,13 @@ local function PixelSetSize(region, width, height)
 	end
 end
 
--------------------------------------------------------------------------
--- Bar-level edit-mode overlay (Issue 2, bug-fix batch)
---
--- Default bars are 12 independent real Blizzard button frames, not a
--- single container frame we own the way Bar.lua's custom bars are (see
--- Bar.lua's bar:CreateTexture-backed per-button editOverlay, which looks
--- continuous only because custom bars use zero button spacing - default
--- bars now have real spacing, see cfg.spacing, so per-button overlays
--- would show visible gaps). Instead, one borderless frame per default
--- bar spans the bar's full bounding box (button 1's top-left corner to
--- the last button's bottom-right corner), computed from the exact same
--- cols/rows/buttonSize/spacing fields ApplyDefaultBarShape below already
--- uses to lay out the real buttons - so it's always in sync with
--- whatever the buttons actually look like, never independently derived.
---
--- Created lazily, cached per bar id (never destroyed), and kept
--- repositioned/resized every time ApplyDefaultBarShape runs (below) -
--- shown/hidden by BTV:ApplyDefaultLayoutEditVisual instead, mirroring
--- Button.lua's SetEditModeVisual/Bar.lua's ApplyEditModeVisual.
---
--- The old per-button overlays (HoverBind.lua's HookDefaultBarButton) are
--- removed for default bars specifically, since this bar-level frame
--- replaces them outright - keeping both would just double-draw the same
--- area with no visual difference, and the per-button ones had the exact
--- gap problem this issue reports.
--------------------------------------------------------------------------
-
-local defaultBarOverlays = {}
-
-local function EnsureDefaultBarOverlay(id)
-	local overlay = defaultBarOverlays[id]
-
-	if overlay then
-		return overlay
-	end
-
-	overlay = CreateFrame(
-		"Frame",
-		"BTVanillaDefaultBarOverlay" .. tostring(id),
-		UIParent
-	)
-
-	-- TOOLTIP strata (the topmost strata this client has) rather than
-	-- HIGH: live-confirmed the tint + drag interception silently failed
-	-- specifically over FILLED buttons on bars 2-5 (MultiBarBottomLeft/
-	-- MultiBarBottomRight/MultiBarRight/MultiBarLeft) while working fine
-	-- on bar 1 (ActionButton) and on empty buttons on every bar. Both
-	-- rendering order AND mouse hit-testing are governed by frame
-	-- strata/level in this client, so a filled multibar button's own
-	-- glow/cooldown-swipe child textures (which only exist/elevate when
-	-- the slot is actually filled - explaining why empty buttons were
-	-- unaffected) were apparently winning against HIGH. TOOLTIP sits
-	-- above every ordinary game-UI frame regardless of that button's own
-	-- native strata, closing the gap outright rather than chasing the
-	-- exact native strata Blizzard's multibars use.
-	overlay:SetFrameStrata("TOOLTIP")
-
-	-- Explicit high frame level too, in case level (not just strata) was
-	-- part of the bar 1 vs bars 2-5 inconsistency - overlays are parented
-	-- to UIParent (not to the real button frames), so there's no relative
-	-- level dependency to preserve; a comfortably high fixed level just
-	-- guarantees this frame never loses a within-strata tie-break against
-	-- anything else that might also end up at TOOLTIP strata.
-	overlay:SetFrameLevel(100)
-
-	local tex = overlay:CreateTexture(nil, "OVERLAY")
-	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
-	tex:SetVertexColor(0.35, 0.65, 1.0, 0.45)
-	tex:SetAllPoints(overlay)
-
-	-- Issue 2 (bug-fix batch v3): this overlay now owns dragging directly
-	-- (SetScript, not HookScript - this is entirely our own frame with no
-	-- native behavior to preserve), replacing the old per-button HookScript
-	-- drag hooks entirely (see HoverBind.lua's HookDefaultBarButton, which
-	-- no longer installs any drag hooks). RegisterForDrag is registered
-	-- once here unconditionally - only EnableMouse is toggled per the
-	-- CanDragDefaultLayout() window, in ApplyDefaultLayoutEditVisual below.
-	overlay:RegisterForDrag("LeftButton")
-	overlay:SetScript("OnDragStart", function()
-		BTV:StartDefaultBarDrag(id)
-	end)
-	overlay:SetScript("OnDragStop", function()
-		BTV:StopDefaultBarDrag(id)
-	end)
-
-	-- Right-click-to-settings (mirrors HoverBind.lua's HookDefaultBarButton
-	-- right-click hook): while this overlay is mouse-enabled (exactly the
-	-- CanDragDefaultLayout() window - edit mode AND useDefaultLayout ==
-	-- false) it fully covers the real buttons underneath, so their own
-	-- right-click hook can no longer receive the event at all. A plain
-	-- (non-Button-widgetType) Frame with EnableMouse(true) still receives
-	-- OnMouseUp with the button name as arg1 - the same convention
-	-- RegisterForClicks-driven OnClick uses on a real Button widget - so no
-	-- separate widgetType is needed just for this.
-	overlay:SetScript("OnMouseUp", function()
-		if arg1 == "RightButton" then
-			BTV:OpenDefaultBarSettings(id)
-		end
-	end)
-
-	-- Issue 2 (bug-fix batch v6): scroll-to-resize, mirroring Button.lua's
-	-- BTVButtonMixin.OnMouseWheel for custom bars exactly (same step, same
-	-- arg1-is-delta convention) - this overlay is the sole mouse-
-	-- interactive surface over a default bar during the
-	-- CanDragDefaultLayout() window (drag + right-click already routed
-	-- through it above), so scroll has to be wired here too rather than on
-	-- the real Blizzard buttons underneath, which never receive the event
-	-- while this overlay has mouse enabled.
-	overlay:EnableMouseWheel(true)
-	overlay:SetScript("OnMouseWheel", function()
-		if not BTV:CanDragDefaultLayout() then
-			return
-		end
-
-		local delta = arg1 or 0
-		local cfg = BTVanillaDB.defaultBars[id]
-
-		if not cfg then
-			return
-		end
-
-		local step = 2
-		local newSize = (cfg.buttonSize or BTV.BUTTON_SIZE) + (delta * step)
-
-		BTV:SetDefaultBarButtonSize(id, newSize)
-
-		if BTV.RefreshBarSettingsPage then
-			BTV:RefreshBarSettingsPage(id)
-		end
-	end)
-
-	overlay:EnableMouse(false)
-	overlay:Hide()
-
-	defaultBarOverlays[id] = overlay
-
-	return overlay
-end
+-- (v1.0 polish pass) The old per-default-bar edit-mode overlay
+-- (EnsureDefaultBarOverlay/defaultBarOverlays) that used to live here
+-- predated default bars 1-5 being migrated onto Bar.lua's own bar-pool
+-- engine (CreateFixedSlotDefaultBars -> CreateBarFromConfig) and had been
+-- dead code (never called) since - removed. Default bars 1-5 now share
+-- Bar.lua's EnsureBarOverlay with every other bar; see its comment for the
+-- current bar-level edit-mode overlay implementation.
 
 -- Stance Bar (ShapeshiftButton1-N) migration: this used to wrap the real
 -- ShapeshiftBarFrame directly with its own bespoke overlay/position/drag
@@ -1115,9 +984,10 @@ function BTV:ApplyAllDefaultBars()
 			-- IsDefaultBarNativelyShown's bar-4/bar-5 rule) never got its
 			-- real Blizzard button frames repositioned away from
 			-- whatever raw anchor Blizzard's own FrameXML left them at,
-			-- and EnsureDefaultBarOverlay (only ever called FROM
-			-- ApplyDefaultBarShape) never even created that bar's overlay
-			-- frame at all - explaining bars 4/5 having no overlay
+			-- and the (since-removed, dead-code) default-bar overlay
+			-- creation that used to run only FROM ApplyDefaultBarShape
+			-- never even created that bar's overlay frame at all -
+			-- explaining bars 4/5 having no overlay
 			-- whatsoever. Worse, since vanilla's own FrameXML anchors the
 			-- extra multibars relative to the main bar/each other (not to
 			-- UIParent) for their native stacked-above-the-main-bar
@@ -1149,22 +1019,16 @@ end
 -- Default bar / stance bar dragging (Edit Layout mode, useDefaultLayout
 -- == false only)
 --
--- NOTE (round 36): the dragKind == "defaultBar" branch above and
--- BTV:StartDefaultBarDrag/StopDefaultBarDrag below predate the major
--- architecture migration (Core.lua's schema versions 5/7) that moved
--- default bars 1-5 onto Bar.lua's own bar-pool engine
--- (CreateFixedSlotDefaultBars -> CreateBarFromConfig) - they are dead code
--- (confirmed via a whole-codebase search: nothing calls
--- BTV:StartDefaultBarDrag/StopDefaultBarDrag or ever populates
--- defaultBarOverlays, since EnsureDefaultBarOverlay is itself never
--- called), left in place rather than removed since deleting unrelated
--- dead code is out of scope for the round that found this. Default bars
--- 1-5 actually drag via Bar.lua's own EnsureBarOverlay/StartBarDrag/
--- StopBarDrag now, same as every custom/Extra Bar - see Bar.lua's own
--- StartBarDrag comment: it no longer calls native bar:StartMoving()/
--- StopMovingOrSizing() either, having been migrated (round 36) onto this
--- exact same shared cursor-tracking OnUpdate mechanism via the dragKind
--- == "bar" branch above and BTV:StartSharedDrag/StopSharedDrag below.
+-- (v1.0 polish pass) The dragKind == "defaultBar" branch and
+-- BTV:StartDefaultBarDrag/StopDefaultBarDrag that used to live here
+-- predated the major architecture migration (Core.lua's schema versions
+-- 5/7) that moved default bars 1-5 onto Bar.lua's own bar-pool engine
+-- (CreateFixedSlotDefaultBars -> CreateBarFromConfig) and had been dead
+-- code with no call site since - removed. Default bars 1-5 drag via
+-- Bar.lua's own EnsureBarOverlay/StartBarDrag/StopBarDrag now, same as
+-- every custom/Extra Bar - see Bar.lua's own StartBarDrag comment: it
+-- calls BTV:StartSharedDrag/StopSharedDrag below via the dragKind == "bar"
+-- branch, the exact same shared cursor-tracking OnUpdate mechanism.
 --
 -- The stance bar dragging below this note is very much alive (dragKind ==
 -- "stanceBar") - it's a single real Blizzard frame (ShapeshiftBarFrame)
@@ -1186,7 +1050,7 @@ local dragFrame
 -- ...) always running AFTER Blizzard's own native handler had already
 -- decided to PickupAction - too late to react by the time a post-hook ran.
 -- That workaround is no longer needed: dragging is now owned entirely by
--- EnsureDefaultBarOverlay/EnsureContainerOverlay's own bar-level frames
+-- Bar.lua's EnsureBarOverlay/EnsureContainerOverlay's own bar-level frames
 -- (SetScript, not HookScript), which are mouse-enabled and sit in HIGH
 -- strata fully covering the real buttons during exactly this same window
 -- (see ApplyDefaultLayoutEditVisual below). A mouse-enabled frame on top
@@ -1239,23 +1103,33 @@ local function ApplyDragSnap(frame, pos)
 		return
 	end
 
-	local proposedLeft = pos.x * scale
-	local proposedTop = pos.y * scale
+	-- (v1.0 polish pass) Inflate the dragged element's own proposed box by
+	-- its visual inset (Core.lua's BTV:GetElementVisualInset - nonzero only
+	-- for default bars 1-5, whose native border overhangs their frame) so
+	-- it's compared against every target's own inset-adjusted box
+	-- (Core.lua's GetAllSnapTargetBoxes) on equal terms - border edge vs.
+	-- border edge, not frame edge vs. border edge. Deflated back out of the
+	-- result before writing to pos.x/pos.y, since pos always represents
+	-- this frame's own TOPLEFT corner, never its inflated box.
+	local insetPx = BTV:GetElementVisualInset(frame) * scale
+
+	local proposedLeft = pos.x * scale - insetPx
+	local proposedTop = pos.y * scale + insetPx
 
 	local adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
 		proposedLeft,
 		proposedTop,
-		width * scale,
-		height * scale,
+		width * scale + (insetPx * 2),
+		height * scale + (insetPx * 2),
 		frame
 	)
 
 	if adjustedLeft then
-		pos.x = adjustedLeft / scale
+		pos.x = (adjustedLeft + insetPx) / scale
 	end
 
 	if adjustedTop then
-		pos.y = adjustedTop / scale
+		pos.y = (adjustedTop - insetPx) / scale
 	end
 end
 
@@ -1267,16 +1141,7 @@ local function DefaultBarDrag_OnUpdate()
 	local dx = cx - this.dragStartCursorX
 	local dy = cy - this.dragStartCursorY
 
-	if this.dragKind == "defaultBar" then
-		local cfg = BTVanillaDB.defaultBars[this.dragId]
-
-		if cfg then
-			cfg.x = this.dragStartX + dx
-			cfg.y = this.dragStartY + dy
-
-			BTV:ApplyDefaultBarShape(this.dragId)
-		end
-	elseif this.dragKind == "stanceBar" then
+	if this.dragKind == "stanceBar" then
 		local pos = BTVanillaDB.stanceBarPosition
 
 		if pos then
@@ -1439,47 +1304,6 @@ end
 -- before EnsureDB has ever run).
 function BTV:CanDragDefaultLayout()
 	return self:IsEditMode() and BTVanillaDB and BTVanillaDB.useDefaultLayout == false
-end
-
-function BTV:StartDefaultBarDrag(id)
-	self:EnsureDB()
-
-	local cfg = BTVanillaDB.defaultBars[id]
-
-	if not cfg then
-		return
-	end
-
-	local cx, cy = GetCursorPositionUIScale()
-
-	local frame = EnsureDragFrame()
-
-	frame.dragKind = "defaultBar"
-	frame.dragId = id
-	frame.dragStartCursorX = cx
-	frame.dragStartCursorY = cy
-	frame.dragStartX = cfg.x or 0
-	frame.dragStartY = cfg.y or 0
-
-	frame:SetScript("OnUpdate", DefaultBarDrag_OnUpdate)
-	frame:Show()
-end
-
-function BTV:StopDefaultBarDrag(id)
-	if not dragFrame then
-		return
-	end
-
-	dragFrame:SetScript("OnUpdate", nil)
-	dragFrame:Hide()
-
-	-- Keeps the Settings X/Y sliders in sync if this bar's page happens
-	-- to already be built/cached - same pattern as GridSwatch_OnClick/the
-	-- "Reset to Blizzard Default" button (Settings.lua). A no-op if the
-	-- Settings window/page was never opened this session.
-	if self.RefreshBarSettingsPage then
-		self:RefreshBarSettingsPage(id)
-	end
 end
 
 -- Stance Bar position/spacing/scale/orientation/enable/drag: moved to the
@@ -1817,9 +1641,9 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 end
 
 -- Shared overlay helper (feature 3) - drag ownership + right-click-to-
--- settings, exactly mirroring EnsureDefaultBarOverlay's boilerplate above
+-- settings, exactly mirroring Bar.lua's EnsureBarOverlay boilerplate
 -- (TOOLTIP strata for the same filled-button-strata-gap workaround - see
--- EnsureDefaultBarOverlay's own comment for why TOOLTIP specifically).
+-- below for why TOOLTIP specifically).
 -- Parameterized rather than one near-identical copy per caller: only the
 -- container frame, the drag start/stop callbacks, the settings-page key to
 -- open on right-click, and (Issue 4, bug-fix batch) an optional
@@ -1828,8 +1652,8 @@ end
 --
 -- scaleSetFn (Issue 4): mirrors Button.lua's BTVButtonMixin.OnMouseWheel's
 -- step/delta convention (arg1 = scroll delta, positive = up/away) applied
--- to scale instead of buttonSize - EnsureDefaultBarOverlay's own default-
--- bar-only mouse-wheel-resize handler was never carried over to this
+-- to scale instead of buttonSize - the old (since-removed) per-default-bar
+-- overlay's own mouse-wheel-resize handler was never carried over to this
 -- shared helper when it was written, which is why none of these 5 elements
 -- had scroll-to-scale despite dragging already working identically on all
 -- of them. Optional parameter still - remains nil for any future caller
@@ -1849,8 +1673,8 @@ end
 -- CreateBarFromConfig comment (Issue C) already established, from live
 -- testing, that same-strata ties on this client are NOT reliably broken by
 -- creation order - only explicit FrameLevel does that reliably. Every
--- default-bar overlay (EnsureDefaultBarOverlay above) AND every one of
--- these 5 chain-anchored containers' own overlays previously shared this
+-- default-bar overlay (the old per-default-bar overlay, since removed) AND
+-- every one of these 5 chain-anchored containers' own overlays previously shared this
 -- exact same TOOLTIP+100 combination, so any pair of them that happened to
 -- overlap on screen had an UNDEFINED winner. Key Ring's native default
 -- position sits directly against/inside the Bag Bar container's own
@@ -1982,9 +1806,9 @@ end
 -- element's own BTVanillaDB.bagBarEnabled/microMenuEnabled (unlike the
 -- stance bar/bar 1, these CAN be meaningfully disabled - see
 -- SetBagBarEnabled/SetMicroMenuEnabled below), `show` is
--- BTV:CanDragDefaultLayout()'s result - mirrors
--- EnsureDefaultBarOverlay's own enabled-AND-shown gating for default
--- bars 2-5.
+-- BTV:CanDragDefaultLayout()'s result - mirrors the same
+-- enabled-AND-shown gating `ApplyDefaultLayoutEditVisual` applies to
+-- default bars 2-5 directly.
 local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 	if not container or not container.btvOverlay then
 		return
@@ -5133,7 +4957,7 @@ end
 
 -- Created lazily, once - shared by every later BTV:ApplyBetterExpBarVisual
 -- call this session, mirroring every other lazy-build-once frame in this
--- file (e.g. defaultBarOverlays).
+-- file (e.g. barOverlays in Bar.lua).
 local betterExpBarEventFrame
 
 -- Creates (once)/shows/hides/live-updates the text overlay per
@@ -5457,8 +5281,8 @@ end
 -- Default-layout / stance-bar edit-mode overlay refresh (Issue 3,
 -- bug-fix batch)
 --
--- Mirrors Button.lua's SetEditModeVisual/Bar.lua's ApplyEditModeVisual
--- for custom bars, but gated on BTV:CanDragDefaultLayout() (edit mode
+-- Mirrors Bar.lua's ApplyEditModeVisual for custom bars, but gated on
+-- BTV:CanDragDefaultLayout() (edit mode
 -- AND useDefaultLayout == false) rather than edit mode alone - showing a
 -- "this is draggable" cue when dragging isn't actually possible
 -- (useDefaultLayout == true) would be misleading. Called from Bar.lua's
@@ -5471,45 +5295,20 @@ end
 function BTV:ApplyDefaultLayoutEditVisual()
 	local show = self:CanDragDefaultLayout()
 
-	-- Issue 2 (bug-fix batch v2): one bar-level overlay per default bar,
-	-- not per-button (see EnsureDefaultBarOverlay's comment above).
-	-- Disabled bars (2-5, cfg.enabled == false) keep their overlay hidden
-	-- regardless of `show` - their buttons are Hide()'n too (see
-	-- SetDefaultBarEnabled), and this frame isn't a child of theirs so it
-	-- doesn't automatically hide along with them.
-	local id
-
-	for id = 1, 5 do
-		local cfg = BTVanillaDB.defaultBars[id]
-		local overlay = defaultBarOverlays[id]
-
-		if overlay then
-			local enabled = show and cfg and (id == 1 or cfg.enabled == true)
-
-			-- Issue 2 (bug-fix batch v3): the overlay only intercepts mouse
-			-- (and can therefore only be dragged from, or right-clicked for
-			-- settings) during exactly this same enabled/shown window -
-			-- outside of it EnableMouse(false) lets every click/drag pass
-			-- straight through to the real buttons underneath, so normal
-			-- play (native casting, right-click, hover) is completely
-			-- unaffected the rest of the time.
-			overlay:EnableMouse(enabled and true or false)
-
-			if enabled then
-				overlay:Show()
-			else
-				overlay:Hide()
-			end
-		end
-	end
+	-- (v1.0 polish pass) Default bars 1-5 no longer have their own
+	-- bar-level overlay loop here - they share Bar.lua's EnsureBarOverlay/
+	-- ApplyEditModeVisual with every other bar, which already handles
+	-- their show/hide and mouse-enable gating (including the
+	-- useDefaultLayout == false requirement via isDefaultBar1to5's canEdit
+	-- check there). This function now only drives the chain-anchored
+	-- containers and native-wrapped elements below.
 
 	-- Stance Bar / Bag Bar / Micro Menu - all three are now the same kind
 	-- of TrustyBars-owned chain-anchored container (BuildChainAnchoredContainer/
 	-- ApplyChainAnchoredShape), so they share the exact same
 	-- ApplyContainerOverlayVisual treatment: overlay visibility gated on
 	-- both edit-mode/useDefaultLayout (`show`) AND this element's own
-	-- enable flag, mirroring default bars 2-5's own enabled-AND-shown
-	-- gating in the loop above.
+	-- enable flag.
 	ApplyContainerOverlayVisual(self.stanceBarContainer, BTVanillaDB.stanceBarEnabled, show)
 	ApplyContainerOverlayVisual(self.bagBarContainer, BTVanillaDB.bagBarEnabled, show)
 	ApplyContainerOverlayVisual(self.microMenuContainer, BTVanillaDB.microMenuEnabled, show)
