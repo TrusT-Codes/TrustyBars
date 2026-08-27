@@ -2444,13 +2444,12 @@ end
 --
 -- Live-confirmed (round 32 diagnostic session, real numbers): with bar 2
 -- (Action Bar 1) enabled, ShapeshiftBarFrame:GetBottom() = 98.0000040,
--- bar 2's own nativeAnchor.y = 93.0000017 - a fixed ~5-unit gap, NOT
--- GetDefaultBarRowHeight() (that measures the spacing between two
--- IDENTICALLY-SIZED standard bars; the Stance Bar's own footprint is a
--- different size, so it needs its own gap constant - see
--- GetStanceBarBaselineY's own comment below for the full derivation and
--- verification). Same real-screen-pixel GetEffectiveScale() round-trip
--- conversion Core.lua's CaptureNativeAnchor uses for any cross-frame native
+-- bar 2's own nativeAnchor.y = 93.0000017 - a fixed ~5-unit gap, NOT the
+-- row-to-row spacing between two IDENTICALLY-SIZED standard bars (the
+-- Stance Bar's own footprint is a different size, so it needs its own gap
+-- constant - see GetStanceBarBaselineY's own comment below for the full
+-- derivation and verification). Same real-screen-pixel GetEffectiveScale()
+-- round-trip conversion Core.lua's CaptureNativeAnchor uses for any cross-frame native
 -- position read - applied here defensively even though this round's
 -- diagnostic happened to show both frames at the same 0.9 effective scale,
 -- since this addon's established convention is to never skip that
@@ -2796,47 +2795,19 @@ function BTV:SetStanceBarEnabled(enabled)
 	end
 end
 
--- Issue 3 (round 14): real, live-captured row-to-row vertical distance
--- between bar 1 (Main) and bar 2 (Bottom Left) - NOT a hardcoded/guessed
--- pixel constant. Both bars' cfg.nativeAnchor.y were already captured live
--- from their real Blizzard frames at login (Core.lua's CaptureNativeAnchor/
--- seedDefaultBars), regardless of either bar's enabled state, so this is
--- always available. Real vanilla's default action-bar cluster stacks every
--- row of IDENTICALLY-SIZED standard bars (Main, Bottom Left, Bottom Right)
--- at this same uniform vertical spacing.
---
--- Round 32: no longer used by GetStanceBarBaselineY - live-confirmed this
--- constant is the wrong clearance unit for the Stance Bar specifically
--- (its own footprint isn't the same size as a standard bar row - see
--- GetStanceBarBaselineY's own round-32 comment for the real fix). Kept
--- defined/unchanged since it remains correct for what it actually measures
--- (standard-bar-row-to-row spacing) and costs nothing to leave available
--- for any future standard-bar-stacking need - currently has no caller
--- anywhere in this codebase.
-function BTV:GetDefaultBarRowHeight()
-	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
-	local cfg1 = defaults and defaults[1]
-	local cfg2 = defaults and defaults[2]
-
-	if not cfg1 or not cfg2 or not cfg1.nativeAnchor or not cfg2.nativeAnchor then
-		return nil
-	end
-
-	return cfg2.nativeAnchor.y - cfg1.nativeAnchor.y
-end
-
 -- Round 30 fix: the objectively-correct ABSOLUTE Stance Bar top-edge Y
 -- (UIParent-bottom-left-origin, y increases upward - see Core.lua's
 -- CaptureNativeAnchor comment) for a given bar-2 enabled state, computed
 -- fresh from live-captured native baselines every time - NEVER derived from
 -- whatever BTVanillaDB.stanceBarPosition.y currently holds.
 --
--- Round 32 fix: round 30's formula (referenceBar.top + 1x/2x
--- GetDefaultBarRowHeight()) turned out wrong - live-confirmed via a fresh
--- diagnostic dump it overshot by a clean 16 units in the bar-2-enabled case
--- (146.0 computed vs 130.0 actual, the real still-native ShapeshiftBarFrame's
--- own GetTop()). Root cause: GetDefaultBarRowHeight() is the right constant
--- for stacking two IDENTICALLY-SIZED standard bars, but the Stance Bar's own
+-- Round 32 fix: round 30's formula (referenceBar.top + 1x/2x the real,
+-- live-captured row-to-row vertical spacing between bar 1/Main and bar 2/
+-- Bottom Left) turned out wrong - live-confirmed via a fresh diagnostic dump
+-- it overshot by a clean 16 units in the bar-2-enabled case (146.0 computed
+-- vs 130.0 actual, the real still-native ShapeshiftBarFrame's own GetTop()).
+-- Root cause: that standard-bar-row spacing is the right constant only for
+-- stacking two IDENTICALLY-SIZED standard bars, but the Stance Bar's own
 -- footprint isn't the same size as a standard bar row - reusing rowHeight as
 -- its clearance was the wrong tool for this specific measurement.
 --

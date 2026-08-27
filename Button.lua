@@ -673,10 +673,11 @@ function BTVButtonMixin:UpdateBackdropVisibility()
 end
 
 -- Re-points this already-existing button at a different action slot -
--- e.g. when a bar's slotStart changes (BTV:SetBarSlotStart). Unlike the
--- old destroy/recreate path, the frame itself never changes - only
--- BTV.customBindTargets' old/new slot indices (HoverBind.lua) need
--- updating to follow it, which this does below.
+-- called from Bar.lua's ApplyBarShape whenever a bar's slotStart, grid
+-- shape, or page/stance state changes which native slot a pool slot
+-- should show. Unlike the old destroy/recreate path, the frame itself
+-- never changes - only BTV.customBindTargets' old/new slot indices
+-- (HoverBind.lua) need updating to follow it, which this does below.
 function BTVButtonMixin:Rebind(newActionSlot)
 	local oldActionSlot = self.actionSlot
 

@@ -244,18 +244,6 @@ local function CaptureNativeAnchor(self, id)
 	local left = first:GetLeft()
 	local top = first:GetTop()
 
-	-- Round 10 TEMPORARY instrumentation (see task record): proves, at the
-	-- exact moment this function reads it, whether `first` really is the
-	-- literal ActionButton1 the settle-poll and the user's own manual /run
-	-- checks both reference directly (theory A), and exactly what GetLeft()
-	-- returned for id right here (distinguishing a bad read here from a
-	-- correct read here that gets stomped/misapplied later).
-	self:Print(string.format(
-		"DEBUG CaptureNativeAnchor: id=%s name=%s left=%s top=%s",
-		tostring(id), tostring(first.GetName and first:GetName() or "?"),
-		tostring(left), tostring(top)
-	))
-
 	if not left or not top then
 		return nil
 	end
@@ -709,7 +697,9 @@ end
 
 -- Round 11 root-cause fix: EVERY prior recapture marker (anchorRecaptureDone/
 -- anchorScaleFixDone/anchorTimingFixDone/anchorEnterWorldFixDone/
--- round10DebugRecaptureDone, see EnsureDB below) was read character-by-
+-- round10DebugRecaptureDone - the last of these was a temporary diagnostic
+-- marker, since removed along with the debug prints it fed; see EnsureDB
+-- below for the markers still in effect) was read character-by-
 -- character and found logically sound in isolation - each nils
 -- BTVanillaDB.defaultBars strictly BEFORE the `if not BTVanillaDB.defaultBars
 -- then seedDefaultBars() end` gate runs, in the same synchronous EnsureDB
@@ -1399,28 +1389,6 @@ function BTV:EnsureDB()
 		BTVanillaDB.mainBarPageIndicatorPosition = nil
 	end
 
-	-- Round 10 TEMPORARY instrumentation marker (see task record): every
-	-- prior recapture marker above (anchorRecaptureDone/anchorScaleFixDone/
-	-- anchorTimingFixDone/anchorEnterWorldFixDone) is, by this point, already
-	-- permanently consumed for anyone who tested a previous round - meaning
-	-- BTVanillaDB.defaultBars is already non-nil and the `if not
-	-- BTVanillaDB.defaultBars` branch below would otherwise NOT call
-	-- seedDefaultBars again this session, so CaptureNativeAnchor's new debug
-	-- print would never fire and no fresh data could be gathered. This
-	-- one-shot marker forces exactly one more fresh capture, purely so this
-	-- round's instrumentation actually runs and reports a live value - same
-	-- "clear the mutable fields, not a schemaVersion bump" pattern as every
-	-- marker above. Remove this block (and the debug prints it exists to
-	-- feed) once round 10's diagnosis is complete.
-	if not BTVanillaDB.round10DebugRecaptureDone then
-		BTVanillaDB.round10DebugRecaptureDone = true
-
-		BTVanillaDB.defaultBars = nil
-
-		BTVanillaDB.mainBarPageIndicatorNativeAnchor = nil
-		BTVanillaDB.mainBarPageIndicatorPosition = nil
-	end
-
 	if not BTVanillaDB.schemaVersion or BTVanillaDB.schemaVersion < self.SCHEMA_VERSION then
 		BTVanillaDB.schemaVersion = self.SCHEMA_VERSION
 		BTVanillaDB.defaultBars = seedDefaultBars(self)
@@ -1956,23 +1924,6 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 		))
 	end
 
-	-- Round 10 TEMPORARY instrumentation (see task record): one more direct
-	-- read of the exact same global frame the settle-poll just finished
-	-- polling, taken immediately before EnsureDB() (and therefore
-	-- CaptureNativeAnchor, if this session's one-shot guard is still
-	-- unconsumed) actually runs - proves whether ActionButton1 has already
-	-- moved again by the time our own capture code gets control, with zero
-	-- gap left unaccounted for.
-	do
-		local diagRef = getglobal("ActionButton1")
-		if diagRef then
-			BTV:Print(string.format(
-				"DEBUG pre-EnsureDB: ActionButton1:GetLeft()=%s",
-				tostring(diagRef:GetLeft())
-			))
-		end
-	end
-
 	BTV:EnsureDB()
 	BTV:CreateAllBars()
 
@@ -2165,22 +2116,6 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- reason (dead code, per the migration plan).
 
 	BTV:Print("Loaded. Click the minimap button for options.")
-
-	-- Round 10 TEMPORARY instrumentation (see task record): confirms
-	-- whether ActionButton1's real GetLeft() is back to its "settled"
-	-- value by the time the ENTIRE login sequence (EnsureDB,
-	-- CreateFixedSlotDefaultBars hiding the real default-bar buttons,
-	-- ApplyAllDefaultBars, etc.) has finished running - matches this
-	-- against the user's own later manual /run checks.
-	do
-		local diagRef = getglobal("ActionButton1")
-		if diagRef then
-			BTV:Print(string.format(
-				"DEBUG post-login-sequence: ActionButton1:GetLeft()=%s",
-				tostring(diagRef:GetLeft())
-			))
-		end
-	end
 end
 
 -- Round 9 root-cause fix: this used to register PLAYER_LOGIN. Live-confirmed
