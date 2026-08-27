@@ -379,31 +379,25 @@ end
 CreateHoverBindCaptureFrame()
 
 -------------------------------------------------------------------------
--- Default-bar button hover + right-click-to-settings hookup
+-- Default-bar button hover hookup - now a no-op
 --
--- Main Bar migration, Phase 2: this section's per-frame HookScript
--- implementation (HookDefaultBarButton/hookedDefaultButtons) is REMOVED
--- entirely - it hooked the real Blizzard ActionButton1-12/MultiBar...
--- frames directly, all 60 of which are now permanently hidden (see
--- DefaultBars.lua's CreateFixedSlotDefaultBars), making every one of
--- those hooks pure dead code (a Hidden frame never receives OnEnter/
--- OnClick regardless of what's hooked onto it). HookAllDefaultBarButtons
--- below is kept as a callable no-op only - see its own comment.
+-- Pre-migration, this section hooked the real Blizzard ActionButton1-12/
+-- MultiBar... frames directly via HookScript to track hover for
+-- hoverbind. All 60 of those frames are now permanently hidden (see
+-- DefaultBars.lua's CreateFixedSlotDefaultBars), so a Hidden frame never
+-- receives OnEnter/OnClick regardless of what's hooked onto it - that
+-- per-frame hooking code was removed as dead. Every default bar's replica
+-- button (a real Bar.lua/Button.lua pool button, living in self.bars) now
+-- gets equivalent hover-tracking for free through Button.lua's own
+-- OnEnter/OnLeave (BTV:SetHoverBindHoveredCustomButton) and
+-- right-click-to-settings through Bar.lua's per-bar edit-mode overlay
+-- (EnsureBarOverlay) - the same mechanisms a real custom bar (id 6+)
+-- already uses, needing no separate hookup here.
+--
+-- Kept as a callable no-op (Core.lua still calls it at PLAYER_LOGIN)
+-- rather than removed outright, matching Core.lua's own comment on why
+-- that call site is harmless to keep.
 -------------------------------------------------------------------------
 
--- Now a no-op for EVERY default bar (Main Bar migration, Phase 2): bar 1's
--- real Blizzard ActionButton1-12 frames are, as of this migration,
--- permanently hidden exactly like bars 2-5's already were (see
--- DefaultBars.lua's CreateFixedSlotDefaultBars) - hooking them here would
--- be pure dead code, a Hidden frame never receives OnEnter/OnClick at all
--- regardless of what's hooked onto it. Every default bar's replica buttons
--- (real Bar.lua/Button.lua pool buttons, living in self.bars) already get
--- equivalent hover-tracking for free through Button.lua's own OnEnter/
--- OnLeave (BTV:SetHoverBindHoveredCustomButton) and right-click-to-settings
--- through Bar.lua's per-bar edit-mode overlay (EnsureBarOverlay) - exactly
--- the same mechanisms a real custom bar (id 6+) already uses, needing no
--- separate hookup here. Kept as a callable no-op (Core.lua still calls it
--- at PLAYER_LOGIN) rather than removed outright, matching Core.lua's own
--- comment on why that call site is harmless to keep.
 function BTV:HookAllDefaultBarButtons()
 end

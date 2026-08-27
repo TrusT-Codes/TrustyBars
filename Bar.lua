@@ -336,18 +336,13 @@ function BTV:ApplyEditModeVisual()
 			canEdit = editMode and BTVanillaDB and BTVanillaDB.useDefaultLayout == false
 		end
 
-		-- Per-button tint (the old btn:SetEditModeVisual(canEdit) call
-		-- here) was REMOVED outright, not just re-gated: the user tested a
-		-- prior round's canEdit-gated fix and decided the per-button tint
-		-- "looks weird" in every state, for every bar (default 1-5 and
-		-- custom 6+ alike) - not only when useDefaultLayout == true. The
-		-- bar-level overlay hitbox tint below (EnsureBarOverlay's own
-		-- texture) is the ONLY edit-mode tint left anywhere - it already
-		-- correctly represents "this whole bar is draggable as a unit" with
-		-- no per-button redundancy needed on top of it. (v1.0 polish pass)
-		-- Button.lua's SetEditModeVisual/self.editOverlay, which had been
-		-- left in place as dead code after that round, have since been
-		-- deleted outright.
+		-- There is deliberately no per-button edit-mode tint - the user
+		-- found it "looks weird" in every state, for every bar (default
+		-- 1-5 and custom 6+ alike). The bar-level overlay hitbox tint below
+		-- (EnsureBarOverlay's own texture) is the ONLY edit-mode tint left
+		-- anywhere - it already correctly represents "this whole bar is
+		-- draggable as a unit" with no per-button redundancy needed on top
+		-- of it.
 		if bar and bar.buttons then
 			local i
 
@@ -831,33 +826,18 @@ function BTV:ApplyBarShape(bar)
 
 	PixelSetSize(bar, barW, barH)
 
-	-- Bug-fix batch round 3, Bug 2: re-assert strata/level on every
-	-- ApplyBarShape call, not just once at CreateBarFromConfig time (see
-	-- that function's own comment on why this matters). ApplyBarShape is
-	-- exactly what RefreshMainBarSlots (DefaultBars.lua) calls on every
-	-- native page swap (ChangeActionBarPage hook) and every stance/form/
-	-- stealth change (UPDATE_BONUS_ACTIONBAR handler) - live testing
-	-- confirmed Bar 1 drops back behind the native art specifically after
-	-- one of those two triggers, meaning something in that path re-levels
-	-- either Bar 1's own frame or MainMenuBarArtFrame itself back above
-	-- the one-shot login-time value. Cheap and idempotent for every other
-	-- bar/trigger (SetFrameStrata/SetFrameLevel to their own current
-	-- values is a harmless no-op), so this is applied unconditionally
-	-- here rather than only from the two Main-Bar-specific call sites.
-	--
-	-- Round 34: this is now a "HIGH"-strata reassertion, not "MEDIUM" -
-	-- see CreateBarFromConfig's own comment for the full history of why a
-	-- same-tier level race against MainMenuBarArtFrame (round 2 through
-	-- round 24) was never fully robust, and why a full strata-tier
-	-- separation (matching this file's own BuildChainAnchoredContainer/
-	-- DefaultBars.lua's EnsureExpBarTextOverlay precedent) is the fix that
-	-- finally makes this permanently immune to ANY future level change on
-	-- the art frame's part. MainMenuBarArtFrame itself is untouched here
-	-- and stays at its own "MEDIUM" strata/level 5 (DefaultBars.lua's
-	-- ApplyBlizzardArtVisibility) - still correctly needed for the
-	-- separate art-above-Experience-Bar masking relationship - since
-	-- "HIGH" beats "MEDIUM" unconditionally regardless of either frame's
-	-- level, both relationships hold at once with no further tuning.
+	-- Re-assert strata/level on every ApplyBarShape call, not just once at
+	-- CreateBarFromConfig time (see that function's own comment for why
+	-- "HIGH" strata is required at all). ApplyBarShape is exactly what
+	-- RefreshMainBarSlots (DefaultBars.lua) calls on every native page
+	-- swap and every stance/form/stealth change - live testing confirmed
+	-- Bar 1 could drop back behind the native art specifically after one
+	-- of those triggers, meaning something in that path re-levels either
+	-- Bar 1's own frame or MainMenuBarArtFrame back above the one-shot
+	-- login-time value. Cheap and idempotent for every other bar/trigger
+	-- (SetFrameStrata/SetFrameLevel to their own current values is a
+	-- harmless no-op), so this is applied unconditionally here rather
+	-- than only from the Main-Bar-specific call sites.
 	bar:SetFrameStrata("HIGH")
 	bar:SetFrameLevel(10)
 
@@ -887,71 +867,44 @@ function BTV:CreateBarFromConfig(cfg)
 		UIParent
 	)
 
-	-- Round 34 fix: promoted from "MEDIUM" to "HIGH" strata outright,
-	-- replacing the old same-tier level race against MainMenuBarArtFrame
-	-- entirely. History: round 2 (Issue C, see below) found Bar 1 losing a
-	-- same-"MEDIUM"-strata level tie against the art frame and fixed it
-	-- with an explicit SetFrameLevel(10); round 24 (DefaultBars.lua's
-	-- ApplyBlizzardArtVisibility) pinned the art frame to an explicit
-	-- level 5, strictly below this bar's level 10, to fix that same
-	-- relationship while ALSO restoring the Experience Bar's own fill-
-	-- masking (which needs the art frame to stay in "MEDIUM", above
-	-- MainMenuExpBar's level 2). That worked only for as long as nothing
-	-- else ever raised the art frame's level past 10 within that shared
-	-- tier - live-confirmed broken by a genuinely dynamic trigger this
-	-- round: clicking anywhere on the native Blizzard art bar that isn't
-	-- one of our own buttons raises the art frame's OWN level (a common
-	-- vanilla FrameXML `:Raise()`-on-click pattern), pushing it back above
-	-- this bar's level 10 and making Bar 1 disappear behind the art again
-	-- - reproducing exactly the round-2 symptom from a different trigger.
+	-- Bar 1 sits at "HIGH" strata, not "MEDIUM" - a same-tier frame LEVEL
+	-- race against MainMenuBarArtFrame (which stays "MEDIUM"/level 5, see
+	-- DefaultBars.lua's ApplyBlizzardArtVisibility) proved unreliable:
+	-- clicking the native Blizzard art bar raises the art frame's own
+	-- level (a common vanilla FrameXML `:Raise()`-on-click pattern),
+	-- which can push it back above whatever level this bar holds within
+	-- the same "MEDIUM" tier and make Bar 1 disappear behind the art.
 	-- Frame STRATA fully dominates frame LEVEL regardless of tier (see
-	-- Settings.lua's own documented strata-tier ordering comment,
-	-- BACKGROUND < LOW < MEDIUM < HIGH < ...) - moving to "HIGH" makes
-	-- this permanently immune to ANY future level change on the art
-	-- frame's part, ours or Blizzard's, rather than re-chasing whatever
-	-- level it happens to reach next. Matches the exact same "HIGH beats
-	-- MainMenuBarArtFrame's MEDIUM unconditionally" precedent this file's
-	-- own BuildChainAnchoredContainer (Bag Bar/Micro Menu/Stance Bar) and
-	-- DefaultBars.lua's EnsureExpBarTextOverlay already established -
-	-- those were never vulnerable to this bug in the first place because
-	-- they were already a full tier above, not just a higher level within
-	-- the same tier. Does NOT touch MainMenuBarArtFrame's own "MEDIUM"
-	-- strata/level 5 (still needed, unchanged, for the separate
-	-- art-above-Experience-Bar masking relationship) - "HIGH" beats
-	-- "MEDIUM" unconditionally no matter what level either frame is at, so
-	-- both relationships hold simultaneously with no further tuning.
+	-- Settings.lua's documented strata-tier ordering, BACKGROUND < LOW <
+	-- MEDIUM < HIGH < ...), so "HIGH" makes this permanently immune to any
+	-- future level change on the art frame's part. Does not touch
+	-- MainMenuBarArtFrame's own "MEDIUM" strata/level 5, which is still
+	-- needed for the separate art-above-Experience-Bar masking
+	-- relationship - "HIGH" beats "MEDIUM" unconditionally no matter what
+	-- level either frame is at, so both relationships hold at once.
 	--
-	-- Button.lua's BTVButtonMixin:Init gives every individual button
-	-- (and its cooldown-swipe child frame) this exact same explicit
-	-- "HIGH" strata too, rather than assuming it would simply inherit
-	-- this bar's own value - see docs/01-Environment-Capability-
-	-- Analysis.md's round-34 entry for why that assumption is left an
-	-- open (still-not-live-confirmed) question rather than guessed on:
-	-- every frame in this codebase that needs a non-default strata
-	-- already sets it explicitly on itself, so this round follows the
-	-- same convention instead of depending on inheritance either way.
-	-- This bar frame's own backdrop is fully transparent (see
-	-- SetBackdropColor(0,0,0,0) below) and was never itself the thing
-	-- visually racing the art frame; the buttons are, which is why they
-	-- need this explicit treatment regardless of how inheritance works.
+	-- Button.lua's BTVButtonMixin:Init gives every individual button (and
+	-- its cooldown-swipe child frame) this exact same explicit "HIGH"
+	-- strata too, rather than assuming it would inherit this bar's own
+	-- value - whether plain child-frame strata actually cascades from a
+	-- parent on this client is an open, not-live-confirmed question (see
+	-- docs/01-Environment-Capability-Analysis.md), so every frame that
+	-- needs a non-default strata sets it explicitly on itself instead of
+	-- depending on inheritance either way. This bar frame's own backdrop
+	-- is fully transparent (SetBackdropColor(0,0,0,0) below) and was
+	-- never itself the thing visually racing the art frame - the buttons
+	-- are, which is why they need the same explicit treatment.
 	bar:SetFrameStrata("HIGH")
 
-	-- Issue C (bug-fix batch round 2, level ordering AMONG our own bars/
-	-- overlays only as of round 34 - see this function's own strata
-	-- comment above for why it's no longer what wins the fight against
-	-- MainMenuBarArtFrame): without an explicit frame LEVEL, a freshly
-	-- CreateFrame(..., UIParent)'d frame starts at whatever low level
-	-- UIParent's own child-nesting default assigns it - within a shared
-	-- strata tier, frame LEVEL (not creation order) is what actually
-	-- decides stacking (same rule already established in this codebase
-	-- for DefaultBars.lua's EnsureContainerOverlay's own explicit
-	-- high levels - see its comment on this same client-specific
-	-- tie-break behavior). Applied uniformly to every bar (all of 1-5 and
-	-- every custom bar 6+ share this one creation path) - comfortably
-	-- higher than any other "HIGH"-strata frame this bar needs to sit
-	-- under, with plenty of headroom below the overlay frames' own level
-	-- 100 (Bar.lua's EnsureBarOverlay reads bar:GetFrameLevel() relatively,
-	-- so it always stays correctly above whatever this is set to).
+	-- Without an explicit frame LEVEL, a freshly CreateFrame(...,
+	-- UIParent)'d frame starts at whatever low level UIParent's own
+	-- child-nesting default assigns it - within a shared strata tier,
+	-- frame LEVEL (not creation order) decides stacking on this client
+	-- (same rule DefaultBars.lua's EnsureContainerOverlay relies on for
+	-- its own explicit high levels). Applied uniformly to every bar (1-5
+	-- and every custom bar 6+ share this one creation path) - comfortably
+	-- below the overlay frames' own level 100 (EnsureBarOverlay reads
+	-- bar:GetFrameLevel() relatively, so it always stays above this).
 	bar:SetFrameLevel(10)
 
 	PixelSetSize(bar, barW, barH)

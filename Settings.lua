@@ -591,8 +591,6 @@ local function CreateSettingsFrame()
 		end
 	)
 
-	f.tabGeneralButton = tabGeneralButton
-
 	-------------------------------------------------------------------------
 	-- Left bar list
 	-------------------------------------------------------------------------
@@ -749,8 +747,6 @@ function BTV:GetOrCreateBarPage(barId)
 	end
 
 	title:SetText(titleText)
-
-	page.title = title
 
 	-- Extra Bars (ids 6-9, Stance/Page Bar Assignment feature, Part 1):
 	-- get the exact same "Enabled" checkbox default bars 2-5 get, since
@@ -2111,7 +2107,6 @@ local function CreateSimpleBarPage(key)
 
 	page.barId = key
 	page.isDefault = true
-	page.isSimple = true
 
 	local title = page:CreateFontString(
 		nil,
@@ -2128,8 +2123,6 @@ local function CreateSimpleBarPage(key)
 	)
 
 	title:SetText(config.title .. " Settings (Default)")
-
-	page.title = title
 
 	local topY = -46
 
@@ -4046,8 +4039,6 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
 	end)
 
 	RefreshValue()
-
-	row.valueText = valueText
 
 	return row
 end

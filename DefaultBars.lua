@@ -3572,12 +3572,14 @@ end
 -- anchored RELATIVE TO IT, not
 -- independently to UIParent - so repositioning/scaling this one frame
 -- carries its whole native visual along, exactly like the Latency Bar.
--- UNCONFIRMED on this specific modded client build (same tolerance as the
--- Page Indicator's own UNCONFIRMED-name comment above): every accessor
--- below is defensively nil-checked via getglobal, so a wrong/missing name
--- here just means this container never builds (degrades exactly like a
--- failed Bag Bar/Micro Menu discovery), never a hard error - see this
--- feature's own task report for the live check this still needs.
+-- MainMenuExpBar/MainMenuBarOverlayFrame/ExhaustionLevelFillBar are all now
+-- live-confirmed present on this client (rounds 19-21's own diagnostic
+-- sessions, referenced by name below) - unlike the Page Indicator section
+-- further below, this is no longer an open UNCONFIRMED-name question.
+-- Every accessor is still defensively nil-checked via getglobal regardless,
+-- so a name that ever turns out wrong on some other client build just means
+-- this container never builds (degrades exactly like a failed Bag Bar/Micro
+-- Menu discovery), never a hard error.
 --
 -- Movable/scalable via the same single-real-frame EnsureContainerOverlay
 -- treatment as the Latency Bar/Key Ring, ALWAYS - independent of
