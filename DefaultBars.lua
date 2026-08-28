@@ -1105,31 +1105,33 @@ local function ApplyDragSnap(frame, pos)
 
 	-- (v1.0 polish pass) Inflate the dragged element's own proposed box by
 	-- its visual inset (Core.lua's BTV:GetElementVisualInset - nonzero only
-	-- for default bars 1-5, whose native border overhangs their frame) so
+	-- for default bars 1-5, whose native border overhangs their frame, and
+	-- NOT symmetric top vs. bottom - see BTV.BORDER_Y_OFFSET's comment) so
 	-- it's compared against every target's own inset-adjusted box
 	-- (Core.lua's GetAllSnapTargetBoxes) on equal terms - border edge vs.
 	-- border edge, not frame edge vs. border edge. Deflated back out of the
 	-- result before writing to pos.x/pos.y, since pos always represents
 	-- this frame's own TOPLEFT corner, never its inflated box.
-	local insetPx = BTV:GetElementVisualInset(frame) * scale
+	local il, ir, it, ib = BTV:GetElementVisualInset(frame)
+	local ilPx, irPx, itPx, ibPx = il * scale, ir * scale, it * scale, ib * scale
 
-	local proposedLeft = pos.x * scale - insetPx
-	local proposedTop = pos.y * scale + insetPx
+	local proposedLeft = pos.x * scale - ilPx
+	local proposedTop = pos.y * scale + itPx
 
 	local adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
 		proposedLeft,
 		proposedTop,
-		width * scale + (insetPx * 2),
-		height * scale + (insetPx * 2),
+		width * scale + ilPx + irPx,
+		height * scale + itPx + ibPx,
 		frame
 	)
 
 	if adjustedLeft then
-		pos.x = (adjustedLeft + insetPx) / scale
+		pos.x = (adjustedLeft + ilPx) / scale
 	end
 
 	if adjustedTop then
-		pos.y = (adjustedTop - insetPx) / scale
+		pos.y = (adjustedTop - itPx) / scale
 	end
 end
 

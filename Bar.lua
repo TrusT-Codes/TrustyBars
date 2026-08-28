@@ -211,22 +211,19 @@ local function EnsureBarOverlay(bar)
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
 
-	-- (v1.0 polish pass) Intended to expand past `bar`'s own frame bounds
-	-- for default bars (id 1-5) so this tint reaches the visible native
-	-- border's outer edge instead of stopping at the frame. DISABLED for
-	-- now - BTV:GetElementVisualInset (Core.lua) always returns 0 after a
-	-- live-client regression report ("way too big", broke snapping between
-	-- default bars) that didn't match the math on paper - see that
-	-- function's comment and docs/plan/default-bar-visual-inset-regression.md.
-	-- With inset always 0 this unconditionally takes the `else` branch
-	-- below, i.e. plain SetAllPoints(bar), identical to pre-this-feature
-	-- behavior for every bar kind. Left wired up (rather than deleted) so
-	-- re-enabling it later is a one-line change in GetElementVisualInset.
-	local inset = BTV:GetElementVisualInset(bar)
+	-- (v1.0 polish pass, RE-ENABLED after live-client diagnosis) Expands
+	-- past `bar`'s own frame bounds for default bars (id 1-5) so this tint
+	-- reaches the visible native border's outer edge instead of stopping
+	-- at the frame - each side independently, since the border's own
+	-- y=-1 anchor offset (BTV.BORDER_Y_OFFSET) makes the top/bottom
+	-- overhang asymmetric (see BTV:GetElementVisualInset's comment,
+	-- Core.lua). Custom bars (id 6+, all 4 insets 0) keep the exact
+	-- SetAllPoints(bar) behavior they always had.
+	local insetLeft, insetRight, insetTop, insetBottom = BTV:GetElementVisualInset(bar)
 
-	if inset ~= 0 then
-		overlay:SetPoint("TOPLEFT", bar, "TOPLEFT", -inset, inset)
-		overlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", inset, -inset)
+	if insetLeft ~= 0 or insetRight ~= 0 or insetTop ~= 0 or insetBottom ~= 0 then
+		overlay:SetPoint("TOPLEFT", bar, "TOPLEFT", -insetLeft, insetTop)
+		overlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", insetRight, -insetBottom)
 	else
 		overlay:SetAllPoints(bar)
 	end

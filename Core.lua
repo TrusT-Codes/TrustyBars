@@ -57,6 +57,17 @@ BTV.EQUIP_RING_RATIO = 62 / 36
 -- which replicates this for default bars 1-5).
 BTV.BORDER_RATIO = 66 / 36
 
+-- Round 16: live-confirmed real vanilla's own border art is centered with
+-- a y = -1 offset (1px down from exact center), not a bare 0,0 -
+-- Button.lua's self.border anchor replicates this. This is a FIXED pixel
+-- offset (not proportional to buttonSize, unlike BORDER_RATIO), so it
+-- makes the border's TOP overhang 1px LESS than its bottom overhang
+-- regardless of button size - live re-confirmed via diag2/diag9 (14px top
+-- vs 16px bottom overhang at the default 36px button size, vs. an exactly
+-- symmetric 15px left/right). BTV:GetElementVisualInset below uses this to
+-- return the true per-side overhang instead of one uniform value.
+BTV.BORDER_Y_OFFSET = 1
+
 -- (v1.0 polish pass, live-tested) Micro Menu's real GetHitRectInsets()
 -- (18px on top only, per diag8) trims most, but not all, of the visual
 -- gap between the edit-mode overlay and the buttons' actual icon art -
@@ -65,9 +76,9 @@ BTV.BORDER_RATIO = 66 / 36
 -- GetHitRectInsets() itself (DefaultBars.lua's GetHitInsets/
 -- ApplyChainAnchoredShape/EnsureContainerOverlay apply the same
 -- effective-scale conversion to this as to the hit-rect values, so it
--- scales correctly if the user changes Micro Menu's own scale). Start at
--- 1 - bump to 2 if live testing still shows a sliver.
-BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 1
+-- scales correctly if the user changes Micro Menu's own scale). Live-
+-- tested: 1 still left a sliver, 2 is correct.
+BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 2
 
 -- "Snap to Adjacent Elements" (round 35, BTV:ComputeSnapAdjustment below):
 -- how close (in real screen pixels, i.e. already GetEffectiveScale()-
@@ -1469,22 +1480,28 @@ end
 -- per-pair special-casing needed. Returns nil if the region can't report a
 -- position yet (e.g. hidden/never laid out).
 --
--- `inset` (v1.0 polish pass, optional, defaults to 0): default bars 1-5
--- draw a native-accurate border texture (Button.lua's self.border) sized
--- to BTV.BORDER_RATIO (66/36) of the button - i.e. the VISIBLE border
--- overhangs the button/bar frame by (BORDER_RATIO-1)/2 * buttonSize on
--- every side (see BTV:GetElementVisualInset below). Without this, two
--- default bars whose FRAMES snap flush end up with their VISIBLE borders
--- overlapping by that overhang amount - `inset` (in the same local units
--- as GetLeft()/GetWidth(), pre-scale) lets a caller expand the reported
--- bounds outward on every side so the box returned actually matches the
--- bar's visible extent, not just its frame.
-local function GetRealScreenBounds(region, inset)
+-- `insetLeft/insetRight/insetTop/insetBottom` (v1.0 polish pass, optional,
+-- each defaults to 0): default bars 1-5 draw a native-accurate border
+-- texture (Button.lua's self.border) sized to BTV.BORDER_RATIO (66/36) of
+-- the button - i.e. the VISIBLE border overhangs the button/bar frame on
+-- every side (see BTV:GetElementVisualInset below, which is NOT symmetric
+-- top vs. bottom - the border's own y=-1 anchor offset, round 16, live-
+-- confirmed via diag2/diag9, makes the top overhang 1px less and the
+-- bottom 1px more than the left/right overhang). Without this, two default
+-- bars whose FRAMES snap flush end up with their VISIBLE borders
+-- overlapping by that overhang amount - these four params (in the same
+-- local units as GetLeft()/GetWidth(), pre-scale) let a caller expand the
+-- reported bounds outward on each side independently so the box returned
+-- actually matches the bar's visible extent, not just its frame.
+local function GetRealScreenBounds(region, insetLeft, insetRight, insetTop, insetBottom)
 	if not region or not region.GetLeft then
 		return nil
 	end
 
-	inset = inset or 0
+	insetLeft = insetLeft or 0
+	insetRight = insetRight or 0
+	insetTop = insetTop or 0
+	insetBottom = insetBottom or 0
 
 	local left, right, top, bottom = region:GetLeft(), region:GetRight(), region:GetTop(), region:GetBottom()
 	local scale = region:GetEffectiveScale()
@@ -1493,35 +1510,47 @@ local function GetRealScreenBounds(region, inset)
 		return nil
 	end
 
-	return (left - inset) * scale, (right + inset) * scale, (top + inset) * scale, (bottom - inset) * scale
+	return (left - insetLeft) * scale, (right + insetRight) * scale, (top + insetTop) * scale, (bottom - insetBottom) * scale
 end
 
--- (v1.0 polish pass) Returns how far, in local units (pre-scale, same as
--- GetLeft()/GetWidth()), a frame's VISIBLE extent overhangs its own frame
--- bounds on every side - 0 for anything without such an overhang. Only
--- default bars (id 1-5) currently have one: their buttons draw a native-
--- accurate border texture (Button.lua's self.border) at BTV.BORDER_RATIO
--- (66/36) of the button size, centered on the button, which is a
--- deliberate/correct replication of real vanilla action-button art (round
--- 15/16) - not a bug. Custom bars (id 6+) use a SetBackdrop edge inset
--- essentially at the frame edge, and every chain-anchored container/
--- native-wrapped element (Bag Bar, Micro Menu, Key Ring, Latency Bar, Exp
--- Bar, Page Indicator) has no known equivalent overhang, so they all
--- return 0 here.
+-- (v1.0 polish pass, RE-ENABLED after live-client diagnosis) Returns how
+-- far, in local units (pre-scale, same as GetLeft()/GetWidth()), a frame's
+-- VISIBLE extent overhangs its own frame bounds on each side independently
+-- - left, right, top, bottom - all 0 for anything without such an
+-- overhang. Only default bars (id 1-5) currently have one: their buttons
+-- draw a native-accurate border texture (Button.lua's self.border) at
+-- BTV.BORDER_RATIO (66/36) of the button size, centered on the button
+-- except for the BTV.BORDER_Y_OFFSET (1px) vertical nudge - a deliberate/
+-- correct replication of real vanilla action-button art (round 15/16), not
+-- a bug. Custom bars (id 6+) use a SetBackdrop edge inset essentially at
+-- the frame edge, and every chain-anchored container/native-wrapped
+-- element (Bag Bar, Micro Menu, Key Ring, Latency Bar, Exp Bar, Page
+-- Indicator) has no known equivalent overhang, so they all return 0 here.
+--
+-- This was disabled for a while after an early live-client report that
+-- the resulting overlay/snap boxes were far larger than intended - the
+-- per-button math alone never explained that magnitude on paper, and a
+-- prior single-uniform-value version of this function was suspected as
+-- the culprit. Subsequent diagnostics (diag2, diag9) directly measured the
+-- real border-vs-frame overhang on live bars and found it exactly matches
+-- this formula (14px top / 16px bottom / 15px left / 15px right at the
+-- default 36px button size - precisely BORDER_RATIO's per-side overhang
+-- with the 1px BORDER_Y_OFFSET vertical asymmetry, nothing more) - so
+-- whatever the original "way too big" report was actually measuring, it
+-- was not this formula's own output. Re-enabled with full per-side
+-- precision (the disabled version's replacement had only ever computed
+-- one symmetric value for all 4 sides, silently wrong by 1px top/bottom).
 function BTV:GetElementVisualInset(frame)
-	-- (v1.0 polish pass, DISABLED after live-client testing) This used to
-	-- return a nonzero inset for default bars (id 1-5), computed from
-	-- BTV.BORDER_RATIO. The live client reported the resulting edit-mode
-	-- overlay/snap boxes as far larger than intended - "impossible to
-	-- align default bars with default bars or Extra Bars" - even though
-	-- the per-button math alone (buttonSize * (BORDER_RATIO-1)/2, at most
-	-- ~27px for the largest allowed button size) doesn't explain that
-	-- magnitude on paper. Rather than guess further without a live client
-	-- to iterate against, this is disabled (always returns 0, restoring
-	-- the original frame-flush behavior everywhere it's used) until it can
-	-- be re-diagnosed and re-tuned with live feedback - see
-	-- docs/plan/default-bar-visual-inset-regression.md.
-	return 0
+	if frame and frame.config and frame.config.id and frame.config.id >= 1 and frame.config.id <= 5 then
+		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
+		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
+		local yOffset = self.BORDER_Y_OFFSET or 0
+
+		-- left, right, top, bottom
+		return uniform, uniform, uniform - yOffset, uniform + yOffset
+	end
+
+	return 0, 0, 0, 0
 end
 
 -- Every currently visible/enabled draggable element EXCEPT `excludeElement`
