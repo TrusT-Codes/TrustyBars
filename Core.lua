@@ -2373,6 +2373,43 @@ function BTV:DiagMicroMenuOverlay()
 		" shown=" .. tostring(overlay:IsShown()))
 end
 
+-- Live-tested: diag4 showed our default-bar border texture is byte-for-
+-- byte identical to real vanilla ActionButton1's (same texture path, same
+-- size, same TexCoord) - so the earlier "border texture doesn't match its
+-- own declared bounds" theory is disproven; the border itself renders
+-- exactly like vanilla. The one confirmed difference between our default-
+-- bar buttons and a real ActionButton1 is that ours ALSO gets a custom
+-- SetBackdrop background fill (Button.lua's UpdateBackdropVisibility -
+-- SetBackdropColor(0,0,0,0.75) applies even when hasNativeBorder is true,
+-- only the backdrop BORDER color is skipped for those buttons) sitting on
+-- the BACKGROUND layer, beneath everything else - a real ActionButton1 has
+-- no such fill. If the border ring texture has any naturally see-through
+-- area near where it approaches the icon (plausible for a decorative ring
+-- asset), our backdrop fill would tint that sliver dark while vanilla
+-- (with nothing behind it there) wouldn't. This zeroes bar 1's own
+-- buttons' backdrop alpha for a quick visual A/B - if the gap disappears,
+-- that confirms the theory; a /reload undoes this (nothing is saved).
+function BTV:DiagZeroDefaultBarBackdropFill()
+	local bar = self.bars and self.bars[1]
+
+	if not bar or not bar.buttons then
+		self:Print("DiagZeroDefaultBarBackdropFill: bar 1 not found")
+		return
+	end
+
+	local i
+
+	for i = 1, table.getn(bar.buttons) do
+		local btn = bar.buttons[i]
+
+		if btn then
+			btn:SetBackdropColor(0, 0, 0, 0)
+		end
+	end
+
+	self:Print("Bar 1's backdrop fill set to fully transparent - check the icon/border gap now. /reload to undo (nothing is saved).")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2399,6 +2436,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagBorderTexCoord()
 	elseif msg == "diag5" then
 		BTV:DiagMicroMenuOverlay()
+	elseif msg == "diag6" then
+		BTV:DiagZeroDefaultBarBackdropFill()
 	else
 		BTV:ToggleMainMenu()
 	end
