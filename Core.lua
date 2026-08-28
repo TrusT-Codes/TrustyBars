@@ -2410,6 +2410,65 @@ function BTV:DiagZeroDefaultBarBackdropFill()
 	self:Print("Bar 1's backdrop fill set to fully transparent - check the icon/border gap now. /reload to undo (nothing is saved).")
 end
 
+-- Live-tested: zeroing the backdrop fill (diag6) made the gap MORE visible,
+-- not less - the opposite of what "backdrop tinting a transparent border
+-- sliver" would predict. That disproves the backdrop theory: the backdrop
+-- was actually partially MASKING a real, structural gap (by filling it
+-- with black, similar in tone to whatever's normally behind it) rather
+-- than causing one. Combined with diag4 already proving the border texture
+-- itself is pixel-identical to vanilla, the last unverified piece specific
+-- to hasNativeBorder buttons is whether OUR icon (Button.lua's flat
+-- iconInset = 2, chosen for round 13/14's own reasoning, not necessarily
+-- live-measured against vanilla's real icon) sits exactly where vanilla's
+-- real icon does. This dumps ActionButton1's own icon texture
+-- (ActionButton1Icon, the real global per FrameXML convention) bounds
+-- directly next to our button1.icon's, so an inset mismatch (real vanilla
+-- icon extending further outward, closer to where the border ring visually
+-- starts, than ours) would show up as a straightforward before/after
+-- comparison rather than a further guess.
+function BTV:DiagIconInset()
+	local nativeIcon = getglobal("ActionButton1Icon")
+
+	if nativeIcon then
+		self:Print("ActionButton1Icon: L=" .. tostring(nativeIcon:GetLeft()) ..
+			" R=" .. tostring(nativeIcon:GetRight()) ..
+			" T=" .. tostring(nativeIcon:GetTop()) ..
+			" B=" .. tostring(nativeIcon:GetBottom()) ..
+			" W=" .. tostring(nativeIcon:GetWidth()) ..
+			" H=" .. tostring(nativeIcon:GetHeight()))
+	else
+		self:Print("ActionButton1Icon: missing")
+	end
+
+	local nativeBtn = getglobal("ActionButton1")
+
+	if nativeBtn then
+		self:Print("ActionButton1: L=" .. tostring(nativeBtn:GetLeft()) ..
+			" R=" .. tostring(nativeBtn:GetRight()) ..
+			" T=" .. tostring(nativeBtn:GetTop()) ..
+			" B=" .. tostring(nativeBtn:GetBottom()))
+	end
+
+	local bar = self.bars and self.bars[1]
+	local btn = bar and bar.buttons and bar.buttons[1]
+
+	if btn and btn.icon then
+		self:Print("our button1.icon: L=" .. tostring(btn.icon:GetLeft()) ..
+			" R=" .. tostring(btn.icon:GetRight()) ..
+			" T=" .. tostring(btn.icon:GetTop()) ..
+			" B=" .. tostring(btn.icon:GetBottom()) ..
+			" W=" .. tostring(btn.icon:GetWidth()) ..
+			" H=" .. tostring(btn.icon:GetHeight()))
+
+		self:Print("our button1: L=" .. tostring(btn:GetLeft()) ..
+			" R=" .. tostring(btn:GetRight()) ..
+			" T=" .. tostring(btn:GetTop()) ..
+			" B=" .. tostring(btn:GetBottom()))
+	else
+		self:Print("our button1.icon: missing")
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2438,6 +2497,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagMicroMenuOverlay()
 	elseif msg == "diag6" then
 		BTV:DiagZeroDefaultBarBackdropFill()
+	elseif msg == "diag7" then
+		BTV:DiagIconInset()
 	else
 		BTV:ToggleMainMenu()
 	end
