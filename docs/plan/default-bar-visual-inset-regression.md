@@ -69,6 +69,17 @@ Threaded through:
 Live-tested: default-bar-to-default-bar and default-bar-to-custom-bar
 snapping/overlay now works correctly.
 
+**UPDATE (live-tested):** even with the exact, live-measured per-side
+overhang above, the overlay was still reported as way too big. The border
+TEXTURE's own declared bounds (66x66, confirmed via diag2/diag4) are
+apparently bigger than its actual VISIBLE (opaque) ring art - some of that
+declared size is invisible/transparent padding baked into the image
+itself (present in both our rendering and vanilla's - not a rendering bug,
+an intrinsic property of the `UI-Quickslot2` asset). Added
+`BTV.BORDER_TEXTURE_FUDGE` (`Core.lua`, starting at 12, a flat pixel value
+like `BORDER_Y_OFFSET`) subtracted from every side's overhang in
+`GetElementVisualInset`, floored at 0. May need further live tuning.
+
 ## Still open: Micro Menu / Page Indicator / general overlay accuracy
 
 These turned out to be a *different* class of bug entirely - not

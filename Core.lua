@@ -68,6 +68,20 @@ BTV.BORDER_RATIO = 66 / 36
 -- return the true per-side overhang instead of one uniform value.
 BTV.BORDER_Y_OFFSET = 1
 
+-- (v1.0 polish pass, live-tested) Even with the exact, live-measured
+-- per-side overhang above, the edit-mode overlay for default bars still
+-- looked way too big - diag2/diag9 measured the border TEXTURE's own
+-- declared bounds correctly, but the texture's actual VISIBLE (opaque)
+-- ring art apparently doesn't extend all the way to those bounds - some
+-- of the declared 66x66 border is invisible/transparent padding baked
+-- into the image itself (present in both our rendering and vanilla's,
+-- per diag4 - not a texture-crop mismatch, an intrinsic property of the
+-- asset). This is a flat pixel value (not proportional to buttonSize,
+-- same category as BORDER_Y_OFFSET) subtracted from every side's overhang
+-- in BTV:GetElementVisualInset, floored at 0. Start at 12 - may need
+-- further tuning with live feedback.
+BTV.BORDER_TEXTURE_FUDGE = 12
+
 -- (v1.0 polish pass, live-tested) Micro Menu's real GetHitRectInsets()
 -- (18px on top only, per diag8) trims most, but not all, of the visual
 -- gap between the edit-mode overlay and the buttons' actual icon art -
@@ -1545,9 +1559,23 @@ function BTV:GetElementVisualInset(frame)
 		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
 		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
 		local yOffset = self.BORDER_Y_OFFSET or 0
+		local fudge = self.BORDER_TEXTURE_FUDGE or 0
 
-		-- left, right, top, bottom
-		return uniform, uniform, uniform - yOffset, uniform + yOffset
+		local left = uniform - fudge
+		local right = uniform - fudge
+		local top = uniform - yOffset - fudge
+		local bottom = uniform + yOffset - fudge
+
+		-- Floored at 0 (never a negative inset - that would flip the
+		-- overlay/snap box to shrink INWARD past the frame instead of just
+		-- stopping at it) - only matters for very small configured button
+		-- sizes, where BORDER_TEXTURE_FUDGE could exceed the raw overhang.
+		if left < 0 then left = 0 end
+		if right < 0 then right = 0 end
+		if top < 0 then top = 0 end
+		if bottom < 0 then bottom = 0 end
+
+		return left, right, top, bottom
 	end
 
 	return 0, 0, 0, 0
