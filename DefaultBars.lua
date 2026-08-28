@@ -1604,6 +1604,30 @@ local function GetHitInsets(frame)
 	return left or 0, right or 0, top or 0, bottom or 0
 end
 
+-- (v1.0 polish pass, live-tested) GetHitInsets' values are in `frame`'s
+-- own local unit system (unaffected by any SetScale - a fixed property of
+-- the widget's own declared size, same convention as GetWidth()/
+-- GetHeight()). The chain-anchored container's own SetScale (the user's
+-- Scale slider) changes `frame`'s real on-screen size without changing
+-- that declared value at all, but the OVERLAY (a separate frame parented
+-- straight to UIParent, no SetScale of its own) has a fixed effective
+-- scale that does NOT track the container's scale. Anchoring the overlay
+-- to `frame` with a raw (unconverted) inset value as the SetPoint offset
+-- would therefore be wrong by exactly the container's own scale factor
+-- once it's anything other than 1 - this converts a value expressed in
+-- `frame`'s own local units into the equivalent offset in `overlay`'s own
+-- local units, so it stays correct at any scale.
+local function ScaleRatio(frame, overlay)
+	local frameScale = frame and frame.GetEffectiveScale and frame:GetEffectiveScale()
+	local overlayScale = overlay and overlay.GetEffectiveScale and overlay:GetEffectiveScale()
+
+	if not frameScale or not overlayScale or overlayScale == 0 then
+		return 1
+	end
+
+	return frameScale / overlayScale
+end
+
 local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	if not container or not container.chainButtons then
 		return
@@ -1771,10 +1795,13 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	if container.btvOverlay then
 		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
 		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(prevBtn)
+		local firstRatio = ScaleRatio(first, container.btvOverlay)
+		local lastRatio = ScaleRatio(prevBtn, container.btvOverlay)
+		local topFudge = container.overlayTopFudge or 0
 
 		container.btvOverlay:ClearAllPoints()
-		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft, -firstTop)
-		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", -lastRight, lastBottom)
+		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
+		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
 	end
 end
 
@@ -1876,12 +1903,20 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 		-- (v1.0 polish pass) Trimmed by each endpoint's own hit-rect inset,
 		-- same reasoning/formula as ApplyChainAnchoredShape's own matching
 		-- overlay anchor below - see GetHitInsets' comment (diag8's Micro
-		-- Menu finding).
+		-- Menu finding) - converted through ScaleRatio since `overlay` and
+		-- the buttons don't share an effective scale once the container's
+		-- own Scale slider is anything but 1, plus container.overlayTopFudge
+		-- (Micro Menu only - see BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's comment,
+		-- Core.lua) for the small extra sliver GetHitRectInsets alone
+		-- doesn't cover.
 		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(chainFirst)
 		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(chainLast)
+		local firstRatio = ScaleRatio(chainFirst, overlay)
+		local lastRatio = ScaleRatio(chainLast, overlay)
+		local topFudge = container.overlayTopFudge or 0
 
-		overlay:SetPoint("TOPLEFT", chainFirst, "TOPLEFT", firstLeft, -firstTop)
-		overlay:SetPoint("BOTTOMRIGHT", chainLast, "BOTTOMRIGHT", -lastRight, lastBottom)
+		overlay:SetPoint("TOPLEFT", chainFirst, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
+		overlay:SetPoint("BOTTOMRIGHT", chainLast, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
 	else
 		overlay:SetAllPoints(container)
 	end
@@ -2520,6 +2555,16 @@ function BTV:CreateBagBarAndMicroMenu()
 
 			self.microMenuContainer = container
 			self.microMenuButtons = buttons
+
+			-- (v1.0 polish pass) Extra top-only overlay trim beyond the
+			-- buttons' own real GetHitRectInsets() - see
+			-- BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's own comment (Core.lua).
+			-- Read generically by EnsureContainerOverlay/
+			-- ApplyChainAnchoredShape's overlay anchors via
+			-- container.overlayTopFudge (nil/0 for every other chain-
+			-- anchored container - Bag Bar, Stance Bar - which have no
+			-- equivalent evidence of needing one).
+			container.overlayTopFudge = self.MICRO_MENU_OVERLAY_TOP_FUDGE
 
 			if not BTVanillaDB.microMenuNativeAnchor then
 				BTVanillaDB.microMenuNativeAnchor = {

@@ -57,6 +57,18 @@ BTV.EQUIP_RING_RATIO = 62 / 36
 -- which replicates this for default bars 1-5).
 BTV.BORDER_RATIO = 66 / 36
 
+-- (v1.0 polish pass, live-tested) Micro Menu's real GetHitRectInsets()
+-- (18px on top only, per diag8) trims most, but not all, of the visual
+-- gap between the edit-mode overlay and the buttons' actual icon art -
+-- live testing found the real clickable area still starts 1-2px above
+-- where the icon visually begins. In the SAME local-unit system as
+-- GetHitRectInsets() itself (DefaultBars.lua's GetHitInsets/
+-- ApplyChainAnchoredShape/EnsureContainerOverlay apply the same
+-- effective-scale conversion to this as to the hit-rect values, so it
+-- scales correctly if the user changes Micro Menu's own scale). Start at
+-- 1 - bump to 2 if live testing still shows a sliver.
+BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 1
+
 -- "Snap to Adjacent Elements" (round 35, BTV:ComputeSnapAdjustment below):
 -- how close (in real screen pixels, i.e. already GetEffectiveScale()-
 -- corrected - never raw local-frame units) a dragged edge must get to a
@@ -2507,6 +2519,71 @@ function BTV:DiagMicroMenuHitRects()
 	end
 end
 
+-- (v1.0 polish pass) Instead of guessing a blind "padding" constant for
+-- default bars' still-slightly-off snap/overlay alignment, this measures
+-- the ACTUAL gap between two bars the user has already positioned exactly
+-- how they want them (both frame-to-frame and border-to-border, for
+-- whichever button 1 has a border) - reusable for any pair of bar ids
+-- (1-9), not just the two the user happens to ask about right now. Prints
+-- both bars' own frame bounds, button 1's border bounds where
+-- self.hasNativeBorder, and the horizontal (bar2.left - bar1.right) and
+-- vertical (bar1.bottom - bar2.top) gaps for both frame and border edges -
+-- whichever of the two actually corresponds to how the bars are arranged
+-- is the number that matters; the other one is meaningless noise from
+-- bars that aren't actually side by side/stacked in that direction.
+function BTV:DiagBarGap(id1, id2)
+	id1 = tonumber(id1)
+	id2 = tonumber(id2)
+
+	if not id1 or not id2 then
+		self:Print("DiagBarGap: usage /btv diag9 <id1> <id2>")
+		return
+	end
+
+	local bar1 = self.bars and self.bars[id1]
+	local bar2 = self.bars and self.bars[id2]
+
+	if not bar1 or not bar2 then
+		self:Print("DiagBarGap: bar " .. tostring(not bar1 and id1 or id2) .. " not found")
+		return
+	end
+
+	local function dump(id, bar)
+		self:Print("bar " .. tostring(id) .. ": L=" .. tostring(bar:GetLeft()) ..
+			" R=" .. tostring(bar:GetRight()) ..
+			" T=" .. tostring(bar:GetTop()) ..
+			" B=" .. tostring(bar:GetBottom()))
+
+		local btn = bar.buttons and bar.buttons[1]
+
+		if btn and btn.border then
+			self:Print("bar " .. tostring(id) .. " button1.border: L=" .. tostring(btn.border:GetLeft()) ..
+				" R=" .. tostring(btn.border:GetRight()) ..
+				" T=" .. tostring(btn.border:GetTop()) ..
+				" B=" .. tostring(btn.border:GetBottom()))
+
+			return btn.border
+		end
+
+		return nil
+	end
+
+	local border1 = dump(id1, bar1)
+	local border2 = dump(id2, bar2)
+
+	self:Print("frame gap horizontal (bar" .. tostring(id2) .. ".L - bar" .. tostring(id1) .. ".R) = " ..
+		tostring(bar2:GetLeft() - bar1:GetRight()))
+	self:Print("frame gap vertical (bar" .. tostring(id1) .. ".B - bar" .. tostring(id2) .. ".T) = " ..
+		tostring(bar1:GetBottom() - bar2:GetTop()))
+
+	if border1 and border2 then
+		self:Print("border gap horizontal (bar" .. tostring(id2) .. ".border.L - bar" .. tostring(id1) .. ".border.R) = " ..
+			tostring(border2:GetLeft() - border1:GetRight()))
+		self:Print("border gap vertical (bar" .. tostring(id1) .. ".border.B - bar" .. tostring(id2) .. ".border.T) = " ..
+			tostring(border1:GetBottom() - border2:GetTop()))
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2539,6 +2616,13 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagIconInset()
 	elseif msg == "diag8" then
 		BTV:DiagMicroMenuHitRects()
+	elseif string.find(msg, "^diag9 ") then
+		local rest = string.sub(msg, string.find(msg, " ") + 1)
+		local spacePos = string.find(rest, " ")
+		local id1 = spacePos and string.sub(rest, 1, spacePos - 1) or rest
+		local id2 = spacePos and string.sub(rest, spacePos + 1) or nil
+
+		BTV:DiagBarGap(id1, id2)
 	else
 		BTV:ToggleMainMenu()
 	end
