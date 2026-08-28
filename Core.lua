@@ -244,18 +244,6 @@ local function CaptureNativeAnchor(self, id)
 	local left = first:GetLeft()
 	local top = first:GetTop()
 
-	-- Round 10 TEMPORARY instrumentation (see task record): proves, at the
-	-- exact moment this function reads it, whether `first` really is the
-	-- literal ActionButton1 the settle-poll and the user's own manual /run
-	-- checks both reference directly (theory A), and exactly what GetLeft()
-	-- returned for id right here (distinguishing a bad read here from a
-	-- correct read here that gets stomped/misapplied later).
-	self:Print(string.format(
-		"DEBUG CaptureNativeAnchor: id=%s name=%s left=%s top=%s",
-		tostring(id), tostring(first.GetName and first:GetName() or "?"),
-		tostring(left), tostring(top)
-	))
-
 	if not left or not top then
 		return nil
 	end
@@ -709,7 +697,9 @@ end
 
 -- Round 11 root-cause fix: EVERY prior recapture marker (anchorRecaptureDone/
 -- anchorScaleFixDone/anchorTimingFixDone/anchorEnterWorldFixDone/
--- round10DebugRecaptureDone, see EnsureDB below) was read character-by-
+-- round10DebugRecaptureDone - the last of these was a temporary diagnostic
+-- marker, since removed along with the debug prints it fed; see EnsureDB
+-- below for the markers still in effect) was read character-by-
 -- character and found logically sound in isolation - each nils
 -- BTVanillaDB.defaultBars strictly BEFORE the `if not BTVanillaDB.defaultBars
 -- then seedDefaultBars() end` gate runs, in the same synchronous EnsureDB
@@ -1399,28 +1389,6 @@ function BTV:EnsureDB()
 		BTVanillaDB.mainBarPageIndicatorPosition = nil
 	end
 
-	-- Round 10 TEMPORARY instrumentation marker (see task record): every
-	-- prior recapture marker above (anchorRecaptureDone/anchorScaleFixDone/
-	-- anchorTimingFixDone/anchorEnterWorldFixDone) is, by this point, already
-	-- permanently consumed for anyone who tested a previous round - meaning
-	-- BTVanillaDB.defaultBars is already non-nil and the `if not
-	-- BTVanillaDB.defaultBars` branch below would otherwise NOT call
-	-- seedDefaultBars again this session, so CaptureNativeAnchor's new debug
-	-- print would never fire and no fresh data could be gathered. This
-	-- one-shot marker forces exactly one more fresh capture, purely so this
-	-- round's instrumentation actually runs and reports a live value - same
-	-- "clear the mutable fields, not a schemaVersion bump" pattern as every
-	-- marker above. Remove this block (and the debug prints it exists to
-	-- feed) once round 10's diagnosis is complete.
-	if not BTVanillaDB.round10DebugRecaptureDone then
-		BTVanillaDB.round10DebugRecaptureDone = true
-
-		BTVanillaDB.defaultBars = nil
-
-		BTVanillaDB.mainBarPageIndicatorNativeAnchor = nil
-		BTVanillaDB.mainBarPageIndicatorPosition = nil
-	end
-
 	if not BTVanillaDB.schemaVersion or BTVanillaDB.schemaVersion < self.SCHEMA_VERSION then
 		BTVanillaDB.schemaVersion = self.SCHEMA_VERSION
 		BTVanillaDB.defaultBars = seedDefaultBars(self)
@@ -1529,11 +1497,18 @@ end
 -- Bar, Page Indicator) has no known equivalent overhang, so they all
 -- return 0 here.
 function BTV:GetElementVisualInset(frame)
-	if frame and frame.config and frame.config.id and frame.config.id >= 1 and frame.config.id <= 5 then
-		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
-		return buttonSize * (self.BORDER_RATIO - 1) / 2
-	end
-
+	-- (v1.0 polish pass, DISABLED after live-client testing) This used to
+	-- return a nonzero inset for default bars (id 1-5), computed from
+	-- BTV.BORDER_RATIO. The live client reported the resulting edit-mode
+	-- overlay/snap boxes as far larger than intended - "impossible to
+	-- align default bars with default bars or Extra Bars" - even though
+	-- the per-button math alone (buttonSize * (BORDER_RATIO-1)/2, at most
+	-- ~27px for the largest allowed button size) doesn't explain that
+	-- magnitude on paper. Rather than guess further without a live client
+	-- to iterate against, this is disabled (always returns 0, restoring
+	-- the original frame-flush behavior everywhere it's used) until it can
+	-- be re-diagnosed and re-tuned with live feedback - see
+	-- docs/plan/default-bar-visual-inset-regression.md.
 	return 0
 end
 
@@ -1956,23 +1931,6 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 		))
 	end
 
-	-- Round 10 TEMPORARY instrumentation (see task record): one more direct
-	-- read of the exact same global frame the settle-poll just finished
-	-- polling, taken immediately before EnsureDB() (and therefore
-	-- CaptureNativeAnchor, if this session's one-shot guard is still
-	-- unconsumed) actually runs - proves whether ActionButton1 has already
-	-- moved again by the time our own capture code gets control, with zero
-	-- gap left unaccounted for.
-	do
-		local diagRef = getglobal("ActionButton1")
-		if diagRef then
-			BTV:Print(string.format(
-				"DEBUG pre-EnsureDB: ActionButton1:GetLeft()=%s",
-				tostring(diagRef:GetLeft())
-			))
-		end
-	end
-
 	BTV:EnsureDB()
 	BTV:CreateAllBars()
 
@@ -2165,22 +2123,6 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- reason (dead code, per the migration plan).
 
 	BTV:Print("Loaded. Click the minimap button for options.")
-
-	-- Round 10 TEMPORARY instrumentation (see task record): confirms
-	-- whether ActionButton1's real GetLeft() is back to its "settled"
-	-- value by the time the ENTIRE login sequence (EnsureDB,
-	-- CreateFixedSlotDefaultBars hiding the real default-bar buttons,
-	-- ApplyAllDefaultBars, etc.) has finished running - matches this
-	-- against the user's own later manual /run checks.
-	do
-		local diagRef = getglobal("ActionButton1")
-		if diagRef then
-			BTV:Print(string.format(
-				"DEBUG post-login-sequence: ActionButton1:GetLeft()=%s",
-				tostring(diagRef:GetLeft())
-			))
-		end
-	end
 end
 
 -- Round 9 root-cause fix: this used to register PLAYER_LOGIN. Live-confirmed
@@ -2218,6 +2160,128 @@ loadFrame:SetScript("OnEvent", function()
 	WaitForNativeBarSettle(RunLoginSequence)
 end)
 
+-- TEMPORARY live-diagnostic commands (v1.0 polish pass, overlay/snap
+-- regression follow-up) - dump raw frame geometry to chat so it can be
+-- read directly in-game instead of via a `/run` one-liner, which this
+-- client caps at 511 characters including the leading "/run " (too short
+-- for anything beyond a trivial single-frame check). Each of these exists
+-- purely to gather the numbers docs/plan/default-bar-visual-inset-
+-- regression.md and docs/plan/keyring-latency-expbar-overlay-inset.md ask
+-- for - remove all three (and their SLASH_BTVANILLA1 dispatch entries
+-- below) once those two follow-ups are resolved, the same way Round 10's
+-- own temporary debug instrumentation was removed once it had served its
+-- purpose.
+
+function BTV:DiagKeyRingLatencyExpBar()
+	local function dump(name)
+		local f = getglobal(name)
+
+		if not f then
+			self:Print(name .. " missing")
+			return
+		end
+
+		self:Print(name .. ": w=" .. tostring(f:GetWidth()) .. " h=" .. tostring(f:GetHeight()))
+
+		local nt = f.GetNormalTexture and f:GetNormalTexture()
+
+		if nt then
+			self:Print("  NormalTexture w=" .. tostring(nt:GetWidth()) .. " h=" .. tostring(nt:GetHeight()))
+		else
+			self:Print("  no NormalTexture")
+		end
+	end
+
+	dump("KeyRingButton")
+	dump("MainMenuBarPerformanceBarFrame")
+	dump("MainMenuExpBar")
+end
+
+function BTV:DiagDefaultBarInset(id)
+	id = tonumber(id) or 1
+
+	local bar = self.bars and self.bars[id]
+
+	if not bar then
+		self:Print("DiagDefaultBarInset: no bar with id " .. tostring(id))
+		return
+	end
+
+	self:Print("bar " .. tostring(id) .. ": L=" .. tostring(bar:GetLeft()) ..
+		" R=" .. tostring(bar:GetRight()) ..
+		" T=" .. tostring(bar:GetTop()) ..
+		" B=" .. tostring(bar:GetBottom()))
+
+	local btn = bar.buttons and bar.buttons[1]
+
+	if btn and btn.border then
+		self:Print("button1.border: L=" .. tostring(btn.border:GetLeft()) ..
+			" R=" .. tostring(btn.border:GetRight()) ..
+			" T=" .. tostring(btn.border:GetTop()) ..
+			" B=" .. tostring(btn.border:GetBottom()))
+	end
+
+	if btn and btn.icon then
+		self:Print("button1.icon: L=" .. tostring(btn.icon:GetLeft()) ..
+			" R=" .. tostring(btn.icon:GetRight()) ..
+			" T=" .. tostring(btn.icon:GetTop()) ..
+			" B=" .. tostring(btn.icon:GetBottom()))
+	end
+
+	local size = (bar.config and bar.config.buttonSize) or self.BUTTON_SIZE
+
+	self:Print("formula inset would be: " .. tostring(size * (self.BORDER_RATIO - 1) / 2))
+	self:Print("GetElementVisualInset actually returns: " .. tostring(self:GetElementVisualInset(bar)))
+end
+
+function BTV:DiagMicroMenuPageIndicator()
+	local micro = {
+		"CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
+		"QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
+		"MainMenuMicroButton", "HelpMicroButton",
+	}
+
+	local i
+
+	for i = 1, table.getn(micro) do
+		local f = getglobal(micro[i])
+
+		if f then
+			self:Print(micro[i] .. ": shown=" .. tostring(f:IsShown()) ..
+				" L=" .. tostring(f:GetLeft()) ..
+				" T=" .. tostring(f:GetTop()) ..
+				" W=" .. tostring(f:GetWidth()) ..
+				" H=" .. tostring(f:GetHeight()))
+		end
+	end
+
+	if self.microMenuContainer then
+		local c = self.microMenuContainer
+
+		self:Print("microMenuContainer: L=" .. tostring(c:GetLeft()) ..
+			" R=" .. tostring(c:GetRight()) ..
+			" T=" .. tostring(c:GetTop()) ..
+			" B=" .. tostring(c:GetBottom()))
+	end
+
+	local up = getglobal("ActionBarUpButton")
+	local down = getglobal("ActionBarDownButton")
+	local text = getglobal("MainMenuBarPageNumber")
+
+	self:Print("ActionBarUpButton: " .. tostring(up and up:GetWidth()) .. "x" .. tostring(up and up:GetHeight()))
+	self:Print("ActionBarDownButton: " .. tostring(down and down:GetWidth()) .. "x" .. tostring(down and down:GetHeight()))
+	self:Print("MainMenuBarPageNumber: " .. tostring(text and text:GetWidth()) .. "x" .. tostring(text and text:GetHeight()))
+
+	if self.pageIndicatorContainer then
+		local c = self.pageIndicatorContainer
+
+		self:Print("pageIndicatorContainer: L=" .. tostring(c:GetLeft()) ..
+			" R=" .. tostring(c:GetRight()) ..
+			" T=" .. tostring(c:GetTop()) ..
+			" B=" .. tostring(c:GetBottom()))
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2231,6 +2295,15 @@ SLASH_BTVANILLA1 = "/btv"
 SlashCmdList["BTVANILLA"] = function(msg)
 	if msg == "recapture" then
 		BTV:RecaptureDefaultBarNativeAnchors()
+	elseif msg == "diag1" then
+		BTV:DiagKeyRingLatencyExpBar()
+	elseif msg == "diag2" or string.find(msg, "^diag2 ") then
+		local spacePos = string.find(msg, " ")
+		local arg = spacePos and string.sub(msg, spacePos + 1) or nil
+
+		BTV:DiagDefaultBarInset(arg)
+	elseif msg == "diag3" then
+		BTV:DiagMicroMenuPageIndicator()
 	else
 		BTV:ToggleMainMenu()
 	end

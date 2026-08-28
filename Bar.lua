@@ -64,11 +64,11 @@ end
 -------------------------------------------------------------------------
 
 -- cfg.spacing: default bars 1-5 have a real captured value (Core.lua's
--- CaptureNativeSpacing/seedDefaultBars); true custom bars (id 6+,
--- bug-fix batch Fix 4) are also given a real spacing = 0 field at
--- creation (Bar.lua's AddNewBar) so their own Settings-page slider has
--- something to read/write. The `or 0` fallback here now exists purely
--- for any bar saved before Fix 4 whose config predates that field.
+-- CaptureNativeSpacing/seedDefaultBars); Extra Bars (id 6+, bug-fix batch
+-- Fix 4) are also given a real spacing = 0 field at creation (Core.lua's
+-- seedExtraBarConfig) so their own Settings-page slider has something to
+-- read/write. The `or 0` fallback here now exists purely for any bar
+-- saved before Fix 4 whose config predates that field.
 local function BarFrameSize(cfg)
 	local spacing = cfg.spacing or 0
 
@@ -125,7 +125,7 @@ function BTV:LayoutButtons(bar)
 
 	local cfg = bar.config
 	-- Every bar now has a real cfg.spacing field (default bars via
-	-- Core.lua's CaptureNativeSpacing, custom bars via AddNewBar's
+	-- Core.lua's CaptureNativeSpacing, Extra Bars via seedExtraBarConfig's
 	-- explicit spacing = 0 - bug-fix batch Fix 4). `or 0` remains only as
 	-- a fallback for a bar saved before Fix 4.
 	local spacing = cfg.spacing or 0
@@ -156,36 +156,26 @@ end
 -------------------------------------------------------------------------
 -- Bar-level edit-mode overlay
 --
--- Consolidated (simplification pass) to fully own ALL edit-mode
--- interaction for a custom bar, exactly mirroring DefaultBars.lua's
--- (since-removed) old per-default-bar overlay/ApplyDefaultLayoutEditVisual
--- pattern: while BTV:IsEditMode() is true, this frame is mouse-enabled AND
--- elevated to "TOOLTIP" strata (above the bar/buttons' own round-34
--- "HIGH" - see CreateBarFromConfig), so it wins every hit-test within its
--- bounds and intercepts drag AND right-click uniformly across the whole
--- bar area - button, gap, or beyond-buttonCount cell alike. Outside edit
--- mode it drops back to EnableMouse(false) and "HIGH" strata, becoming
--- completely inert so buttons regain unobstructed native interaction
--- (cast-on-click, native pickup-drag) exactly as if this overlay didn't
--- exist. This replaces the earlier "always-mouse-enabled, one level below
--- the buttons" approach, which depended on buttons individually declining
--- to shadow it via their own per-click IsEditMode() branches (Button.lua)
--- - see this simplification's task comment for why owning ALL interaction
--- here removes the need for those per-button branches.
+-- Fully owns ALL edit-mode interaction for a bar, mirroring
+-- DefaultBars.lua's own container-overlay pattern for its chain-anchored
+-- elements: while BTV:IsEditMode() is true, this frame is mouse-enabled
+-- and elevated to "TOOLTIP" strata (above the bar/buttons' own "HIGH" -
+-- see CreateBarFromConfig), so it wins every hit-test within its bounds
+-- and intercepts drag AND right-click uniformly across the whole bar area
+-- - button, gap, or beyond-buttonCount cell alike. Outside edit mode it
+-- drops back to EnableMouse(false) and "HIGH" strata, becoming completely
+-- inert so buttons regain unobstructed native interaction (cast-on-click,
+-- native pickup-drag) exactly as if this overlay didn't exist.
 --
--- (v1.0 polish pass) Button.lua used to also have a per-button editOverlay
--- texture, kept additive to this bar-level overlay - it has since been
--- deleted outright (it had no live call site; the per-button tint "looked
--- weird," per the round that removed its call site). This bar-level
--- overlay is now the ONLY edit-mode hitbox tint anywhere in the addon, for
--- every bar kind. Why a bar-level overlay (rather than only per-button) is
--- still needed: custom bars lay out their buttons with zero spacing
--- (LayoutButtons above: xOff = col * cfg.buttonSize, no gap term), but a
--- hidden pool slot (i > buttonCount, SetSlotVisible(false)) leaves a real
--- gap in the middle of an otherwise-full row/column, and per-button tints
--- would have had no button frame at all sitting over those
--- beyond-buttonCount cells to catch a right-click there. A single frame
--- spanning the bar's own bounding box has no such gaps by construction.
+-- This is the ONLY edit-mode hitbox tint anywhere in the addon, for every
+-- bar kind - Button.lua has no per-button equivalent. A bar-level overlay
+-- (rather than per-button) is required because custom bars lay out their
+-- buttons with zero spacing (LayoutButtons above: xOff = col *
+-- cfg.buttonSize, no gap term), but a hidden pool slot (i > buttonCount,
+-- SetSlotVisible(false)) leaves a real gap in the middle of an otherwise-
+-- full row/column, with no button frame at all sitting over it to catch a
+-- right-click there. A single frame spanning the bar's own bounding box
+-- has no such gaps by construction.
 --
 -- BarFrameSize (cfg.buttonSize * cfg.cols/rows, plus any cfg.spacing -
 -- bug-fix batch Fix 4 gave custom bars a real, user-adjustable spacing
@@ -221,18 +211,17 @@ local function EnsureBarOverlay(bar)
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
 
-	-- (v1.0 polish pass) For default bars (id 1-5), expand past `bar`'s own
-	-- frame bounds by BTV:GetElementVisualInset(bar) on every side so this
-	-- tint reaches the visible native border's outer edge (Button.lua's
-	-- self.border, ~1.83x the button size, centered on it) instead of
-	-- stopping at the frame - which sat only ~2px past the icon, making the
-	-- hitbox look like it "started at the icon." Custom bars (id 6+, inset
-	-- 0) keep the exact SetAllPoints(bar) behavior they always had. Only
-	-- computed once here at creation time since a default bar's
-	-- buttonSize only changes via a full ApplyBarShape-style rebuild, not
-	-- passive resizing - SetPoint offsets (unlike SetAllPoints) keep
-	-- tracking `bar`'s own position/size automatically as it moves/resizes
-	-- in between.
+	-- (v1.0 polish pass) Intended to expand past `bar`'s own frame bounds
+	-- for default bars (id 1-5) so this tint reaches the visible native
+	-- border's outer edge instead of stopping at the frame. DISABLED for
+	-- now - BTV:GetElementVisualInset (Core.lua) always returns 0 after a
+	-- live-client regression report ("way too big", broke snapping between
+	-- default bars) that didn't match the math on paper - see that
+	-- function's comment and docs/plan/default-bar-visual-inset-regression.md.
+	-- With inset always 0 this unconditionally takes the `else` branch
+	-- below, i.e. plain SetAllPoints(bar), identical to pre-this-feature
+	-- behavior for every bar kind. Left wired up (rather than deleted) so
+	-- re-enabling it later is a one-line change in GetElementVisualInset.
 	local inset = BTV:GetElementVisualInset(bar)
 
 	if inset ~= 0 then
@@ -273,8 +262,8 @@ local function EnsureBarOverlay(bar)
 	-- title already shows, so there's no separate/divergent name invented
 	-- here. A plain child FontString has no Show/Hide of its own called
 	-- anywhere - it simply inherits overlay's own Show()/Hide() state
-	-- (ApplyEditModeVisual below), the same "shown exactly whenever the
-	-- blue tint is" gate the task calls for, with no separate bookkeeping.
+	-- (ApplyEditModeVisual below), so the label is shown exactly whenever
+	-- the blue tint is, with no separate bookkeeping.
 	local nameText = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	nameText:SetPoint("CENTER", overlay, "CENTER", 0, 0)
 	nameText:SetText(BTV:GetBarDisplayName(bar.config.id))
@@ -346,18 +335,13 @@ function BTV:ApplyEditModeVisual()
 			canEdit = editMode and BTVanillaDB and BTVanillaDB.useDefaultLayout == false
 		end
 
-		-- Per-button tint (the old btn:SetEditModeVisual(canEdit) call
-		-- here) was REMOVED outright, not just re-gated: the user tested a
-		-- prior round's canEdit-gated fix and decided the per-button tint
-		-- "looks weird" in every state, for every bar (default 1-5 and
-		-- custom 6+ alike) - not only when useDefaultLayout == true. The
-		-- bar-level overlay hitbox tint below (EnsureBarOverlay's own
-		-- texture) is the ONLY edit-mode tint left anywhere - it already
-		-- correctly represents "this whole bar is draggable as a unit" with
-		-- no per-button redundancy needed on top of it. (v1.0 polish pass)
-		-- Button.lua's SetEditModeVisual/self.editOverlay, which had been
-		-- left in place as dead code after that round, have since been
-		-- deleted outright.
+		-- There is deliberately no per-button edit-mode tint - the user
+		-- found it "looks weird" in every state, for every bar (default
+		-- 1-5 and custom 6+ alike). The bar-level overlay hitbox tint below
+		-- (EnsureBarOverlay's own texture) is the ONLY edit-mode tint left
+		-- anywhere - it already correctly represents "this whole bar is
+		-- draggable as a unit" with no per-button redundancy needed on top
+		-- of it.
 		if bar and bar.buttons then
 			local i
 
@@ -755,133 +739,15 @@ function BTV:GetNextFreeSlotStart(neededCount)
 end
 
 -------------------------------------------------------------------------
--- Change slotStart of an existing bar
--------------------------------------------------------------------------
-
-function BTV:SetBarSlotStart(bar, newSlotStart)
-	if not bar or not bar.config then
-		return false
-	end
-
-	newSlotStart = tonumber(newSlotStart)
-
-	if not newSlotStart then
-		return false
-	end
-
-	newSlotStart = math.floor(newSlotStart)
-
-	local neededCount =
-		(bar.config.cols or 1) *
-		(bar.config.rows or 1)
-
-	if not self:IsActionSlotRangeFree(
-		newSlotStart,
-		neededCount,
-		bar.config.id
-	) then
-
-		self:Print(
-			"Cannot move Bar " .. tostring(bar.config.id) ..
-			" to action slots " .. tostring(newSlotStart) ..
-			 "-" ..
-			tostring(newSlotStart + neededCount - 1) ..
-			": slots are already in use."
-		)
-
-		return false
-	end
-
-	-- IMPORTANT:
-	-- We deliberately do NOT move actions between slots.
-	--
-	-- Changing slotStart means the bar's buttons will now reference the
-	-- new action slots. The previous slots are left untouched.
-	--
-	-- This is why the Settings UI should normally leave slotStart alone
-	-- unless the user explicitly wants to change it.
-
-	bar.config.slotStart = newSlotStart
-
-	self:ApplyBarShape(bar)
-
-	return true
-end
-
--------------------------------------------------------------------------
--- Destroy buttons belonging to a bar
---
--- Reserved for actual bar DELETION (Settings.lua's Delete Bar flow) only.
--- Every other layout/resize/slot-move operation goes through
--- ApplyBarShape instead, which reuses the existing pool rather than
--- tearing it down - see the file-level ApplyBarShape comment below for
--- why (Rebind keeps BTV.customBindTargets, HoverBind.lua's slot->button
--- dispatch table, correctly pointed at the right frame across relayouts).
--------------------------------------------------------------------------
-
-function BTV:DestroyBarButtons(bar)
-	if not bar or not bar.buttons then
-		return
-	end
-
-	local i
-
-	for i = 1, table.getn(bar.buttons) do
-		local btn = bar.buttons[i]
-
-		if btn then
-			-- Stop the range ticker created in Button.lua.
-			if btn.rangeTicker and btn.rangeTicker.Cancel then
-				btn.rangeTicker:Cancel()
-				btn.rangeTicker = nil
-			end
-
-			-- Clear this slot's HoverBind.lua dispatch target (see
-			-- BTV.customBindTargets/Button.lua's Rebind) so a deleted bar's
-			-- TRUSTYBARSBIND<n> entry can never fire against a hidden,
-			-- script-stripped button - if another bar later reclaims this
-			-- action slot, its own Init/Rebind repopulates the entry.
-			-- Range-guarded (>= ACTION_SLOT_START): fixed-slot default bars
-			-- (2-5, major architecture migration) point at real native
-			-- slots (1-72), which were never registered into
-			-- customBindTargets in the first place (see Button.lua's
-			-- Init/Rebind) - this function is never actually called for
-			-- those bars (they're not deletable), but the guard keeps this
-			-- consistent with Init/Rebind's own rule regardless.
-			if BTV.customBindTargets and btn.actionSlot and btn.actionSlot >= BTV.ACTION_SLOT_START then
-				BTV.customBindTargets[btn.actionSlot - 72] = nil
-			end
-
-			-- Prevent the old button from continuing to receive events.
-			if btn.UnregisterAllEvents then
-				btn:UnregisterAllEvents()
-			end
-
-			btn:SetScript("OnEvent", nil)
-			btn:SetScript("OnClick", nil)
-			btn:SetScript("OnReceiveDrag", nil)
-			btn:SetScript("OnDragStart", nil)
-			btn:SetScript("OnDragStop", nil)
-			btn:SetScript("OnMouseWheel", nil)
-			btn:SetScript("OnEnter", nil)
-			btn:SetScript("OnLeave", nil)
-
-			btn:Hide()
-		end
-	end
-
-	bar.buttons = {}
-end
-
--------------------------------------------------------------------------
 -- Apply a bar's shape (grid, slotStart, buttonCount) to its existing
 -- button pool
 --
--- This is the replacement for the old RebuildBarButtons/DestroyBarButtons
--- destroy-and-recreate cycle. The pool of button-slot frames is created
--- exactly once, in CreateBarFromConfig, and never destroyed again until
--- the bar itself is deleted (BTV:DestroyBarButtons). Every layout change
--- - grid shape, button count, or slotStart - just:
+-- This is the replacement for the old destroy-and-recreate cycle a prior
+-- round used. The pool of button-slot frames is created exactly once, in
+-- CreateBarFromConfig, and never destroyed again - bars are permanent
+-- (see Bar.lua's Extra Bar enable/disable section below; there is no bar
+-- deletion in this addon). Every layout change - grid shape, button
+-- count, or slotStart - just:
 --
 --   1. Re-maps which action slot each pool slot points at (Rebind),
 --   2. Shows pool slots up to buttonCount and hides the rest,
@@ -959,33 +825,18 @@ function BTV:ApplyBarShape(bar)
 
 	PixelSetSize(bar, barW, barH)
 
-	-- Bug-fix batch round 3, Bug 2: re-assert strata/level on every
-	-- ApplyBarShape call, not just once at CreateBarFromConfig time (see
-	-- that function's own comment on why this matters). ApplyBarShape is
-	-- exactly what RefreshMainBarSlots (DefaultBars.lua) calls on every
-	-- native page swap (ChangeActionBarPage hook) and every stance/form/
-	-- stealth change (UPDATE_BONUS_ACTIONBAR handler) - live testing
-	-- confirmed Bar 1 drops back behind the native art specifically after
-	-- one of those two triggers, meaning something in that path re-levels
-	-- either Bar 1's own frame or MainMenuBarArtFrame itself back above
-	-- the one-shot login-time value. Cheap and idempotent for every other
-	-- bar/trigger (SetFrameStrata/SetFrameLevel to their own current
-	-- values is a harmless no-op), so this is applied unconditionally
-	-- here rather than only from the two Main-Bar-specific call sites.
-	--
-	-- Round 34: this is now a "HIGH"-strata reassertion, not "MEDIUM" -
-	-- see CreateBarFromConfig's own comment for the full history of why a
-	-- same-tier level race against MainMenuBarArtFrame (round 2 through
-	-- round 24) was never fully robust, and why a full strata-tier
-	-- separation (matching this file's own BuildChainAnchoredContainer/
-	-- DefaultBars.lua's EnsureExpBarTextOverlay precedent) is the fix that
-	-- finally makes this permanently immune to ANY future level change on
-	-- the art frame's part. MainMenuBarArtFrame itself is untouched here
-	-- and stays at its own "MEDIUM" strata/level 5 (DefaultBars.lua's
-	-- ApplyBlizzardArtVisibility) - still correctly needed for the
-	-- separate art-above-Experience-Bar masking relationship - since
-	-- "HIGH" beats "MEDIUM" unconditionally regardless of either frame's
-	-- level, both relationships hold at once with no further tuning.
+	-- Re-assert strata/level on every ApplyBarShape call, not just once at
+	-- CreateBarFromConfig time (see that function's own comment for why
+	-- "HIGH" strata is required at all). ApplyBarShape is exactly what
+	-- RefreshMainBarSlots (DefaultBars.lua) calls on every native page
+	-- swap and every stance/form/stealth change - live testing confirmed
+	-- Bar 1 could drop back behind the native art specifically after one
+	-- of those triggers, meaning something in that path re-levels either
+	-- Bar 1's own frame or MainMenuBarArtFrame back above the one-shot
+	-- login-time value. Cheap and idempotent for every other bar/trigger
+	-- (SetFrameStrata/SetFrameLevel to their own current values is a
+	-- harmless no-op), so this is applied unconditionally here rather
+	-- than only from the Main-Bar-specific call sites.
 	bar:SetFrameStrata("HIGH")
 	bar:SetFrameLevel(10)
 
@@ -1015,71 +866,44 @@ function BTV:CreateBarFromConfig(cfg)
 		UIParent
 	)
 
-	-- Round 34 fix: promoted from "MEDIUM" to "HIGH" strata outright,
-	-- replacing the old same-tier level race against MainMenuBarArtFrame
-	-- entirely. History: round 2 (Issue C, see below) found Bar 1 losing a
-	-- same-"MEDIUM"-strata level tie against the art frame and fixed it
-	-- with an explicit SetFrameLevel(10); round 24 (DefaultBars.lua's
-	-- ApplyBlizzardArtVisibility) pinned the art frame to an explicit
-	-- level 5, strictly below this bar's level 10, to fix that same
-	-- relationship while ALSO restoring the Experience Bar's own fill-
-	-- masking (which needs the art frame to stay in "MEDIUM", above
-	-- MainMenuExpBar's level 2). That worked only for as long as nothing
-	-- else ever raised the art frame's level past 10 within that shared
-	-- tier - live-confirmed broken by a genuinely dynamic trigger this
-	-- round: clicking anywhere on the native Blizzard art bar that isn't
-	-- one of our own buttons raises the art frame's OWN level (a common
-	-- vanilla FrameXML `:Raise()`-on-click pattern), pushing it back above
-	-- this bar's level 10 and making Bar 1 disappear behind the art again
-	-- - reproducing exactly the round-2 symptom from a different trigger.
+	-- Bar 1 sits at "HIGH" strata, not "MEDIUM" - a same-tier frame LEVEL
+	-- race against MainMenuBarArtFrame (which stays "MEDIUM"/level 5, see
+	-- DefaultBars.lua's ApplyBlizzardArtVisibility) proved unreliable:
+	-- clicking the native Blizzard art bar raises the art frame's own
+	-- level (a common vanilla FrameXML `:Raise()`-on-click pattern),
+	-- which can push it back above whatever level this bar holds within
+	-- the same "MEDIUM" tier and make Bar 1 disappear behind the art.
 	-- Frame STRATA fully dominates frame LEVEL regardless of tier (see
-	-- Settings.lua's own documented strata-tier ordering comment,
-	-- BACKGROUND < LOW < MEDIUM < HIGH < ...) - moving to "HIGH" makes
-	-- this permanently immune to ANY future level change on the art
-	-- frame's part, ours or Blizzard's, rather than re-chasing whatever
-	-- level it happens to reach next. Matches the exact same "HIGH beats
-	-- MainMenuBarArtFrame's MEDIUM unconditionally" precedent this file's
-	-- own BuildChainAnchoredContainer (Bag Bar/Micro Menu/Stance Bar) and
-	-- DefaultBars.lua's EnsureExpBarTextOverlay already established -
-	-- those were never vulnerable to this bug in the first place because
-	-- they were already a full tier above, not just a higher level within
-	-- the same tier. Does NOT touch MainMenuBarArtFrame's own "MEDIUM"
-	-- strata/level 5 (still needed, unchanged, for the separate
-	-- art-above-Experience-Bar masking relationship) - "HIGH" beats
-	-- "MEDIUM" unconditionally no matter what level either frame is at, so
-	-- both relationships hold simultaneously with no further tuning.
+	-- Settings.lua's documented strata-tier ordering, BACKGROUND < LOW <
+	-- MEDIUM < HIGH < ...), so "HIGH" makes this permanently immune to any
+	-- future level change on the art frame's part. Does not touch
+	-- MainMenuBarArtFrame's own "MEDIUM" strata/level 5, which is still
+	-- needed for the separate art-above-Experience-Bar masking
+	-- relationship - "HIGH" beats "MEDIUM" unconditionally no matter what
+	-- level either frame is at, so both relationships hold at once.
 	--
-	-- Button.lua's BTVButtonMixin:Init gives every individual button
-	-- (and its cooldown-swipe child frame) this exact same explicit
-	-- "HIGH" strata too, rather than assuming it would simply inherit
-	-- this bar's own value - see docs/01-Environment-Capability-
-	-- Analysis.md's round-34 entry for why that assumption is left an
-	-- open (still-not-live-confirmed) question rather than guessed on:
-	-- every frame in this codebase that needs a non-default strata
-	-- already sets it explicitly on itself, so this round follows the
-	-- same convention instead of depending on inheritance either way.
-	-- This bar frame's own backdrop is fully transparent (see
-	-- SetBackdropColor(0,0,0,0) below) and was never itself the thing
-	-- visually racing the art frame; the buttons are, which is why they
-	-- need this explicit treatment regardless of how inheritance works.
+	-- Button.lua's BTVButtonMixin:Init gives every individual button (and
+	-- its cooldown-swipe child frame) this exact same explicit "HIGH"
+	-- strata too, rather than assuming it would inherit this bar's own
+	-- value - whether plain child-frame strata actually cascades from a
+	-- parent on this client is an open, not-live-confirmed question (see
+	-- docs/01-Environment-Capability-Analysis.md), so every frame that
+	-- needs a non-default strata sets it explicitly on itself instead of
+	-- depending on inheritance either way. This bar frame's own backdrop
+	-- is fully transparent (SetBackdropColor(0,0,0,0) below) and was
+	-- never itself the thing visually racing the art frame - the buttons
+	-- are, which is why they need the same explicit treatment.
 	bar:SetFrameStrata("HIGH")
 
-	-- Issue C (bug-fix batch round 2, level ordering AMONG our own bars/
-	-- overlays only as of round 34 - see this function's own strata
-	-- comment above for why it's no longer what wins the fight against
-	-- MainMenuBarArtFrame): without an explicit frame LEVEL, a freshly
-	-- CreateFrame(..., UIParent)'d frame starts at whatever low level
-	-- UIParent's own child-nesting default assigns it - within a shared
-	-- strata tier, frame LEVEL (not creation order) is what actually
-	-- decides stacking (same rule already established in this codebase
-	-- for DefaultBars.lua's EnsureContainerOverlay's own explicit
-	-- high levels - see its comment on this same client-specific
-	-- tie-break behavior). Applied uniformly to every bar (all of 1-5 and
-	-- every custom bar 6+ share this one creation path) - comfortably
-	-- higher than any other "HIGH"-strata frame this bar needs to sit
-	-- under, with plenty of headroom below the overlay frames' own level
-	-- 100 (Bar.lua's EnsureBarOverlay reads bar:GetFrameLevel() relatively,
-	-- so it always stays correctly above whatever this is set to).
+	-- Without an explicit frame LEVEL, a freshly CreateFrame(...,
+	-- UIParent)'d frame starts at whatever low level UIParent's own
+	-- child-nesting default assigns it - within a shared strata tier,
+	-- frame LEVEL (not creation order) decides stacking on this client
+	-- (same rule DefaultBars.lua's EnsureContainerOverlay relies on for
+	-- its own explicit high levels). Applied uniformly to every bar (1-5
+	-- and every custom bar 6+ share this one creation path) - comfortably
+	-- below the overlay frames' own level 100 (EnsureBarOverlay reads
+	-- bar:GetFrameLevel() relatively, so it always stays above this).
 	bar:SetFrameLevel(10)
 
 	PixelSetSize(bar, barW, barH)
@@ -1274,8 +1098,9 @@ end
 -- number. Deliberately does NOT check bar.config.enabled or bar:IsShown()
 -- - an Extra Bar assigned as a stance/page content source keeps supplying
 -- the Main Bar regardless of whether that Extra Bar is separately shown
--- as its own visible bar (Part 3's own "assignment always works for
--- content resolution" design decision - see this feature's task record).
+-- as its own visible bar (Part 3's deliberate design: assignment always
+-- works for content resolution, independent of the source bar's own
+-- visibility).
 -------------------------------------------------------------------------
 
 function BTV:GetExtraBarSlotForIndex(barId, slotIndex)

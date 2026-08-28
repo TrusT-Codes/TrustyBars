@@ -81,21 +81,30 @@ BTV.DEFAULT_BAR_BINDING_PREFIXES = {
 -- Walks every currently-visible/active button of both bar kinds and
 -- calls fn(ref) for each one, where ref is:
 --
---   ref.kind        "custom" or "default"
---   ref.frame        the real button Frame (custom pool slot, or
---                        Blizzard's own ActionButtonN/MultiBar...ButtonN)
+--   ref.kind        always "custom" - both default bars (1-5) and real
+--                        free-pool custom bars (6+) are Bar.lua/Button.lua
+--                        pool buttons post-migration; ref.fixedSlotBar
+--                        below is what actually distinguishes them.
+--   ref.frame        the real pool button Frame.
 --   ref.bindingId        native binding-action name: ACTIONBUTTON#/
---                        MULTIACTIONBAR#BUTTON# (default) or
---                        TRUSTYBARSBIND<actionSlot-72> (custom) - both
---                        are real bindings.xml-declared action names now,
---                        so both are handled identically everywhere else
---                        in this file.
---   ref.actionSlot        custom bars only: the live action slot
---                        (73-120) this pool slot is currently bound to -
---                        the same key BTV.customBindTargets is indexed
---                        by (actionSlot - 72).
+--                        MULTIACTIONBAR#BUTTON# (default bars, via
+--                        btn.nativeBindingId) or TRUSTYBARSBIND<actionSlot
+--                        -72> (free-pool custom bars) - both are real
+--                        bindings.xml-declared action names, so both are
+--                        handled identically everywhere else in this file.
+--   ref.actionSlot        the live action slot this pool button is
+--                        currently bound to. For free-pool custom bars
+--                        this falls in 73-120, the same range
+--                        BTV.customBindTargets is indexed by
+--                        (actionSlot - 72); default-bar buttons use their
+--                        own real action-bar page slots (< 73) instead and
+--                        are looked up via bindingId/nativeBindingId, not
+--                        this field.
 --   ref.barId        1-5 (default) or 6+ (custom)
 --   ref.slotIndex        1-12 within the bar
+--   ref.fixedSlotBar        true when btn.nativeBindingId is set, i.e.
+--                        this is a default-bar (1-5) button, not a real
+--                        free-pool custom-bar slot.
 -------------------------------------------------------------------------
 
 function BTV:ForEachButton(fn)
@@ -156,15 +165,11 @@ local function IsCustomSlotBound(actionSlot)
 end
 
 function BTV:IsButtonBound(ref)
-	if ref.kind == "default" then
-		return GetBindingKey(ref.bindingId) ~= nil
-	end
-
-	-- Fixed-slot default bars (2-5): bindingId is already the real native
-	-- binding name (see ForEachButton/SetHoverBindHoveredCustomButton), so
-	-- this checks it directly, mirroring the "default" branch above -
-	-- IsCustomSlotBound's TRUSTYBARSBIND<n> lookup only applies to the
-	-- free 73-120 pool.
+	-- Fixed-slot (2-5) and dynamic-slot (1) default-bar buttons alike:
+	-- bindingId is already the real native binding name (see
+	-- ForEachButton/SetHoverBindHoveredCustomButton), so this checks it
+	-- directly - IsCustomSlotBound's TRUSTYBARSBIND<n> lookup only applies
+	-- to the free 73-120 pool.
 	if ref.fixedSlotBar then
 		return GetBindingKey(ref.bindingId) ~= nil
 	end
@@ -177,25 +182,17 @@ end
 --
 -- Wins outright over Button.lua's normal range/usability tint while
 -- hoverbind mode is active (UpdateRange short-circuits on
--- BTV:IsHoverBindMode() - see Button.lua). Default-bar buttons use their
--- real FrameXML icon texture, named "<frameName>Icon" per standard
--- vanilla ActionButtonTemplate convention (same class of well-established
--- naming DefaultBars.lua already relies on for the frame prefixes
--- themselves).
+-- BTV:IsHoverBindMode() - see Button.lua). Every button (default-bar and
+-- custom-bar alike) is a real Bar.lua/Button.lua pool button post-
+-- migration, so its icon is always the same self.icon texture - see
+-- ForEachButton above for why ref.kind is always "custom" now.
 -------------------------------------------------------------------------
 
 local HOVERBIND_BOUND_COLOR   = { 0.2, 1.0, 0.2 }
 local HOVERBIND_UNBOUND_COLOR = { 1.0, 0.25, 0.25 }
 
-local function GetButtonIconTexture(ref)
-	if ref.kind == "custom" then
-		return ref.frame.icon
-	end
-	return getglobal(ref.frame:GetName() .. "Icon")
-end
-
 function BTV:TintHoverBindButton(ref)
-	local icon = GetButtonIconTexture(ref)
+	local icon = ref.frame.icon
 	if not icon then
 		return
 	end
@@ -207,18 +204,11 @@ function BTV:TintHoverBindButton(ref)
 	icon:SetVertexColor(color[1], color[2], color[3])
 end
 
+-- Let the button's own normal logic recompute range/usability tint
+-- immediately rather than waiting on the next event/ticker tick to
+-- correct it.
 local function RestoreButtonIconTint(ref)
-	if ref.kind == "custom" then
-		-- Let the button's own normal logic recompute range/usability
-		-- tint immediately rather than waiting on the next event/ticker
-		-- tick to correct it.
-		ref.frame:UpdateRange()
-	else
-		local icon = GetButtonIconTexture(ref)
-		if icon then
-			icon:SetVertexColor(1, 1, 1)
-		end
-	end
+	ref.frame:UpdateRange()
 end
 
 -- Called from Core.lua's SetHoverBindMode. Runs a repeating tint pass
@@ -279,9 +269,10 @@ end
 --
 -- Button.lua's OnEnter/OnLeave call SetHoverBindHoveredCustomButton /
 -- ClearHoverBindHoveredButton directly (only while hoverbind mode is on).
--- Default-bar buttons get the same tracking via HookScript below, hooked
--- exactly once (guarded by a hooked-frames table) rather than re-hooked
--- on every mode toggle.
+-- Every button, default-bar and custom-bar alike, is a real Bar.lua/
+-- Button.lua pool button post-migration, so this single entry point
+-- covers both - no separate default-bar hookup exists (see
+-- HookAllDefaultBarButtons below).
 -------------------------------------------------------------------------
 
 function BTV:SetHoverBindHoveredCustomButton(btn)
@@ -289,10 +280,10 @@ function BTV:SetHoverBindHoveredCustomButton(btn)
 		return
 	end
 
-	-- Fixed-slot default bars (2-5): btn.nativeBindingId (set at Init/
-	-- Rebind time in Button.lua) is the real native binding name - mirrors
-	-- ForEachButton's fixedPrefix branch exactly, just derived from the
-	-- button itself rather than re-deriving the prefix here.
+	-- Fixed-slot (2-5) and dynamic-slot (1) default-bar buttons alike:
+	-- btn.nativeBindingId (set at Init/Rebind time in Button.lua) is the
+	-- real native binding name - mirrors ForEachButton's derivation exactly,
+	-- just read from the button itself rather than re-derived here.
 	local bindingId = btn.nativeBindingId or ("TRUSTYBARSBIND" .. tostring(btn.actionSlot - 72))
 
 	self.hoverBindCaptureFrame.hoveredButton = {
@@ -304,13 +295,6 @@ function BTV:SetHoverBindHoveredCustomButton(btn)
 		slotIndex = btn.slotIndex,
 		fixedSlotBar = btn.nativeBindingId and true or nil,
 	}
-end
-
-function BTV:SetHoverBindHoveredDefaultButton(ref)
-	if not self.hoverBindCaptureFrame then
-		return
-	end
-	self.hoverBindCaptureFrame.hoveredButton = ref
 end
 
 function BTV:ClearHoverBindHoveredButton(frame)
@@ -368,18 +352,41 @@ local function HoverBindCaptureFrame_OnKeyDown()
 	-- SetBindingClick/"CLICK <frame>:<button>" and BONUSACTIONBUTTON1
 	-- mechanisms both live-tested and confirmed non-functional this
 	-- session (see file-level comment at top). No branch needed here.
+	--
+	-- SetBinding(key, action) only ever ADDS a key -> action mapping; it
+	-- never clears whatever key(s) were already bound to this same action.
+	-- Rebinding a hovered button in the same edit session used to leave
+	-- the OLD key still bound (GetBindingKey(action) can return up to two
+	-- keys), so the button's displayed hotkey kept showing the old key
+	-- (whichever GetBindingKey happens to return first) even though the
+	-- new key also worked - only a reload (which rebuilds every binding
+	-- from the freshly-saved set) incidentally cleared the ambiguity.
+	-- Explicitly clear any existing key(s) for this action first, via
+	-- SetBinding(key) with no action argument (the standard native way to
+	-- unbind a single key), so at most one key is ever bound to a given
+	-- action - this also matches HoverBind's own "assign THIS key to this
+	-- button" intent, which is a replace, not an add.
+	local existingKey1, existingKey2 = GetBindingKey(hovered.bindingId)
+
+	if existingKey1 and existingKey1 ~= combo then
+		SetBinding(existingKey1)
+	end
+
+	if existingKey2 and existingKey2 ~= combo then
+		SetBinding(existingKey2)
+	end
+
 	SetBinding(combo, hovered.bindingId)
 
 	SaveBindings(GetCurrentBindingSet())
 
 	BTV:TintHoverBindButton(hovered)
 
-	-- Issue 5 (bug-fix batch): refresh this button's own hotkey text
-	-- immediately rather than waiting on its next unrelated Refresh() -
-	-- default-bar buttons have no equivalent custom hotkey FontString
-	-- (Button.lua's self.hotkey is a custom-bar-only addition), so this
-	-- only applies to the custom-bar path.
-	if hovered.kind == "custom" and hovered.frame.UpdateHotkeyText then
+	-- Refresh this button's own hotkey text immediately rather than
+	-- waiting on its next unrelated Refresh() - every pool button
+	-- (default-bar and custom-bar alike) has its own hotkey FontString
+	-- (Button.lua's self.hotkey/UpdateHotkeyText).
+	if hovered.frame.UpdateHotkeyText then
 		hovered.frame:UpdateHotkeyText()
 	end
 end
@@ -396,31 +403,25 @@ end
 CreateHoverBindCaptureFrame()
 
 -------------------------------------------------------------------------
--- Default-bar button hover + right-click-to-settings hookup
+-- Default-bar button hover hookup - now a no-op
 --
--- Main Bar migration, Phase 2: this section's per-frame HookScript
--- implementation (HookDefaultBarButton/hookedDefaultButtons) is REMOVED
--- entirely - it hooked the real Blizzard ActionButton1-12/MultiBar...
--- frames directly, all 60 of which are now permanently hidden (see
--- DefaultBars.lua's CreateFixedSlotDefaultBars), making every one of
--- those hooks pure dead code (a Hidden frame never receives OnEnter/
--- OnClick regardless of what's hooked onto it). HookAllDefaultBarButtons
--- below is kept as a callable no-op only - see its own comment.
+-- Pre-migration, this section hooked the real Blizzard ActionButton1-12/
+-- MultiBar... frames directly via HookScript to track hover for
+-- hoverbind. All 60 of those frames are now permanently hidden (see
+-- DefaultBars.lua's CreateFixedSlotDefaultBars), so a Hidden frame never
+-- receives OnEnter/OnClick regardless of what's hooked onto it - that
+-- per-frame hooking code was removed as dead. Every default bar's replica
+-- button (a real Bar.lua/Button.lua pool button, living in self.bars) now
+-- gets equivalent hover-tracking for free through Button.lua's own
+-- OnEnter/OnLeave (BTV:SetHoverBindHoveredCustomButton) and
+-- right-click-to-settings through Bar.lua's per-bar edit-mode overlay
+-- (EnsureBarOverlay) - the same mechanisms a real custom bar (id 6+)
+-- already uses, needing no separate hookup here.
+--
+-- Kept as a callable no-op (Core.lua still calls it at PLAYER_LOGIN)
+-- rather than removed outright, matching Core.lua's own comment on why
+-- that call site is harmless to keep.
 -------------------------------------------------------------------------
 
--- Now a no-op for EVERY default bar (Main Bar migration, Phase 2): bar 1's
--- real Blizzard ActionButton1-12 frames are, as of this migration,
--- permanently hidden exactly like bars 2-5's already were (see
--- DefaultBars.lua's CreateFixedSlotDefaultBars) - hooking them here would
--- be pure dead code, a Hidden frame never receives OnEnter/OnClick at all
--- regardless of what's hooked onto it. Every default bar's replica buttons
--- (real Bar.lua/Button.lua pool buttons, living in self.bars) already get
--- equivalent hover-tracking for free through Button.lua's own OnEnter/
--- OnLeave (BTV:SetHoverBindHoveredCustomButton) and right-click-to-settings
--- through Bar.lua's per-bar edit-mode overlay (EnsureBarOverlay) - exactly
--- the same mechanisms a real custom bar (id 6+) already uses, needing no
--- separate hookup here. Kept as a callable no-op (Core.lua still calls it
--- at PLAYER_LOGIN) rather than removed outright, matching Core.lua's own
--- comment on why that call site is harmless to keep.
 function BTV:HookAllDefaultBarButtons()
 end

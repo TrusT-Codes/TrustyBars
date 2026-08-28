@@ -1,29 +1,32 @@
 -- Settings.lua
--- BTVanilla unified settings window: default bars (1-5, DefaultBars.lua)
--- and custom bars (6+, Bar.lua) share one bar list and one page layout.
+-- BTVanilla unified settings window: default bars (1-5, DefaultBars.lua),
+-- Extra Bars (6-9, Bar.lua), and the native-frame "simple" pages (Stance
+-- Bar / Bag Bar / Micro Menu / Latency Bar / Experience Bar,
+-- DefaultBars.lua) all share one bar list, one "Bars" view, plus a second
+-- "General" view for addon-wide settings.
 --
--- Phase 4 rebuild (§4C of the plan) drops the old Apply-button-gated
--- model entirely. Every control here is live: moving a slider, clicking
--- a grid preset, or toggling a checkbox writes straight into
--- BTVanillaDB and re-applies the affected bar's shape/position/size on
--- the spot. There is no "pending" value anywhere in this file anymore.
+-- Every control is live: moving a slider, clicking a grid preset, or
+-- toggling a checkbox writes straight into BTVanillaDB and re-applies the
+-- affected bar's shape/position/size on the spot. There is no "pending"
+-- value or Apply button anywhere in this file.
 --
--- Editable settings:
---   x / y                    (both bar kinds, live sliders)
---   buttonSize                (both bar kinds, live slider)
---   cols / rows                (both bar kinds, live grid-preset swatches)
---   buttonCount                (custom bars only, live +/- stepper)
---   enabled                        (default bars 2-5 only, live checkbox)
+-- Per-bar editable settings (default bars 1-5 and Extra Bars 6-9):
+--   x / y             live sliders
+--   buttonSize        live slider
+--   spacing           live slider
+--   cols / rows       live grid-preset swatches
+--   buttonCount       Extra Bars only, live +/- stepper
+--   enabled           default bars 2-5 and Extra Bars 6-9 only, live checkbox
 --
 -- point / relativePoint are intentionally NOT exposed in the UI. Their
 -- existing SavedVariable values remain unchanged.
 --
--- slotStart is intentionally NOT exposed either (Phase 4, point 6) -
--- custom-bar slot assignment is fully internal, computed once at
--- creation by Bar.lua's GetNextFreeSlotStart.
+-- slotStart is intentionally NOT exposed either - custom-bar slot
+-- assignment is fully internal, computed once at creation by Bar.lua's
+-- GetNextFreeSlotStart.
 --
 -- Grid shape is chosen from exactly 6 literal presets (not free-form
--- rows/cols sliders anymore):
+-- rows/cols sliders):
 --
 --   1 x 12
 --   2 x 6
@@ -34,6 +37,13 @@
 --
 -- Button size follows the same 2-pixel increments used by the edit-mode
 -- mouse wheel scaling.
+--
+-- The "simple" bar pages (Stance Bar / Bag Bar / Micro Menu / Latency Bar
+-- / Experience Bar) are a separate, narrower page builder further down
+-- this file (CreateSimpleBarPage) - Position + optional Enable/Spacing/
+-- Scale/Orientation + Reset only, since none of them is a TrustyBars-owned
+-- button grid. The General tab (GetOrCreateGeneralPanel) holds addon-wide
+-- toggles that aren't specific to any one bar.
 
 local BTV = BTVanilla
 
@@ -554,8 +564,6 @@ local function CreateSettingsFrame()
 		end
 	)
 
-	f.tabBarsButton = tabBarsButton
-
 	local tabGeneralButton = CreateFrame(
 		"Button",
 		nil,
@@ -582,8 +590,6 @@ local function CreateSettingsFrame()
 			BTV:ShowGeneralView()
 		end
 	)
-
-	f.tabGeneralButton = tabGeneralButton
 
 	-------------------------------------------------------------------------
 	-- Left bar list
@@ -741,8 +747,6 @@ function BTV:GetOrCreateBarPage(barId)
 	end
 
 	title:SetText(titleText)
-
-	page.title = title
 
 	-- Extra Bars (ids 6-9, Stance/Page Bar Assignment feature, Part 1):
 	-- get the exact same "Enabled" checkbox default bars 2-5 get, since
@@ -1191,10 +1195,8 @@ function BTV:GetOrCreateBarPage(barId)
 	page.buttonSizeSlider = buttonSizeSlider
 
 	-------------------------------------------------------------------------
-	-- Spacing (bug-fix batch Fix 4: every bar kind now gets this control,
-	-- default bars 1-5 AND true custom bars 6+ - see the SPACING_MIN/MAX
-	-- comment above, now stale on the "custom bars don't get this" point
-	-- but still accurate on the shared min/max/step constants). Mirrors
+	-- Spacing - every bar kind gets this control, default bars 1-5 AND
+	-- true custom bars 6+ (see the SPACING_MIN/MAX comment above). Mirrors
 	-- the Button Size slider's own live-value-label/min-max-end-label
 	-- pattern exactly.
 	-------------------------------------------------------------------------
@@ -2105,7 +2107,6 @@ local function CreateSimpleBarPage(key)
 
 	page.barId = key
 	page.isDefault = true
-	page.isSimple = true
 
 	local title = page:CreateFontString(
 		nil,
@@ -2122,8 +2123,6 @@ local function CreateSimpleBarPage(key)
 	)
 
 	title:SetText(config.title .. " Settings (Default)")
-
-	page.title = title
 
 	local topY = -46
 
@@ -4040,8 +4039,6 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
 	end)
 
 	RefreshValue()
-
-	row.valueText = valueText
 
 	return row
 end
