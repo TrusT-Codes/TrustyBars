@@ -24,24 +24,21 @@ this repo.
 
 ## What to do once a live client is available
 
-Run this in-game (`/run` or a temporary macro):
+Run `/btv diag1` in-game. This client caps a `/run` command at 511
+characters including the leading `/run `, too short for a useful
+multi-frame dump - so this is wired up as a permanent-until-resolved
+`BTV:DiagKeyRingLatencyExpBar()` function (`Core.lua`, near the
+`SLASH_BTVANILLA1`/`SlashCmdList["BTVANILLA"]` block) dispatched via the
+existing `/btv` command's `msg` argument, alongside `diag2`/`diag3` for the
+two sibling follow-ups. It prints exactly what the old inline script did:
+`KeyRingButton`/`MainMenuBarPerformanceBarFrame`/`MainMenuExpBar`'s own
+width/height, plus their `NormalTexture`'s width/height where one exists.
 
-```lua
-local function dump(name)
-    local f = getglobal(name)
-    if not f then DEFAULT_CHAT_FRAME:AddMessage(name.." missing") return end
-    DEFAULT_CHAT_FRAME:AddMessage(name..": w="..f:GetWidth()..", h="..f:GetHeight())
-    local nt = f.GetNormalTexture and f:GetNormalTexture()
-    if nt then
-        DEFAULT_CHAT_FRAME:AddMessage("  NormalTexture w="..nt:GetWidth()..", h="..nt:GetHeight())
-    else
-        DEFAULT_CHAT_FRAME:AddMessage("  no NormalTexture")
-    end
-end
-dump("KeyRingButton")
-dump("MainMenuBarPerformanceBarFrame")
-dump("MainMenuExpBar")
-```
+This is TEMPORARY diagnostic code - remove `BTV:DiagKeyRingLatencyExpBar`
+and its `diag1` dispatch entry once this follow-up is resolved, the same
+way Round 10's own temporary debug instrumentation was removed once it had
+served its purpose (see `Core.lua`'s comment directly above the three
+`Diag*` functions).
 
 Also just eyeball the blue edit-mode overlay against each element's real
 visible art in-game - border/background bleeding past the tint on any edge

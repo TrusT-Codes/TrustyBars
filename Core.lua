@@ -2160,6 +2160,128 @@ loadFrame:SetScript("OnEvent", function()
 	WaitForNativeBarSettle(RunLoginSequence)
 end)
 
+-- TEMPORARY live-diagnostic commands (v1.0 polish pass, overlay/snap
+-- regression follow-up) - dump raw frame geometry to chat so it can be
+-- read directly in-game instead of via a `/run` one-liner, which this
+-- client caps at 511 characters including the leading "/run " (too short
+-- for anything beyond a trivial single-frame check). Each of these exists
+-- purely to gather the numbers docs/plan/default-bar-visual-inset-
+-- regression.md and docs/plan/keyring-latency-expbar-overlay-inset.md ask
+-- for - remove all three (and their SLASH_BTVANILLA1 dispatch entries
+-- below) once those two follow-ups are resolved, the same way Round 10's
+-- own temporary debug instrumentation was removed once it had served its
+-- purpose.
+
+function BTV:DiagKeyRingLatencyExpBar()
+	local function dump(name)
+		local f = getglobal(name)
+
+		if not f then
+			self:Print(name .. " missing")
+			return
+		end
+
+		self:Print(name .. ": w=" .. tostring(f:GetWidth()) .. " h=" .. tostring(f:GetHeight()))
+
+		local nt = f.GetNormalTexture and f:GetNormalTexture()
+
+		if nt then
+			self:Print("  NormalTexture w=" .. tostring(nt:GetWidth()) .. " h=" .. tostring(nt:GetHeight()))
+		else
+			self:Print("  no NormalTexture")
+		end
+	end
+
+	dump("KeyRingButton")
+	dump("MainMenuBarPerformanceBarFrame")
+	dump("MainMenuExpBar")
+end
+
+function BTV:DiagDefaultBarInset(id)
+	id = tonumber(id) or 1
+
+	local bar = self.bars and self.bars[id]
+
+	if not bar then
+		self:Print("DiagDefaultBarInset: no bar with id " .. tostring(id))
+		return
+	end
+
+	self:Print("bar " .. tostring(id) .. ": L=" .. tostring(bar:GetLeft()) ..
+		" R=" .. tostring(bar:GetRight()) ..
+		" T=" .. tostring(bar:GetTop()) ..
+		" B=" .. tostring(bar:GetBottom()))
+
+	local btn = bar.buttons and bar.buttons[1]
+
+	if btn and btn.border then
+		self:Print("button1.border: L=" .. tostring(btn.border:GetLeft()) ..
+			" R=" .. tostring(btn.border:GetRight()) ..
+			" T=" .. tostring(btn.border:GetTop()) ..
+			" B=" .. tostring(btn.border:GetBottom()))
+	end
+
+	if btn and btn.icon then
+		self:Print("button1.icon: L=" .. tostring(btn.icon:GetLeft()) ..
+			" R=" .. tostring(btn.icon:GetRight()) ..
+			" T=" .. tostring(btn.icon:GetTop()) ..
+			" B=" .. tostring(btn.icon:GetBottom()))
+	end
+
+	local size = (bar.config and bar.config.buttonSize) or self.BUTTON_SIZE
+
+	self:Print("formula inset would be: " .. tostring(size * (self.BORDER_RATIO - 1) / 2))
+	self:Print("GetElementVisualInset actually returns: " .. tostring(self:GetElementVisualInset(bar)))
+end
+
+function BTV:DiagMicroMenuPageIndicator()
+	local micro = {
+		"CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
+		"QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
+		"MainMenuMicroButton", "HelpMicroButton",
+	}
+
+	local i
+
+	for i = 1, table.getn(micro) do
+		local f = getglobal(micro[i])
+
+		if f then
+			self:Print(micro[i] .. ": shown=" .. tostring(f:IsShown()) ..
+				" L=" .. tostring(f:GetLeft()) ..
+				" T=" .. tostring(f:GetTop()) ..
+				" W=" .. tostring(f:GetWidth()) ..
+				" H=" .. tostring(f:GetHeight()))
+		end
+	end
+
+	if self.microMenuContainer then
+		local c = self.microMenuContainer
+
+		self:Print("microMenuContainer: L=" .. tostring(c:GetLeft()) ..
+			" R=" .. tostring(c:GetRight()) ..
+			" T=" .. tostring(c:GetTop()) ..
+			" B=" .. tostring(c:GetBottom()))
+	end
+
+	local up = getglobal("ActionBarUpButton")
+	local down = getglobal("ActionBarDownButton")
+	local text = getglobal("MainMenuBarPageNumber")
+
+	self:Print("ActionBarUpButton: " .. tostring(up and up:GetWidth()) .. "x" .. tostring(up and up:GetHeight()))
+	self:Print("ActionBarDownButton: " .. tostring(down and down:GetWidth()) .. "x" .. tostring(down and down:GetHeight()))
+	self:Print("MainMenuBarPageNumber: " .. tostring(text and text:GetWidth()) .. "x" .. tostring(text and text:GetHeight()))
+
+	if self.pageIndicatorContainer then
+		local c = self.pageIndicatorContainer
+
+		self:Print("pageIndicatorContainer: L=" .. tostring(c:GetLeft()) ..
+			" R=" .. tostring(c:GetRight()) ..
+			" T=" .. tostring(c:GetTop()) ..
+			" B=" .. tostring(c:GetBottom()))
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2173,6 +2295,15 @@ SLASH_BTVANILLA1 = "/btv"
 SlashCmdList["BTVANILLA"] = function(msg)
 	if msg == "recapture" then
 		BTV:RecaptureDefaultBarNativeAnchors()
+	elseif msg == "diag1" then
+		BTV:DiagKeyRingLatencyExpBar()
+	elseif msg == "diag2" or string.find(msg, "^diag2 ") then
+		local spacePos = string.find(msg, " ")
+		local arg = spacePos and string.sub(msg, spacePos + 1) or nil
+
+		BTV:DiagDefaultBarInset(arg)
+	elseif msg == "diag3" then
+		BTV:DiagMicroMenuPageIndicator()
 	else
 		BTV:ToggleMainMenu()
 	end

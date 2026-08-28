@@ -61,27 +61,65 @@ conditional `SetPoint` vs. `SetAllPoints` branch in `EnsureBarOverlay`) is
 left in place so re-enabling this is a one-line change once the actual
 bug is found.
 
+**UPDATE (live-tested):** confirmed disabled state now behaves like the
+pre-feature baseline - the overlay is flush with the bar frame again and
+default-bar dragging/snapping works. So the fix so far is confirmed
+correct; what's still open is only the eventual re-enable/re-tune.
+
 ## What to do once a live client is available
 
-1. In-game, enter Edit Layout Mode with a single default bar and use
-   `/run` to print `BTV:GetElementVisualInset(BTV.bars[1])` (or whichever
-   bar id) directly, and compare it against that bar's actual
-   `GetWidth()`/`GetHeight()` and its buttons' `buttonSize`. This isolates
-   whether the *formula's output* is actually the huge number it appears
-   to be, or whether the bug is downstream in how that number gets
-   applied.
-2. If the formula's output is small (as the paper math suggests) but the
-   overlay is still huge, temporarily re-enable it for a single bar and
-   inspect `overlay:GetLeft()/GetRight()/GetTop()/GetBottom()` directly
-   against `bar:GetLeft()/...` to see exactly how large the actual
-   discrepancy is and in which direction.
-3. Fix the root cause, then also fix the small cosmetic issue noted by
-   the same live-test pass: default bars have a persistent ~1-2px gap
-   between the icon and the border on the left/bottom that the border
-   texture doesn't cover (independent of this regression - likely a
-   separate pixel-rounding or texture-art-asymmetry issue, needs its own
-   live investigation before touching `Button.lua`'s icon inset or
-   border anchor code blindly).
+Run `/btv diag2` (bar 1) or `/btv diag2 <id>` for another default bar
+(id 2-5). This client caps a `/run` command at 511 characters including
+the leading `/run `, too short for a useful multi-line dump - so this is
+wired up as a permanent-until-resolved `BTV:DiagDefaultBarInset(id)`
+function (`Core.lua`, alongside `diag1`/`diag3`, see that file's comment
+for the temporary-code note). It prints:
+
+- the bar frame's own `L/R/T/B`
+- button 1's `.border` texture's `L/R/T/B`
+- button 1's `.icon` texture's `L/R/T/B` (useful for the separate
+  icon/border gap issue below too)
+- what the old formula (`buttonSize * (BORDER_RATIO - 1) / 2`) would
+  compute
+- what `BTV:GetElementVisualInset` actually returns right now (`0`)
+
+1. Compare the bar's `L/R/T/B` against button 1's `.border` `L/R/T/B` -
+   this tells you the REAL overhang in real numbers, to check against the
+   "formula inset would be" line. If they don't roughly match (border
+   overhang per side ≈ formula's inset value), the bug is in how
+   `EnsureBarOverlay`/`ApplyDragSnap` apply the inset, not the formula
+   itself. If they DO roughly match, the bug is likely elsewhere (overlay
+   overlapping with a neighboring element, a stale cached overlay from
+   before a resize, etc.) - re-enable `GetElementVisualInset` for a single
+   bar and directly compare `overlay:GetLeft()/GetRight()/GetTop()/GetBottom()`
+   against `bar`'s and the formula's expected values to pin down exactly
+   where the discrepancy appears.
+2. Fix the root cause once found.
+
+## Separately confirmed live: icon/border gap on left and bottom
+
+Live-tested screenshot confirms a persistent ~1-2px gap between the icon
+and the border texture on the LEFT and BOTTOM edges specifically (not
+top/right) - independent of the regression above (this predates it).
+`Button.lua`'s icon inset (`iconInset = 2`, both anchors symmetric) and
+the border's anchor (`CENTER`, `x=0, y=-1`) don't obviously explain an
+asymmetric left+bottom-only gap from source alone: the icon inset is
+uniform on all 4 sides, and the border's `y=-1` offset (if anything) very
+slightly *reduces* bottom overhang and *increases* top overhang by
+shifting the whole texture down - the opposite direction from what's
+reported. This suggests either the border texture asset
+(`Interface\Buttons\UI-Quickslot2`) isn't pixel-symmetric within its own
+66x66 canvas, or a pixel-rounding/scale artifact from not using
+`PixelUtil`-based anchoring for the border/icon (this addon already wraps
+`PixelUtil` as `PixelSetPoint`/`PixelSetSize` elsewhere, e.g.
+`DefaultBars.lua`, but `Button.lua`'s icon/border use bare `SetPoint`).
+
+**Do not guess a pixel-offset fix blind.** Run `/btv diag2` and report the
+four `.icon` vs `.border` deltas on each side (left/right/top/bottom) -
+with exact numbers, the fix is either a precise compensation constant or
+confirms switching to `PixelUtil`/`PixelSetPoint` resolves it outright,
+rather than a guessed nudge that might fix one client's rounding and break
+another's.
 
 ## Separately reported, pre-existing (not caused by this feature)
 
@@ -94,7 +132,14 @@ them both before and after this regression). A static read of
 `BuildChainAnchoredContainer`/`ApplyChainAnchoredShape` didn't turn up an
 obvious bug (height is computed as `max()` of each button's real
 `GetHeight()` for horizontal chains, which is the standard/correct
-approach) - this needs live measurement (print each Micro Menu button's
-real `GetTop()/GetBottom()/GetHeight()` before/after reparenting, and the
-Page Indicator's real native bounds) rather than a blind fix, per this
+approach) - this needs live measurement rather than a blind fix, per this
 repo's "capture, don't guess" convention.
+
+Run `/btv diag3` in-game for this - prints each Micro Menu button's
+`shown`/`L`/`T`/`W`/`H`, the `microMenuContainer`'s own `L/R/T/B`, the
+Page Indicator's three wrapped native frames'
+(`ActionBarUpButton`/`ActionBarDownButton`/`MainMenuBarPageNumber`) sizes,
+and `pageIndicatorContainer`'s own `L/R/T/B` (`BTV:DiagMicroMenuPageIndicator`,
+`Core.lua`, alongside `diag1`/`diag2`). Compare these against what the
+blue overlay box actually looks like in Edit Layout Mode - a screenshot
+alongside the printed numbers is the fastest way to see the mismatch.
