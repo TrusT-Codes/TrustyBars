@@ -211,18 +211,17 @@ local function EnsureBarOverlay(bar)
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
 
-	-- (v1.0 polish pass) For default bars (id 1-5), expand past `bar`'s own
-	-- frame bounds by BTV:GetElementVisualInset(bar) on every side so this
-	-- tint reaches the visible native border's outer edge (Button.lua's
-	-- self.border, ~1.83x the button size, centered on it) instead of
-	-- stopping at the frame - which sat only ~2px past the icon, making the
-	-- hitbox look like it "started at the icon." Custom bars (id 6+, inset
-	-- 0) keep the exact SetAllPoints(bar) behavior they always had. Only
-	-- computed once here at creation time since a default bar's
-	-- buttonSize only changes via a full ApplyBarShape-style rebuild, not
-	-- passive resizing - SetPoint offsets (unlike SetAllPoints) keep
-	-- tracking `bar`'s own position/size automatically as it moves/resizes
-	-- in between.
+	-- (v1.0 polish pass) Intended to expand past `bar`'s own frame bounds
+	-- for default bars (id 1-5) so this tint reaches the visible native
+	-- border's outer edge instead of stopping at the frame. DISABLED for
+	-- now - BTV:GetElementVisualInset (Core.lua) always returns 0 after a
+	-- live-client regression report ("way too big", broke snapping between
+	-- default bars) that didn't match the math on paper - see that
+	-- function's comment and docs/plan/default-bar-visual-inset-regression.md.
+	-- With inset always 0 this unconditionally takes the `else` branch
+	-- below, i.e. plain SetAllPoints(bar), identical to pre-this-feature
+	-- behavior for every bar kind. Left wired up (rather than deleted) so
+	-- re-enabling it later is a one-line change in GetElementVisualInset.
 	local inset = BTV:GetElementVisualInset(bar)
 
 	if inset ~= 0 then

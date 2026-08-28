@@ -1497,11 +1497,18 @@ end
 -- Bar, Page Indicator) has no known equivalent overhang, so they all
 -- return 0 here.
 function BTV:GetElementVisualInset(frame)
-	if frame and frame.config and frame.config.id and frame.config.id >= 1 and frame.config.id <= 5 then
-		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
-		return buttonSize * (self.BORDER_RATIO - 1) / 2
-	end
-
+	-- (v1.0 polish pass, DISABLED after live-client testing) This used to
+	-- return a nonzero inset for default bars (id 1-5), computed from
+	-- BTV.BORDER_RATIO. The live client reported the resulting edit-mode
+	-- overlay/snap boxes as far larger than intended - "impossible to
+	-- align default bars with default bars or Extra Bars" - even though
+	-- the per-button math alone (buttonSize * (BORDER_RATIO-1)/2, at most
+	-- ~27px for the largest allowed button size) doesn't explain that
+	-- magnitude on paper. Rather than guess further without a live client
+	-- to iterate against, this is disabled (always returns 0, restoring
+	-- the original frame-flush behavior everywhere it's used) until it can
+	-- be re-diagnosed and re-tuned with live feedback - see
+	-- docs/plan/default-bar-visual-inset-regression.md.
 	return 0
 end
 

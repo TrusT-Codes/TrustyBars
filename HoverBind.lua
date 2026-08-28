@@ -352,6 +352,30 @@ local function HoverBindCaptureFrame_OnKeyDown()
 	-- SetBindingClick/"CLICK <frame>:<button>" and BONUSACTIONBUTTON1
 	-- mechanisms both live-tested and confirmed non-functional this
 	-- session (see file-level comment at top). No branch needed here.
+	--
+	-- SetBinding(key, action) only ever ADDS a key -> action mapping; it
+	-- never clears whatever key(s) were already bound to this same action.
+	-- Rebinding a hovered button in the same edit session used to leave
+	-- the OLD key still bound (GetBindingKey(action) can return up to two
+	-- keys), so the button's displayed hotkey kept showing the old key
+	-- (whichever GetBindingKey happens to return first) even though the
+	-- new key also worked - only a reload (which rebuilds every binding
+	-- from the freshly-saved set) incidentally cleared the ambiguity.
+	-- Explicitly clear any existing key(s) for this action first, via
+	-- SetBinding(key) with no action argument (the standard native way to
+	-- unbind a single key), so at most one key is ever bound to a given
+	-- action - this also matches HoverBind's own "assign THIS key to this
+	-- button" intent, which is a replace, not an add.
+	local existingKey1, existingKey2 = GetBindingKey(hovered.bindingId)
+
+	if existingKey1 and existingKey1 ~= combo then
+		SetBinding(existingKey1)
+	end
+
+	if existingKey2 and existingKey2 ~= combo then
+		SetBinding(existingKey2)
+	end
+
 	SetBinding(combo, hovered.bindingId)
 
 	SaveBindings(GetCurrentBindingSet())
