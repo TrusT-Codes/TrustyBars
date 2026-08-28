@@ -333,16 +333,24 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	-- bg/edge textures are always the bottom-most thing a frame draws,
 	-- beneath every CreateTexture-based layer including "BACKGROUND") -
 	-- so a flush icon completely covers the border regardless of its
-	-- edgeSize. A uniform inset restores a visible margin. Native vanilla
-	-- avoids this entirely by drawing its border as a SEPARATE, larger
-	-- overlay texture layered above the icon rather than a same-size
-	-- backdrop layered below it - round 15 replicates that properly for
-	-- default bars 1-5 (self.border above, Interface\Buttons\UI-Quickslot2
-	-- at BTV.BORDER_RATIO, Core.lua). This flat 2px inset itself applies
-	-- to every button regardless (default bars 1-5 AND true custom bars
-	-- 6+, which have no native border texture to match and keep the plain
-	-- SetBackdrop-drawn border instead).
-	local iconInset = 2
+	-- edgeSize. A uniform inset restores a visible margin. This reasoning
+	-- only applies to true custom bars (6+), which still use that plain
+	-- SetBackdrop-drawn border.
+	--
+	-- Default bars 1-5 (self.hasNativeBorder) don't have this problem at
+	-- all: round 15 gave them a SEPARATE, larger overlay texture
+	-- (self.border below, Interface\Buttons\UI-Quickslot2 at
+	-- BTV.BORDER_RATIO) layered ABOVE the icon regardless of the icon's
+	-- own size, specifically so the icon never needs to be shrunk to keep
+	-- a border visible. The 2px inset was left in place for these buttons
+	-- too anyway after that round, which (v1.0 polish pass, live-tested)
+	-- turned out to be a real, visible bug: `/run print(ActionButton1Icon:
+	-- GetLeft(), ActionButton1:GetLeft())` (and the same for
+	-- GetRight/Top/Bottom) confirms real vanilla's own ActionButton1Icon
+	-- is perfectly flush (0px inset) with its button frame - our 2px inset
+	-- was leaving a small but real gap between the icon and the border's
+	-- inner edge that vanilla doesn't have, on every default-bar button.
+	local iconInset = self.hasNativeBorder and 0 or 2
 
 	self.icon = self:CreateTexture(nil, "ARTWORK")
 	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", iconInset, -iconInset)

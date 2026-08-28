@@ -1555,6 +1555,35 @@ end
 -- change mid-session (leveling past 10 unlocks Talent) - see the
 -- UpdateMicroButtons hook further below, which re-runs ApplyMicroMenuShape
 -- exactly when Blizzard's own code re-evaluates that.
+-- (v1.0 polish pass) Shared by ApplyChainAnchoredShape below and
+-- EnsureContainerOverlay's own initial anchor - finds the first and last
+-- currently-SHOWN button in a chain (a hidden button, e.g. TalentMicroButton
+-- below level 10, is parked at the last-shown button's own TOPLEFT per
+-- ApplyChainAnchoredShape's own comment, so it must never be picked as
+-- either endpoint). Returns first, last (both nil if every button in the
+-- chain is currently hidden).
+local function GetChainShownEndpoints(container)
+	if not container or not container.chainButtons then
+		return nil, nil
+	end
+
+	local buttons = container.chainButtons
+	local first, last
+	local i
+
+	for i = 1, table.getn(buttons) do
+		if buttons[i] and buttons[i]:IsShown() then
+			if not first then
+				first = buttons[i]
+			end
+
+			last = buttons[i]
+		end
+	end
+
+	return first, last
+end
+
 local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	if not container or not container.chainButtons then
 		return
@@ -1584,6 +1613,12 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 		-- of leaving it at its last real size.
 		PixelSetSize(container, 1, 1)
 		container:SetScale(scale or 1)
+
+		if container.btvOverlay then
+			container.btvOverlay:ClearAllPoints()
+			container.btvOverlay:SetAllPoints(container)
+		end
+
 		return
 	end
 
@@ -1638,6 +1673,24 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 
 	PixelSetSize(container, totalWidth, totalHeight)
 	container:SetScale(scale or 1)
+
+	-- (v1.0 polish pass, live-tested) EnsureContainerOverlay's initial
+	-- overlay:SetAllPoints(container) anchor measured out as exactly
+	-- matching `container`'s own bounds in every diagnostic check, but the
+	-- user still saw a visibly oversized edit-mode overlay for Micro Menu
+	-- specifically. Rather than keep trusting `container`'s own computed
+	-- size, ground the overlay directly in the two REAL buttons that
+	-- actually define this chain's visible extent - `first`'s real TOPLEFT
+	-- to `prevBtn`'s (the last currently-SHOWN button, tracked through the
+	-- loop above) real BOTTOMRIGHT - re-applied every time this function
+	-- runs (spacing/orientation/scale change, or a button's shown state
+	-- changes, e.g. Talent unlocking), the same trigger that already keeps
+	-- `container` itself in sync.
+	if container.btvOverlay then
+		container.btvOverlay:ClearAllPoints()
+		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", 0, 0)
+		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", 0, 0)
+	end
 end
 
 -- Shared overlay helper (feature 3) - drag ownership + right-click-to-
@@ -1719,7 +1772,27 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 
 	overlay:SetFrameStrata("TOOLTIP")
 	overlay:SetFrameLevel(level or 100)
-	overlay:SetAllPoints(container)
+
+	-- (v1.0 polish pass) For a chain-anchored container (Bag Bar/Micro
+	-- Menu/Stance Bar - container.chainButtons exists), anchor directly to
+	-- the real first/last currently-shown button instead of SetAllPoints
+	-- (container) - see ApplyChainAnchoredShape's own matching anchor
+	-- (below) for why. This container's OWN size may not have settled yet
+	-- the very first time this runs (built, but ApplyChainAnchoredShape
+	-- might not have run since), so GetChainShownEndpoints gives a correct
+	-- anchor immediately either way; ApplyChainAnchoredShape re-applies the
+	-- exact same anchor on every later spacing/orientation/scale/
+	-- visibility change. Every other container kind (Key Ring/Latency
+	-- Bar/Exp Bar's wrapped native frames, Page Indicator) has no
+	-- chainButtons and keeps the original SetAllPoints(container) anchor.
+	local chainFirst, chainLast = GetChainShownEndpoints(container)
+
+	if chainFirst and chainLast then
+		overlay:SetPoint("TOPLEFT", chainFirst, "TOPLEFT", 0, 0)
+		overlay:SetPoint("BOTTOMRIGHT", chainLast, "BOTTOMRIGHT", 0, 0)
+	else
+		overlay:SetAllPoints(container)
+	end
 
 	local tex = overlay:CreateTexture(nil, "OVERLAY")
 	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
@@ -2157,8 +2230,18 @@ function BTV:SetMicroMenuSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	if spacing < 0 then
-		spacing = 0
+	-- (v1.0 polish pass) Floor is -10, not 0, unlike every other chain-
+	-- anchored container's spacing setter - Micro Menu's real native
+	-- buttons sit edge-to-edge with a MEASURED native gap of 0 (see
+	-- BuildChainAnchoredContainer's ComputeMajorityGap capture), yet still
+	-- show a small visible gap at spacing=0 because the buttons' own
+	-- native art has padding inside their nominal frame bounds that
+	-- spacing alone can't remove - only pulling the frames INTO a slight
+	-- overlap (negative spacing) can compensate for that. 0 (the captured
+	-- native default) is left completely unaffected by this - only the
+	-- floor a user can slide down to changes.
+	if spacing < -10 then
+		spacing = -10
 	end
 
 	if spacing > 20 then

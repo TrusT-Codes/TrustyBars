@@ -2286,6 +2286,15 @@ local function CreateSimpleBarPage(key)
 	-------------------------------------------------------------------------
 
 	if config.hasSpacing then
+		-- (v1.0 polish pass) config.spacingMin lets one element override the
+		-- shared SPACING_MIN floor - Micro Menu sets this to -10 so users can
+		-- pull its native buttons into a slight overlap, compensating for
+		-- padding baked into their own art that a spacing of 0 (their
+		-- measured native gap) doesn't remove. Every other hasSpacing
+		-- element (Bag Bar, Stance Bar) has no override and keeps the
+		-- original SPACING_MIN (0) floor.
+		local spacingMin = config.spacingMin or SPACING_MIN
+
 		local spacingTitleY = cursorY
 		local spacingSliderY = spacingTitleY - 26
 
@@ -2293,7 +2302,7 @@ local function CreateSimpleBarPage(key)
 
 		spacingTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, spacingTitleY)
 		spacingTitle:SetText(
-			"Spacing (" .. tostring(SPACING_MIN) .. " to " .. tostring(SPACING_MAX) .. ")"
+			"Spacing (" .. tostring(spacingMin) .. " to " .. tostring(SPACING_MAX) .. ")"
 		)
 
 		local spacingSlider = CreateSettingSlider(
@@ -2303,7 +2312,7 @@ local function CreateSimpleBarPage(key)
 		)
 
 		spacingSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, spacingSliderY)
-		spacingSlider:SetMinMaxValues(SPACING_MIN, SPACING_MAX)
+		spacingSlider:SetMinMaxValues(spacingMin, SPACING_MAX)
 		spacingSlider:SetValueStep(SPACING_STEP)
 
 		SetSliderLabel(spacingSlider, "Spacing")
@@ -2311,7 +2320,7 @@ local function CreateSimpleBarPage(key)
 		local spacingSliderLow = getglobal(spacingSlider:GetName() .. "Low")
 
 		if spacingSliderLow then
-			spacingSliderLow:SetText(tostring(SPACING_MIN))
+			spacingSliderLow:SetText(tostring(spacingMin))
 		end
 
 		local spacingSliderHigh = getglobal(spacingSlider:GetName() .. "High")
@@ -3097,9 +3106,10 @@ function BTV:RefreshSimpleBarPage(key)
 
 	if page.spacingSlider and config.getSpacing then
 		local spacing = config.getSpacing() or 0
+		local spacingMin = config.spacingMin or SPACING_MIN
 
-		if spacing < SPACING_MIN then
-			spacing = SPACING_MIN
+		if spacing < spacingMin then
+			spacing = spacingMin
 		end
 
 		if spacing > SPACING_MAX then
@@ -3381,6 +3391,10 @@ simpleBarPageConfigs["micromenu"] = {
 	getEnabled = function() return BTVanillaDB.microMenuEnabled end,
 	setEnabled = function(v) BTV:SetMicroMenuEnabled(v) end,
 	hasSpacing = true,
+	-- (v1.0 polish pass) -10 floor, not the shared SPACING_MIN (0) - see
+	-- BTV:SetMicroMenuSpacing's own comment (DefaultBars.lua) and
+	-- CreateSimpleBarPage's spacingMin handling above.
+	spacingMin = -10,
 	getSpacing = function() return BTVanillaDB.microMenuSpacing end,
 	setSpacing = function(v) BTV:SetMicroMenuSpacing(v) end,
 	hasScale = true,
