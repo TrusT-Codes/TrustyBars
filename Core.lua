@@ -2282,6 +2282,97 @@ function BTV:DiagMicroMenuPageIndicator()
 	end
 end
 
+-- Live-tested: geometry alone (GetLeft/Right/Top/Bottom, GetWidth/Height)
+-- says our default-bar border fully covers the icon with margin on every
+-- side, but a live A/B against completely vanilla UI shows no gap at all
+-- on the left - so the border TEXTURE's declared frame size and its
+-- actually-drawn (visible) art apparently don't match 1:1. GetTexCoord()
+-- is what would reveal that: if real vanilla's ActionButton1 NormalTexture
+-- crops its UV rect away from the full 0..1 range (i.e. only shows part of
+-- the source image) while ours doesn't, that crop is exactly what's
+-- missing. GetTexCoord can return either 4 values (left, right, top,
+-- bottom) or 8 (four corner x,y pairs) depending on this client's exact
+-- API surface - printed generically via select("#", ...) rather than
+-- assumed, per this repo's "don't guess API behavior" convention.
+function BTV:DiagBorderTexCoord()
+	local function dumpTexture(label, tex)
+		if not tex then
+			self:Print(label .. ": missing")
+			return
+		end
+
+		self:Print(label .. ": texture=" .. tostring(tex:GetTexture()) ..
+			" w=" .. tostring(tex:GetWidth()) .. " h=" .. tostring(tex:GetHeight()))
+
+		local coords = { tex:GetTexCoord() }
+		local n = table.getn(coords)
+		local parts = {}
+		local i
+
+		for i = 1, n do
+			parts[i] = tostring(coords[i])
+		end
+
+		self:Print(label .. ": GetTexCoord (" .. tostring(n) .. " values) = " .. table.concat(parts, ", "))
+	end
+
+	local bar = self.bars and self.bars[1]
+	local btn = bar and bar.buttons and bar.buttons[1]
+
+	if btn then
+		self:Print("our button1: buttonSize=" .. tostring(btn.buttonSize) ..
+			" w=" .. tostring(btn:GetWidth()) .. " h=" .. tostring(btn:GetHeight()))
+		dumpTexture("our border", btn.border)
+	else
+		self:Print("our button1: not found")
+	end
+
+	local nativeBtn = getglobal("ActionButton1")
+
+	if nativeBtn then
+		self:Print("ActionButton1: w=" .. tostring(nativeBtn:GetWidth()) .. " h=" .. tostring(nativeBtn:GetHeight()))
+		dumpTexture("ActionButton1 NormalTexture", nativeBtn.GetNormalTexture and nativeBtn:GetNormalTexture())
+	else
+		self:Print("ActionButton1: missing")
+	end
+end
+
+-- Live-tested: Micro Menu's edit-mode overlay visibly extends well above
+-- its buttons even though diag3's own container-vs-buttons comparison
+-- came out exactly matching. This isolates whether the OVERLAY frame
+-- itself (container.btvOverlay, a separate CreateFrame(..., UIParent)
+-- SetAllPoints(container)) has actually drifted from `container`'s own
+-- bounds - if these two blocks of numbers don't match, the bug is in how
+-- the overlay tracks the container; if they DO match, the discrepancy is
+-- somewhere else entirely (e.g. the backdrop border, or a completely
+-- different frame being mistaken for this one).
+function BTV:DiagMicroMenuOverlay()
+	local c = self.microMenuContainer
+
+	if not c then
+		self:Print("microMenuContainer: missing")
+		return
+	end
+
+	self:Print("microMenuContainer: L=" .. tostring(c:GetLeft()) ..
+		" R=" .. tostring(c:GetRight()) ..
+		" T=" .. tostring(c:GetTop()) ..
+		" B=" .. tostring(c:GetBottom()))
+
+	local overlay = c.btvOverlay
+
+	if not overlay then
+		self:Print("microMenuContainer.btvOverlay: missing")
+		return
+	end
+
+	self:Print("microMenuContainer.btvOverlay: L=" .. tostring(overlay:GetLeft()) ..
+		" R=" .. tostring(overlay:GetRight()) ..
+		" T=" .. tostring(overlay:GetTop()) ..
+		" B=" .. tostring(overlay:GetBottom()) ..
+		" shown=" .. tostring(overlay:IsShown()))
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2304,6 +2395,10 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagDefaultBarInset(arg)
 	elseif msg == "diag3" then
 		BTV:DiagMicroMenuPageIndicator()
+	elseif msg == "diag4" then
+		BTV:DiagBorderTexCoord()
+	elseif msg == "diag5" then
+		BTV:DiagMicroMenuOverlay()
 	else
 		BTV:ToggleMainMenu()
 	end
