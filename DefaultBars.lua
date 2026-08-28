@@ -1584,6 +1584,26 @@ local function GetChainShownEndpoints(container)
 	return first, last
 end
 
+-- (v1.0 polish pass, live-tested) A real Button can define
+-- GetHitRectInsets() - four values (left, right, top, bottom) trimming its
+-- actual clickable/visually-relevant area inward from its own frame edges,
+-- entirely independent of the frame's own GetWidth()/GetHeight(). Live-
+-- confirmed via diag8: every Micro Menu button reports a 58px-tall frame
+-- but a (0, 0, 18, 0) hit-rect inset - only the BOTTOM 40px is real
+-- content, the top 18px is a purely decorative "flare" no earlier
+-- diagnostic (all of which only ever read GetLeft/Right/Top/Bottom) could
+-- have caught. Returns 0 for any frame that doesn't support the API, so
+-- every call site here is always safe to use unconditionally.
+local function GetHitInsets(frame)
+	if not frame or not frame.GetHitRectInsets then
+		return 0, 0, 0, 0
+	end
+
+	local left, right, top, bottom = frame:GetHitRectInsets()
+
+	return left or 0, right or 0, top or 0, bottom or 0
+end
+
 local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	if not container or not container.chainButtons then
 		return
@@ -1622,11 +1642,39 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 		return
 	end
 
+	-- `first`'s own frame TOPLEFT stays exactly at container's TOPLEFT
+	-- (unconditional 0,0 offset, unchanged from before hit-rect insets
+	-- were accounted for anywhere in this function) - deliberately NOT
+	-- hit-rect-trimmed, since `container`'s own saved position
+	-- (BTVanillaDB.*Position, applied via PixelSetPoint elsewhere) was
+	-- originally captured against `first`'s raw FRAME corner
+	-- (BuildChainAnchoredContainer's nativeLeft/nativeTop). Redefining
+	-- what point container's TOPLEFT represents would silently shift
+	-- every existing user's already-saved position. The overlay below has
+	-- no such saved-position dependency, so it gets full trimming on
+	-- every side instead.
 	first:ClearAllPoints()
 	PixelSetPoint(first, "TOPLEFT", container, "TOPLEFT", 0, 0)
 
+	-- Main-axis seed (width for horizontal, height for vertical) stays
+	-- `first`'s raw frame size, matching its untrimmed leading edge above.
+	-- Cross-axis seed (the other dimension) has no such position
+	-- constraint, so it's seeded already-trimmed by `first`'s own hit-rect
+	-- inset on that axis - otherwise the loop below's per-button
+	-- `visibleW`/`visibleH` comparisons could never shrink it below
+	-- `first`'s own untrimmed size even when every other button's real
+	-- visible size is smaller (exactly Micro Menu's case: 58 vs the real
+	-- 40).
+	local firstLeftSeed, firstRightSeed, firstTopSeed, firstBottomSeed = GetHitInsets(first)
+
 	local totalWidth = widths[firstIndex] or 0
 	local totalHeight = heights[firstIndex] or 0
+
+	if orientation then
+		totalWidth = totalWidth - firstLeftSeed - firstRightSeed
+	else
+		totalHeight = totalHeight - firstTopSeed - firstBottomSeed
+	end
 
 	local prevBtn = first
 
@@ -1638,23 +1686,41 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 				local w = widths[i] or 0
 				local h = heights[i] or 0
 
+				local prevLeft, prevRight, prevTop, prevBottom = GetHitInsets(prevBtn)
+				local btnLeft, btnRight, btnTop, btnBottom = GetHitInsets(btn)
+
 				btn:ClearAllPoints()
 
 				if orientation then
-					PixelSetPoint(btn, "TOPLEFT", prevBtn, "BOTTOMLEFT", 0, -spacing)
+					-- Real visible bottom of prevBtn = its frame bottom +
+					-- prevBottom (a bottom inset trims UPWARD from the
+					-- bottom edge); real visible top of btn = its frame
+					-- top - btnTop. Solving for the TOPLEFT->BOTTOMLEFT
+					-- offset that makes those two real edges exactly
+					-- `spacing` apart (instead of the raw frames) gives
+					-- this formula - reduces to the original bare
+					-- `-spacing` when both insets are 0.
+					PixelSetPoint(btn, "TOPLEFT", prevBtn, "BOTTOMLEFT", 0, prevBottom - spacing + btnTop)
 
-					totalHeight = totalHeight + spacing + h
+					totalHeight = totalHeight + spacing + h - prevBottom - btnTop
 
-					if w > totalWidth then
-						totalWidth = w
+					local visibleW = w - btnLeft - btnRight
+
+					if visibleW > totalWidth then
+						totalWidth = visibleW
 					end
 				else
-					PixelSetPoint(btn, "TOPLEFT", prevBtn, "TOPRIGHT", spacing, 0)
+					-- Same reasoning, horizontal axis: real visible right
+					-- of prevBtn = frame right - prevRight; real visible
+					-- left of btn = frame left + btnLeft.
+					PixelSetPoint(btn, "TOPLEFT", prevBtn, "TOPRIGHT", spacing - prevRight - btnLeft, 0)
 
-					totalWidth = totalWidth + spacing + w
+					totalWidth = totalWidth + spacing + w - prevRight - btnLeft
 
-					if h > totalHeight then
-						totalHeight = h
+					local visibleH = h - btnTop - btnBottom
+
+					if visibleH > totalHeight then
+						totalHeight = visibleH
 					end
 				end
 
@@ -1671,6 +1737,21 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 		end
 	end
 
+	-- Container's own size trims only the TRAILING edge (prevBtn's own
+	-- hit-rect inset on whichever side it ends the chain) - shrinking from
+	-- the far end never touches container's TOPLEFT origin, so this part
+	-- is safe to always apply in full, unlike `first`'s own leading inset
+	-- above.
+	do
+		local prevLeft, prevRight, prevTop, prevBottom = GetHitInsets(prevBtn)
+
+		if orientation then
+			totalHeight = totalHeight - prevBottom
+		else
+			totalWidth = totalWidth - prevRight
+		end
+	end
+
 	PixelSetSize(container, totalWidth, totalHeight)
 	container:SetScale(scale or 1)
 
@@ -1678,18 +1759,22 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	-- overlay:SetAllPoints(container) anchor measured out as exactly
 	-- matching `container`'s own bounds in every diagnostic check, but the
 	-- user still saw a visibly oversized edit-mode overlay for Micro Menu
-	-- specifically. Rather than keep trusting `container`'s own computed
-	-- size, ground the overlay directly in the two REAL buttons that
-	-- actually define this chain's visible extent - `first`'s real TOPLEFT
-	-- to `prevBtn`'s (the last currently-SHOWN button, tracked through the
-	-- loop above) real BOTTOMRIGHT - re-applied every time this function
-	-- runs (spacing/orientation/scale change, or a button's shown state
-	-- changes, e.g. Talent unlocking), the same trigger that already keeps
-	-- `container` itself in sync.
+	-- specifically - diag8 explained why: `container`'s own bounds (and
+	-- the frame-based chaining above, before this pass) never accounted
+	-- for hit-rect insets at all. The overlay has no saved-position
+	-- dependency (unlike `container`'s own TOPLEFT, see above), so it gets
+	-- full trimming on every side - `first`'s own leading (left/top)
+	-- inset AND `prevBtn`'s (the last currently-SHOWN button, tracked
+	-- through the loop above) trailing (right/bottom) inset - re-applied
+	-- every time this function runs (spacing/orientation/scale change, or
+	-- a button's shown state changes, e.g. Talent unlocking).
 	if container.btvOverlay then
+		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
+		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(prevBtn)
+
 		container.btvOverlay:ClearAllPoints()
-		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", 0, 0)
-		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", 0, 0)
+		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft, -firstTop)
+		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", -lastRight, lastBottom)
 	end
 end
 
@@ -1788,8 +1873,15 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	local chainFirst, chainLast = GetChainShownEndpoints(container)
 
 	if chainFirst and chainLast then
-		overlay:SetPoint("TOPLEFT", chainFirst, "TOPLEFT", 0, 0)
-		overlay:SetPoint("BOTTOMRIGHT", chainLast, "BOTTOMRIGHT", 0, 0)
+		-- (v1.0 polish pass) Trimmed by each endpoint's own hit-rect inset,
+		-- same reasoning/formula as ApplyChainAnchoredShape's own matching
+		-- overlay anchor below - see GetHitInsets' comment (diag8's Micro
+		-- Menu finding).
+		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(chainFirst)
+		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(chainLast)
+
+		overlay:SetPoint("TOPLEFT", chainFirst, "TOPLEFT", firstLeft, -firstTop)
+		overlay:SetPoint("BOTTOMRIGHT", chainLast, "BOTTOMRIGHT", -lastRight, lastBottom)
 	else
 		overlay:SetAllPoints(container)
 	end
