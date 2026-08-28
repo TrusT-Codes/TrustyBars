@@ -404,13 +404,24 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	-- once the edit-mode grid-visibility fix started Show()ing it. Real
 	-- on/off state is decided by UpdateBackdropVisibility, called from
 	-- UpdateGridVisibility below so the two can never drift out of sync.
+	--
+	-- (v1.0 polish pass) Same reasoning as iconInset above: the 1px inset
+	-- only matters for custom bars (6+), which need this backdrop's own
+	-- BORDER edge to show through a small margin. Default bars
+	-- (hasNativeBorder) never show this backdrop's border (only its
+	-- background fill, toggled by UpdateBackdropVisibility below) and
+	-- already have a flush, 0-inset icon matching vanilla exactly - a 1px
+	-- inset background fill behind that left a visible 1px gap around the
+	-- icon/border that the icon-inset fix alone didn't close.
+	local backdropInset = self.hasNativeBorder and 0 or 1
+
 	self:SetBackdrop({
 		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		tile = true,
 		tileSize = 8,
 		edgeSize = 8,
-		insets = { left = 1, right = 1, top = 1, bottom = 1 },
+		insets = { left = backdropInset, right = backdropInset, top = backdropInset, bottom = backdropInset },
 	})
 	self:SetBackdropColor(0, 0, 0, 0)
 	self:SetBackdropBorderColor(0, 0, 0, 0)

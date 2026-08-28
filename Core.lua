@@ -2469,6 +2469,44 @@ function BTV:DiagIconInset()
 	end
 end
 
+-- Live-tested: even after anchoring the Micro Menu overlay directly to its
+-- first/last SHOWN button's real frame bounds (v1.0 polish pass), the
+-- overlay still looked too big. GetLeft/Right/Top/Bottom (what every prior
+-- diagnostic measured) report a Button's FRAME bounds - but a real Button
+-- widget can additionally define GetHitRectInsets(), which shrinks its
+-- actual clickable/visually-relevant area within that frame without
+-- changing the frame's own reported size at all. MicroButtons are known to
+-- have a taller frame (58px, per diag3) than their visible icon art (a
+-- decorative "flare" shape above/below the actual clickable button) - if
+-- that extra height is expressed via a hit-rect inset rather than the
+-- frame's own size, every earlier L/R/T/B-based diagnostic would have
+-- missed it entirely, since none of them checked this. Dumps each Micro
+-- Menu button's frame size next to its hit-rect insets (left, right, top,
+-- bottom - the amount trimmed off each edge of the frame to get to the
+-- real clickable rect, per the native GetHitRectInsets() API).
+function BTV:DiagMicroMenuHitRects()
+	local micro = {
+		"CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
+		"QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
+		"MainMenuMicroButton", "HelpMicroButton",
+	}
+
+	local i
+
+	for i = 1, table.getn(micro) do
+		local f = getglobal(micro[i])
+
+		if f then
+			local w, h = f:GetWidth(), f:GetHeight()
+			local left, right, top, bottom = f:GetHitRectInsets()
+
+			self:Print(micro[i] .. ": frame=" .. tostring(w) .. "x" .. tostring(h) ..
+				" hitInsets(L,R,T,B)=" .. tostring(left) .. ", " .. tostring(right) ..
+				", " .. tostring(top) .. ", " .. tostring(bottom))
+		end
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2499,6 +2537,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagZeroDefaultBarBackdropFill()
 	elseif msg == "diag7" then
 		BTV:DiagIconInset()
+	elseif msg == "diag8" then
+		BTV:DiagMicroMenuHitRects()
 	else
 		BTV:ToggleMainMenu()
 	end
