@@ -591,6 +591,33 @@ local function CreateSettingsFrame()
 		end
 	)
 
+	local tabProfilesButton = CreateFrame(
+		"Button",
+		nil,
+		f,
+		"UIPanelButtonTemplate"
+	)
+
+	tabProfilesButton:SetWidth(90)
+	tabProfilesButton:SetHeight(20)
+
+	tabProfilesButton:SetPoint(
+		"LEFT",
+		tabGeneralButton,
+		"RIGHT",
+		6,
+		0
+	)
+
+	tabProfilesButton:SetText("Profiles")
+
+	tabProfilesButton:SetScript(
+		"OnClick",
+		function()
+			BTV:ShowProfilesView()
+		end
+	)
+
 	-------------------------------------------------------------------------
 	-- Left bar list
 	-------------------------------------------------------------------------
@@ -3902,6 +3929,10 @@ function BTV:ShowBarPage(barId)
 		settingsFrame.generalPanel:Hide()
 	end
 
+	if settingsFrame.profilesPanel then
+		settingsFrame.profilesPanel:Hide()
+	end
+
 	local id
 	local page
 
@@ -5040,6 +5071,206 @@ function BTV:GetOrCreateGeneralPanel()
 	return panel
 end
 
+-------------------------------------------------------------------------
+-- Profiles tab panel
+--
+-- Built lazily on first use, exactly like GetOrCreateGeneralPanel -
+-- anchored the same way, spanning the combined listPanel+contentPanel
+-- area since the bar list has no meaning here either.
+-------------------------------------------------------------------------
+
+-- Sentinel dropdown entry - not a real profile name, so a normal profile
+-- can never collide with it. Chosen when the user wants to open the
+-- create-new-profile dialog straight from the profile dropdown.
+local CREATE_NEW_PROFILE_SENTINEL = "+ Create new profile"
+
+function BTV:GetOrCreateProfilesPanel()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	if settingsFrame.profilesPanel then
+		return settingsFrame.profilesPanel
+	end
+
+	local panel = CreateFrame(
+		"Frame",
+		nil,
+		settingsFrame
+	)
+
+	panel:SetPoint(
+		"TOPLEFT",
+		settingsFrame.listPanel,
+		"TOPLEFT",
+		0,
+		0
+	)
+
+	panel:SetPoint(
+		"BOTTOMRIGHT",
+		settingsFrame.contentPanel,
+		"BOTTOMRIGHT",
+		0,
+		0
+	)
+
+	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", panel, "TOPLEFT", INDENT_SECTION, -14)
+	title:SetText("Profiles")
+	panel.title = title
+
+	local label = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	label:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -20)
+	label:SetText("Active Profile:")
+	panel.label = label
+
+	local dropdown = BTV:CreateInlineDropdown(panel, 220)
+	dropdown:ClearAllPoints()
+	dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -6)
+	panel.profileDropdown = dropdown
+
+	dropdown.onSelect = function(value)
+		if value == CREATE_NEW_PROFILE_SENTINEL then
+			BTV:ShowCreateProfileDialog(function()
+				-- On validation failure the dialog already stayed on the
+				-- old profile (CreateProfile/SwitchProfile only reload on
+				-- success) - re-sync the dropdown text either way so it
+				-- never shows the sentinel as if it were a real selection.
+				BTV:RefreshProfilesPanel()
+			end)
+
+			return
+		end
+
+		if value and value ~= BTVanillaCharDB.activeProfile then
+			BTV:SwitchProfile(value)
+		end
+	end
+
+	local copyButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	copyButton:SetWidth(200)
+	copyButton:SetHeight(22)
+	copyButton:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -14)
+	copyButton:SetText("Copy from other profile")
+	panel.copyButton = copyButton
+
+	copyButton:SetScript("OnClick", function()
+		local otherProfiles = {}
+		local names = BTV:GetProfileNames()
+		local i
+
+		for i = 1, table.getn(names) do
+			if names[i] ~= BTVanillaCharDB.activeProfile then
+				table.insert(otherProfiles, names[i])
+			end
+		end
+
+		BTV:ShowDialog({
+			title = "Copy From Other Profile",
+			message = "Choose another profile to copy all settings from. ATTENTION: " ..
+				"This action will override all settings present on the current " ..
+				"profile and is not reversible.",
+			mode = "dropdown",
+			options = otherProfiles,
+			buttons = {
+				{
+					text = "Accept",
+					isDefault = false,
+					onClick = function(value)
+						if value then
+							BTV:CopyProfileInto(value, BTVanillaCharDB.activeProfile)
+							BTV:SaveActiveProfileData()
+							ReloadUI()
+						end
+					end,
+				},
+				{ text = "Cancel", onClick = function() end },
+			},
+		})
+	end)
+
+	local deleteButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	deleteButton:SetWidth(200)
+	deleteButton:SetHeight(22)
+	deleteButton:SetPoint("TOPLEFT", copyButton, "BOTTOMLEFT", 0, -8)
+	deleteButton:SetText("Delete profile")
+	panel.deleteButton = deleteButton
+
+	deleteButton:SetScript("OnClick", function()
+		BTV:ShowDialog({
+			title = "Delete Profile",
+			message = "ATTENTION: This action will delete all settings present " ..
+				"on the current profile and is not reversible.",
+			mode = "confirm",
+			buttons = {
+				{
+					text = "Accept",
+					onClick = function()
+						BTV:DeleteProfile(BTVanillaCharDB.activeProfile)
+						ReloadUI()
+					end,
+				},
+				{ text = "Cancel", onClick = function() end },
+			},
+		})
+	end)
+
+	panel:Hide()
+
+	settingsFrame.profilesPanel = panel
+
+	return panel
+end
+
+-- Refreshes the dropdown's option list/current selection and the Copy/
+-- Delete buttons' visibility (only shown while a non-Default profile is
+-- active, per spec) - called whenever the Profiles view is (re)shown and
+-- after any profile CRUD action that doesn't already trigger a ReloadUI.
+function BTV:RefreshProfilesPanel()
+	local panel = self:GetOrCreateProfilesPanel()
+
+	BTVanillaCharDB = BTVanillaCharDB or { activeProfile = self.DEFAULT_PROFILE_NAME }
+
+	local names = self:GetProfileNames()
+	local dropdownOptions = {}
+	local i
+
+	for i = 1, table.getn(names) do
+		dropdownOptions[i] = names[i]
+	end
+
+	table.insert(dropdownOptions, CREATE_NEW_PROFILE_SENTINEL)
+
+	panel.profileDropdown:SetOptions(dropdownOptions)
+	panel.profileDropdown:SetSelected(BTVanillaCharDB.activeProfile)
+
+	if BTVanillaCharDB.activeProfile ~= self.DEFAULT_PROFILE_NAME then
+		panel.copyButton:Show()
+		panel.deleteButton:Show()
+	else
+		panel.copyButton:Hide()
+		panel.deleteButton:Hide()
+	end
+end
+
+function BTV:FitSettingsWindowToProfilesView()
+	if not settingsFrame or not settingsFrame.profilesPanel then
+		return
+	end
+
+	local panel = settingsFrame.profilesPanel
+
+	local candidates = {}
+	local n = 0
+
+	n = AppendCandidate(candidates, n, panel.profileDropdown)
+	n = AppendCandidate(candidates, n, panel.copyButton)
+	n = AppendCandidate(candidates, n, panel.deleteButton)
+
+	ApplySettingsHeightFromCandidates(candidates)
+end
+
 function BTV:RefreshGeneralPanel()
 	local panel = self:GetOrCreateGeneralPanel()
 
@@ -5136,12 +5367,44 @@ function BTV:ShowGeneralView()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "general"
 
+	if settingsFrame.profilesPanel then
+		settingsFrame.profilesPanel:Hide()
+	end
+
 	self:RefreshGeneralPanel()
 	self:GetOrCreateGeneralPanel():Show()
 
 	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
 	-- :Show() so GetBottom() reads real values.
 	self:FitSettingsWindowToGeneralView()
+end
+
+function BTV:ShowProfilesView()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	local id
+	local page
+
+	for id, page in pairs(settingsFrame.pages) do
+		page:Hide()
+	end
+
+	settingsFrame.listPanel:Hide()
+	settingsFrame.contentPanel:Hide()
+	settingsFrame.currentView = "profiles"
+
+	if settingsFrame.generalPanel then
+		settingsFrame.generalPanel:Hide()
+	end
+
+	self:RefreshProfilesPanel()
+	self:GetOrCreateProfilesPanel():Show()
+
+	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
+	-- :Show() so GetBottom() reads real values.
+	self:FitSettingsWindowToProfilesView()
 end
 
 -------------------------------------------------------------------------
@@ -5472,6 +5735,8 @@ function BTV:ShowSettingsFrame()
 		self:ShowBarPage(1)
 	elseif settingsFrame.currentView == "general" then
 		self:FitSettingsWindowToGeneralView()
+	elseif settingsFrame.currentView == "profiles" then
+		self:FitSettingsWindowToProfilesView()
 	else
 		-- RefreshBarList (above) just rebuilt the bar-list rows from
 		-- scratch (e.g. a bar added/removed while the window was closed),

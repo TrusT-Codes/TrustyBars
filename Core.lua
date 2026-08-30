@@ -882,6 +882,347 @@ function BTV:EnsureExtraBars()
 	end
 end
 
+-------------------------------------------------------------------------
+-- Profiles
+--
+-- BTVanillaDB stays exactly what every other read/write site in this
+-- addon already assumes it is: the live, active profile's data - the
+-- 200+ existing `BTVanillaDB.field` call sites across every file need
+-- zero changes. What's new: BTVanillaDB's CONTENTS can now be swapped out
+-- wholesale at well-defined moments (login, and right before a
+-- ReloadUI() this feature triggers), copied to/from BTVanillaProfilesDB
+-- (a new account-wide SavedVariable, a plain table keyed by profile
+-- name) via BTV:ResolveActiveProfile()/BTV:SaveActiveProfileData() below.
+--
+-- WoW's SavedVariables system requires every persisted global to be
+-- statically declared in the .toc at load time - a literal, separately-
+-- declared SavedVariable per arbitrary user-typed profile name is not
+-- possible. BTVanillaProfilesDB (one declared SavedVariable, a table
+-- keyed by name inside it) is the closest achievable equivalent: each
+-- profile still gets fully independent settings storage, just not as a
+-- literally-separate global variable name.
+--
+-- BTVanillaCharDB (new SavedVariablesPerCharacter) stores only which
+-- profile name THIS character/realm currently uses - naturally scoped by
+-- vanilla's own per-character SavedVariables file layout, no manual
+-- realm-key namespacing needed inside it.
+-------------------------------------------------------------------------
+
+BTV.DEFAULT_PROFILE_NAME = "Default"
+
+-- Small hand-written recursive deep copy rather than ClassicAPI's
+-- TableUtil.CopyTable/CopyTableSafe (present on this client per
+-- docs/01-Environment-Capability-Analysis.md, but their exact deep-copy
+-- semantics haven't been independently live-confirmed for a table shape
+-- as deeply nested as BTVanillaDB's own bars/defaultBars arrays) - profile
+-- data integrity is exactly the kind of thing this addon's own convention
+-- says not to guess on. BTVanillaDB only ever holds plain data (strings/
+-- numbers/booleans/nested plain tables, no functions/frames/metatables),
+-- so a plain recursive copy is correct and sufficient.
+function BTV:DeepCopyTable(t)
+	if type(t) ~= "table" then
+		return t
+	end
+
+	local copy = {}
+	local k, v
+
+	for k, v in pairs(t) do
+		copy[k] = self:DeepCopyTable(v)
+	end
+
+	return copy
+end
+
+-- Sorted list of every saved profile name, BTV.DEFAULT_PROFILE_NAME always
+-- first regardless of alphabetical order - used to populate every profile
+-- dropdown in Settings.lua's Profiles tab and the first-login dialog.
+function BTV:GetProfileNames()
+	local names = {}
+	local n = 0
+	local name
+
+	for name in pairs(BTVanillaProfilesDB or {}) do
+		if name ~= self.DEFAULT_PROFILE_NAME then
+			n = n + 1
+			names[n] = name
+		end
+	end
+
+	table.sort(names)
+
+	local result = { self.DEFAULT_PROFILE_NAME }
+	local i
+
+	for i = 1, n do
+		table.insert(result, names[i])
+	end
+
+	return result
+end
+
+-- Runs as the very first line of RunLoginSequence, strictly before
+-- BTV:EnsureDB() - resolves which profile this character uses, migrates
+-- any pre-existing account data into the Default profile exactly once,
+-- and loads the resolved profile's data into BTVanillaDB (or leaves it
+-- nil for a brand new profile with no snapshot yet, letting EnsureDB's own
+-- `if not BTVanillaDB then BTVanillaDB = {} end` do the from-scratch seed,
+-- which then gets captured into BTVanillaProfilesDB on the next save).
+function BTV:ResolveActiveProfile()
+	if not BTVanillaCharDB then
+		BTVanillaCharDB = {
+			activeProfile = self.DEFAULT_PROFILE_NAME,
+			hasSelectedProfileBefore = false,
+		}
+	end
+
+	if not BTVanillaProfilesDB then
+		BTVanillaProfilesDB = {}
+	end
+
+	-- One-time migration: an account that already had BTVanillaDB data
+	-- before this feature existed gets it copied into the Default profile
+	-- exactly once. A fresh install (no BTVanillaDB at all yet) leaves
+	-- this branch untaken - EnsureDB's own from-scratch seed handles that
+	-- case below, same as it always has.
+	if not BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME] and BTVanillaDB then
+		BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME] = self:DeepCopyTable(BTVanillaDB)
+	end
+
+	if not BTVanillaCharDB.hasSelectedProfileBefore then
+		self.pendingFirstLoginDialog = true
+	end
+
+	local activeProfile = BTVanillaCharDB.activeProfile or self.DEFAULT_PROFILE_NAME
+
+	self.activeProfileName = activeProfile
+
+	local snapshot = BTVanillaProfilesDB[activeProfile]
+
+	if snapshot then
+		BTVanillaDB = self:DeepCopyTable(snapshot)
+	else
+		BTVanillaDB = nil
+	end
+end
+
+-- Writes the live BTVanillaDB back into BTVanillaProfilesDB[activeProfileName].
+-- Called from the PLAYER_LOGOUT handler below (the reliable "flush on
+-- session end" point - BTVanillaProfilesDB is an independent SavedVariable
+-- from BTVanillaDB, so mutations to the live table never implicitly
+-- propagate into it) and immediately before every ReloadUI() call this
+-- feature triggers (belt-and-suspenders; ReloadUI() does trigger
+-- PLAYER_LOGOUT in real vanilla, but this removes any doubt about ordering
+-- on this modded client at zero cost). Deliberately NOT called from
+-- EnsureDB() itself, which runs constantly all session long.
+function BTV:SaveActiveProfileData()
+	if not self.activeProfileName or not BTVanillaDB then
+		return
+	end
+
+	BTVanillaProfilesDB = BTVanillaProfilesDB or {}
+	BTVanillaProfilesDB[self.activeProfileName] = self:DeepCopyTable(BTVanillaDB)
+end
+
+-- Creates a new profile, seeded from the Default profile's current data
+-- (not whichever profile happens to be active) so a brand new profile
+-- always starts from a known-good baseline. Returns true on success, or
+-- false plus a reason string the UI can display directly.
+function BTV:CreateProfile(name)
+	if not name or name == "" then
+		return false, "Profile name cannot be empty."
+	end
+
+	BTVanillaProfilesDB = BTVanillaProfilesDB or {}
+
+	if BTVanillaProfilesDB[name] then
+		return false, "A profile named \"" .. name .. "\" already exists."
+	end
+
+	local defaultData = BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME]
+
+	BTVanillaProfilesDB[name] = defaultData and self:DeepCopyTable(defaultData) or {}
+
+	return true
+end
+
+-- Deletes a profile outright. Refuses the Default profile (never
+-- deletable, per spec). Since "Delete profile" only ever appears in the
+-- UI while the profile being deleted IS the currently active one, this
+-- also falls back the character to Default so there's always a valid
+-- active profile afterward - the caller (Settings.lua) still triggers the
+-- ReloadUI() that actually applies this.
+function BTV:DeleteProfile(name)
+	if not name or name == self.DEFAULT_PROFILE_NAME then
+		return false, "The Default profile cannot be deleted."
+	end
+
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[name] then
+		return false, "Profile \"" .. tostring(name) .. "\" does not exist."
+	end
+
+	BTVanillaProfilesDB[name] = nil
+
+	if BTVanillaCharDB and BTVanillaCharDB.activeProfile == name then
+		BTVanillaCharDB.activeProfile = self.DEFAULT_PROFILE_NAME
+	end
+
+	return true
+end
+
+-- Overwrites targetName's saved data with a copy of sourceName's - used by
+-- "Copy from other profile." If targetName is the currently active
+-- profile, the caller still needs to ReloadUI() afterward for the copied
+-- data to actually take effect (the next login's BTV:ResolveActiveProfile
+-- picks it up from BTVanillaProfilesDB normally - no special-casing of the
+-- live BTVanillaDB table is needed here).
+function BTV:CopyProfileInto(sourceName, targetName)
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[sourceName] then
+		return false, "Source profile \"" .. tostring(sourceName) .. "\" does not exist."
+	end
+
+	if not targetName or targetName == "" then
+		return false, "Invalid target profile."
+	end
+
+	BTVanillaProfilesDB[targetName] = self:DeepCopyTable(BTVanillaProfilesDB[sourceName])
+
+	return true
+end
+
+-- Switches this character to a different (already-existing) profile:
+-- flushes the current profile's live data, records the new choice, then
+-- reloads the UI so the next login cleanly picks up the new profile's
+-- data via the normal BTV:ResolveActiveProfile/EnsureDB path - this addon
+-- has no live rebuild-everything-in-place mechanism, so a reload is the
+-- safe way to apply a profile switch.
+function BTV:SwitchProfile(name)
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[name] then
+		return false, "Profile \"" .. tostring(name) .. "\" does not exist."
+	end
+
+	self:SaveActiveProfileData()
+
+	BTVanillaCharDB = BTVanillaCharDB or {}
+	BTVanillaCharDB.activeProfile = name
+	BTVanillaCharDB.hasSelectedProfileBefore = true
+
+	ReloadUI()
+
+	return true
+end
+
+-- Shared "Enter the name for the new profile" dialog - used both by the
+-- Profiles settings tab's "Create new profile" dropdown entry and by the
+-- first-login dialog's "Create a named profile" button, so the two flows
+-- can never drift apart. onCreated(name), if given, is called after a
+-- successful create+switch - SwitchProfile already reloads the UI, so
+-- onCreated only ever matters for validation-failure feedback today (see
+-- Settings.lua's call site).
+function BTV:ShowCreateProfileDialog(onCreated)
+	self:ShowDialog({
+		title = "New Profile",
+		message = "Enter the name for the new profile",
+		mode = "textinput",
+		buttons = {
+			{
+				text = "Accept",
+				isDefault = true,
+				onClick = function(value)
+					local ok, reason = BTV:CreateProfile(value)
+
+					if ok then
+						BTV:SwitchProfile(value)
+					elseif reason then
+						BTV:Print(reason)
+					end
+
+					if onCreated then
+						onCreated(ok, value)
+					end
+				end,
+			},
+			{ text = "Cancel", onClick = function() end },
+		},
+	})
+end
+
+-- First-ever-login-with-profiles dialog for this character - see
+-- BTV:ResolveActiveProfile (sets BTV.pendingFirstLoginDialog) and
+-- RunLoginSequence's own tail call for when this fires.
+function BTV:ShowFirstLoginDialog()
+	local buttons = {
+		{
+			text = "I know what im doing, use default profile",
+			isDefault = true,
+			onClick = function()
+				BTVanillaCharDB = BTVanillaCharDB or {}
+				BTVanillaCharDB.hasSelectedProfileBefore = true
+			end,
+		},
+		{
+			text = "Create a named profile",
+			onClick = function()
+				BTV:ShowCreateProfileDialog()
+			end,
+		},
+		{
+			text = "Create a profile for this character",
+			onClick = function()
+				local charName = UnitName("player") or "Unknown"
+				local realmName = GetRealmName() or "Unknown"
+				local charProfileName = charName .. " - " .. realmName
+
+				local ok, reason = BTV:CreateProfile(charProfileName)
+
+				if ok then
+					BTV:SwitchProfile(charProfileName)
+				elseif reason then
+					BTV:Print(reason)
+				end
+			end,
+		},
+	}
+
+	-- 4th button only when this character has never chosen a profile
+	-- before (always true here - this dialog only ever fires in that
+	-- state) AND more than just Default already exists to choose from.
+	if table.getn(self:GetProfileNames()) > 1 then
+		table.insert(buttons, {
+			text = "use existing profile",
+			onClick = function()
+				BTV:ShowDialog({
+					title = "Use Existing Profile",
+					message = "Choose a profile to use for this character.",
+					mode = "dropdown",
+					options = BTV:GetProfileNames(),
+					buttons = {
+						{
+							text = "Accept",
+							isDefault = true,
+							onClick = function(value)
+								if value then
+									BTV:SwitchProfile(value)
+								end
+							end,
+						},
+						{ text = "Cancel", onClick = function() end },
+					},
+				})
+			end,
+		})
+	end
+
+	self:ShowDialog({
+		title = "Welcome to TrustyBars",
+		message = "Thank you for choosing TrustyBars, you are currently using the Profile \"Default\". " ..
+			"It is HIGHLY recommended, to not change this Profile.\n\n" ..
+			"Do you wish to create a new custom profile or a profile for this character?",
+		mode = "confirm",
+		buttons = buttons,
+	})
+end
+
 function BTV:EnsureDB()
 	if not BTVanillaDB then
 		BTVanillaDB = {}
@@ -1931,6 +2272,11 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 		))
 	end
 
+	-- Profiles: resolves which profile this character uses and loads its
+	-- data into BTVanillaDB BEFORE EnsureDB's own seeding/migration logic
+	-- ever touches the table - see BTV:ResolveActiveProfile's own comment.
+	BTV:ResolveActiveProfile()
+
 	BTV:EnsureDB()
 	BTV:CreateAllBars()
 
@@ -2123,6 +2469,15 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- reason (dead code, per the migration plan).
 
 	BTV:Print("Loaded. Click the minimap button for options.")
+
+	-- Profiles: shown after everything above has finished building, so it
+	-- doesn't visually collide with bar-creation flicker. Set by
+	-- BTV:ResolveActiveProfile (called at the very top of this function)
+	-- when this character has never explicitly chosen a profile before.
+	if BTV.pendingFirstLoginDialog then
+		BTV.pendingFirstLoginDialog = nil
+		BTV:ShowFirstLoginDialog()
+	end
 end
 
 -- Round 9 root-cause fix: this used to register PLAYER_LOGIN. Live-confirmed
@@ -2155,7 +2510,20 @@ end
 -- once-per-load semantics.
 local loadFrame = CreateFrame("Frame")
 loadFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+
+-- Profiles: flush the active profile's live data back into
+-- BTVanillaProfilesDB on session end - see BTV:SaveActiveProfileData's own
+-- comment for why this can't be left implicit (BTVanillaProfilesDB is an
+-- independent SavedVariable from BTVanillaDB, so edits to the live table
+-- never automatically propagate into it).
+loadFrame:RegisterEvent("PLAYER_LOGOUT")
+
 loadFrame:SetScript("OnEvent", function()
+	if event == "PLAYER_LOGOUT" then
+		BTV:SaveActiveProfileData()
+		return
+	end
+
 	loadFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	WaitForNativeBarSettle(RunLoginSequence)
 end)
