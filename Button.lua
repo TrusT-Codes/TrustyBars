@@ -611,6 +611,15 @@ function BTVButtonMixin:ApplyBorderStyle()
 		insets = { left = backdropInset, right = backdropInset, top = backdropInset, bottom = backdropInset },
 	})
 
+	-- Matches Init's own starting state exactly (see Init's own comment) -
+	-- without this, the border color stays at whatever it was before this
+	-- call (stale/opaque) rather than starting transparent, which is what
+	-- let a vanilla-bordered button keep showing its old opaque modern
+	-- backdrop border underneath the new native texture. Real on/off
+	-- state is decided by UpdateBackdropVisibility below.
+	self:SetBackdropColor(0, 0, 0, 0)
+	self:SetBackdropBorderColor(0, 0, 0, 0)
+
 	self:UpdateBackdropVisibility()
 end
 

@@ -4248,13 +4248,6 @@ function BTV:GetOrCreateGeneralPanel()
 
 			BTVanillaDB.useDefaultLayout = checked
 
-			-- Re-evaluates and applies BTV:IsVanillaBorderStyle() live -
-			-- turning this ON forces every bar back to vanilla styling
-			-- immediately; turning it OFF re-applies whatever
-			-- modernBorderStyle is currently stored instead of leaving
-			-- bars showing the forced-vanilla look until next login.
-			BTV:ApplyGlobalButtonStyle()
-
 			-- Re-gate any default-bar page already built/cached so it
 			-- reflects the new state immediately if it happens to be
 			-- visible (or gets shown next) without needing a reload.
@@ -4290,21 +4283,24 @@ function BTV:GetOrCreateGeneralPanel()
 			if (not wasDefault) and checked then
 				-------------------------------------------------------------
 				-- Bug-fix batch Fix 5: full reset-to-Blizzard-default
-				-- cascade. Switching back to true previously only handled
-				-- bar 1 (already fully reconciled by
-				-- ApplyAllDefaultBars/ApplyDefaultLayoutEditVisual above).
-				-- Bars 2-5 and the Bag Bar/Micro Menu/Latency Bar/Key Ring/
-				-- Stance Bar elements never had ANY reset wired to this
-				-- toggle at all, so re-enabling "Use Default Blizzard
-				-- Layout" left them wherever the user had last dragged/
-				-- resized/spaced them instead of actually restoring
+				-- cascade. Switching back to true previously left every
+				-- default bar, INCLUDING bar 1, wherever the user had last
+				-- dragged/resized/spaced it instead of actually restoring
 				-- Blizzard's own defaults, as the checkbox's own
-				-- description promises.
+				-- description promises - ApplyAllDefaultBars/
+				-- ApplyDefaultLayoutEditVisual above only re-apply shape
+				-- from whatever cfg currently holds, they do NOT reset cfg
+				-- back to its native values the way ResetDefaultBarLayout
+				-- does (live-tested: bar 1 needed its own "Reset to
+				-- Blizzard Default" button clicked manually before this
+				-- fix). The Bag Bar/Micro Menu/Latency Bar/Key Ring/Stance
+				-- Bar elements never had ANY reset wired to this toggle at
+				-- all either.
 				-------------------------------------------------------------
 
 				local id
 
-				for id = 2, 5 do
+				for id = 1, 5 do
 					BTV:ResetDefaultBarLayout(id)
 				end
 
@@ -4360,6 +4356,18 @@ function BTV:GetOrCreateGeneralPanel()
 				-- caught up gating/alpha, not the underlying values.
 				BTV:RefreshDefaultLayoutGatingOnAllPages()
 			end
+
+			-- Runs LAST, after any reset cascade above, so its canonical
+			-- vanilla spacing (BTVanillaDB.defaultBars[1].spacing) reads
+			-- bar 1's just-reset nativeSpacing rather than a stale
+			-- pre-reset value - re-evaluates and applies
+			-- BTV:IsVanillaBorderStyle() live: turning this ON forces
+			-- every bar back to vanilla styling AND syncs extra bars'
+			-- size/spacing to the now-reset default bars; turning it OFF
+			-- re-applies whatever modernBorderStyle is currently stored
+			-- instead of leaving bars showing the forced-vanilla look
+			-- until next login.
+			BTV:ApplyGlobalButtonStyle()
 
 			-- Updates the new "Use Modern Button Style" checkbox's own
 			-- checked/grey-out state immediately (RefreshGeneralPanel
