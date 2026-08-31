@@ -513,13 +513,15 @@ function BTV:SetBarSpacing(bar, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- Both border styles now overhang their button frame identically
-	-- (border-size-parity fix, Button.lua's self.border/self.modernBorder
-	-- share the same BTV.BORDER_RATIO), so this floor applies
-	-- unconditionally regardless of style - below it, adjacent buttons'
-	-- border overlays visually overlap.
-	if spacing < self.VANILLA_SPACING_FLOOR then
-		spacing = self.VANILLA_SPACING_FLOOR
+	-- Vanilla border style's texture overhang causes adjacent buttons to
+	-- visually overlap below this real value (BTV.VANILLA_SPACING_FLOOR) -
+	-- 0 in modern style, which has no overhang (border-size-parity
+	-- fallback: modern's border lives on its own bounded backdrop edge
+	-- again, not an overhanging overlay).
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then
@@ -617,9 +619,8 @@ function BTV:ApplyGlobalSpacing()
 		return
 	end
 
-	-- Both border styles now overhang identically (border-size-parity
-	-- fix) - the floor applies unconditionally.
-	local real = (BTVanillaDB.globalSpacingValue or 0) + self.VANILLA_SPACING_FLOOR
+	local floor = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+	local real = (BTVanillaDB.globalSpacingValue or 0) + floor
 
 	local barId
 	local bar

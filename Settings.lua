@@ -130,21 +130,19 @@ local SPACING_STEP = 1
 
 -- Real-to-displayed spacing offset for the default/custom bar (1-9)
 -- Spacing slider AND the global Spacing slider (General tab) - NOT the
--- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope.
--- Both border styles now overhang their button frame identically
--- (border-size-parity fix, Button.lua's self.border/self.modernBorder
--- share the same BTV.BORDER_RATIO), so BTV.VANILLA_SPACING_FLOOR applies
--- unconditionally, not just in vanilla style - below it, adjacent
--- buttons' border overlays visually overlap regardless of style. Rather
--- than showing that floor directly (a confusing non-zero minimum), every
--- display touchpoint subtracts this offset so the UI always reads a
--- plain 0-based range: e.g. today's captured native default (commonly
--- real 6) shows as "2". Real values are only ever written at the
+-- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope for
+-- the vanilla floor. Vanilla border style's texture overhang causes
+-- adjacent buttons to visually overlap below a real spacing of
+-- BTV.VANILLA_SPACING_FLOOR - rather than showing that floor directly
+-- (a confusing non-zero minimum), every display touchpoint subtracts
+-- this offset so the UI always reads a plain 0-based range regardless of
+-- style: e.g. today's captured native default (commonly real 6) shows as
+-- "2" in vanilla mode, not "6". Real values are only ever written at the
 -- OnValueChanged/refresh boundary - the slider's own on-screen value is
--- always in DISPLAYED space. Kept as a named function (even though
--- constant now) as the one place documenting what the offset IS.
+-- always in DISPLAYED space. (Border-size-parity fallback: modern style
+-- no longer overhangs at all - back to gating on vanilla style only.)
 local function GetSpacingDisplayOffset()
-	return BTV.VANILLA_SPACING_FLOOR
+	return BTV:IsVanillaBorderStyle() and BTV.VANILLA_SPACING_FLOOR or 0
 end
 
 -- Friendly names for the 5 fixed default bars (1-5) now live on

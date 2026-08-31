@@ -286,12 +286,24 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 
 	-- Native-accurate button border (round 15) - default bars 1-5 only.
 	-- True custom bars (id 6+) never were real Blizzard action buttons, so
-	-- they have no native chrome to replicate - they instead get
-	-- self.modernBorder below, an equally-oversized backdrop-edge overlay
-	-- FRAME (not texture, since only a Frame's SetBackdrop can draw an
-	-- edge) matching this exact same BORDER_RATIO/anchor so both styles'
-	-- visual footprint is identical - see UpdateBackdropVisibility, which
-	-- toggles whichever of the two is relevant.
+	-- they have no native chrome to replicate - they keep the existing
+	-- SetBackdrop-drawn border further below instead (see
+	-- UpdateBackdropVisibility's own self.hasNativeBorder check, which
+	-- skips turning that backdrop border opaque for THIS button so the two
+	-- styles can never stack).
+	--
+	-- (Border-size-parity fallback) An earlier attempt gave modern style
+	-- its own oversized overlay FRAME (self.modernBorder, matching
+	-- vanilla's self.border texture's BORDER_RATIO exactly) so both
+	-- styles' visual footprint would match pixel-for-pixel - live-tested
+	-- and found broken (a backdrop edge blown up to ~66px tiles/repeats
+	-- into a grid artifact rather than rendering as a clean ring,
+	-- regardless of backdrop table shape). Reverted back to modern
+	-- style's border living on the button's OWN bounded backdrop edge, as
+	-- it always did before that attempt - this can only ever approximate
+	-- vanilla's size, not match it exactly, since a backdrop edge is
+	-- always bounded to its owning frame's own rect and can never overhang
+	-- past it the way a separately-sized overlay texture can.
 	self.hasNativeBorder = BTV:IsVanillaBorderStyle()
 
 	if self.hasNativeBorder then
@@ -314,30 +326,6 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		-- down from exact center), not a bare 0,0 - replacing the earlier
 		-- reasoned-but-unconfirmed default this round supersedes.
 		self.border:SetPoint("CENTER", self, "CENTER", 0, -1)
-	else
-		-- Border-size-parity fix: a plain child Frame, not a texture - its
-		-- background stays fully transparent (SetBackdropColor below) so
-		-- its center never occludes self.icon regardless of relative
-		-- frame level, only the thin edge ring near its own (larger)
-		-- outer bounds is ever visible, exactly like self.border's
-		-- texture above. Full standard backdrop table (bg+edge+tile+
-		-- tileSize+edgeSize+insets together) - an edge-only table (no
-		-- bgFile/tile/tileSize) is NOT used anywhere else in this
-		-- codebase and was found to make the edge tile across this
-		-- frame's entire (much larger) area instead of rendering as a
-		-- thin ring, rather than being a harmless omission.
-		self.modernBorder = CreateFrame("Frame", nil, self)
-		self.modernBorder:SetPoint("CENTER", self, "CENTER", 0, -1)
-		self.modernBorder:SetBackdrop({
-			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-			edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-			tile = true,
-			tileSize = 8,
-			edgeSize = 8,
-			insets = { left = 0, right = 0, top = 0, bottom = 0 },
-		})
-		self.modernBorder:SetBackdropColor(0, 0, 0, 0)
-		self.modernBorder:SetBackdropBorderColor(0, 0, 0, 0)
 	end
 
 	-- Initialize from the parent bar's configured size. New bars can inherit
@@ -350,18 +338,31 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self:EnableMouse(true)
 	self:EnableMouseWheel(true)
 
-	-- Icon inset: flush (0px) for BOTH styles now. Border-size-parity fix:
-	-- modern style's border no longer lives on this frame's own backdrop
-	-- at all (see self.modernBorder above/below) - it's a separately-
-	-- sized overlay Frame surrounding the button, exactly like vanilla's
-	-- self.border texture, so the old "flush icon covers the backdrop's
-	-- own edge" concern that justified a 2px modern-only inset no longer
-	-- applies. Confirmed (v1.0 polish pass, live-tested) that real
-	-- vanilla's own ActionButton1Icon is perfectly flush (0px inset) with
-	-- its button frame - both styles now match that exactly.
+	-- Icon inset: a flush 0,0 icon anchor was tried and reverted (round
+	-- 14) because self.icon is drawn on the "ARTWORK" layer, which always
+	-- renders ABOVE this button's own SetBackdrop-drawn border (backdrop
+	-- bg/edge textures are always the bottom-most thing a frame draws,
+	-- beneath every CreateTexture-based layer including "BACKGROUND") -
+	-- so a flush icon completely covers the border regardless of its
+	-- edgeSize. A uniform inset restores a visible margin. This reasoning
+	-- only applies to modern-style buttons (self.hasNativeBorder false),
+	-- which use that plain SetBackdrop-drawn border (border-size-parity
+	-- fallback: the oversized-overlay-frame attempt was reverted, back to
+	-- this bounded backdrop edge - see the comment above self.border).
+	--
+	-- Vanilla-style buttons (self.hasNativeBorder) don't have this
+	-- problem at all: round 15 gave them a SEPARATE, larger overlay
+	-- texture (self.border above, Interface\Buttons\UI-Quickslot2 at
+	-- BTV.BORDER_RATIO) layered ABOVE the icon regardless of the icon's
+	-- own size, specifically so the icon never needs to be shrunk to keep
+	-- a border visible - confirmed (v1.0 polish pass, live-tested) that
+	-- real vanilla's own ActionButton1Icon is perfectly flush (0px inset)
+	-- with its button frame.
+	local iconInset = self.hasNativeBorder and 0 or 2
+
 	self.icon = self:CreateTexture(nil, "ARTWORK")
-	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
-	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
+	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", iconInset, -iconInset)
+	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -iconInset, iconInset)
 	self.icon:SetTexCoord(0.07, 0.93, 0.07, 0.93)
 
 	-- "Current action" glow. Real vanilla ActionButtonTemplate gets this
@@ -412,20 +413,28 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	-- on/off state is decided by UpdateBackdropVisibility, called from
 	-- UpdateGridVisibility below so the two can never drift out of sync.
 	--
-	-- Border-size-parity fix: this frame's own backdrop now only ever
-	-- draws the dark background FILL (toggled by UpdateBackdropVisibility
-	-- below) - no edgeFile at all, since the visible border for BOTH
-	-- styles now lives on a separately-sized overlay (self.border's
-	-- texture for vanilla, self.modernBorder's frame for modern, both
-	-- above). Flush (0) inset for both, matching vanilla's own flush icon
-	-- exactly.
+	-- (v1.0 polish pass) Same reasoning as iconInset above: the 1px inset
+	-- only matters for modern-style buttons, which need this backdrop's
+	-- own BORDER edge to show through a small margin (border-size-parity
+	-- fallback: back to this bounded backdrop edge, see the comment above
+	-- self.border). Vanilla-style buttons never show this backdrop's
+	-- border (only its background fill, toggled by UpdateBackdropVisibility
+	-- below) and already have a flush, 0-inset icon matching vanilla
+	-- exactly - a 1px inset background fill behind that left a visible
+	-- 1px gap around the icon/border that the icon-inset fix alone didn't
+	-- close.
+	local backdropInset = self.hasNativeBorder and 0 or 1
+
 	self:SetBackdrop({
 		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		tile = true,
 		tileSize = 8,
-		insets = { left = 0, right = 0, top = 0, bottom = 0 },
+		edgeSize = 8,
+		insets = { left = backdropInset, right = backdropInset, top = backdropInset, bottom = backdropInset },
 	})
 	self:SetBackdropColor(0, 0, 0, 0)
+	self:SetBackdropBorderColor(0, 0, 0, 0)
 
 	self.count = self:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
 	self.count:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -2, 2)
@@ -570,14 +579,6 @@ function BTVButtonMixin:ApplySize(size)
 		self.border:SetHeight(borderSize)
 	end
 
-	-- Border-size-parity fix: self.modernBorder (true custom bars/modern
-	-- style) mirrors self.border's own sizing exactly, same ratio, so
-	-- both styles' visual footprint stays identical at every buttonSize.
-	if self.modernBorder then
-		local borderSize = size * BTV.BORDER_RATIO
-		self.modernBorder:SetWidth(borderSize)
-		self.modernBorder:SetHeight(borderSize)
-	end
 end
 
 -- Re-applies the CURRENT global border style (BTV:IsVanillaBorderStyle())
@@ -599,62 +600,37 @@ function BTVButtonMixin:ApplyBorderStyle()
 		end
 
 		self.border:Show()
-
-		if self.modernBorder then
-			self.modernBorder:Hide()
-		end
-	else
-		if self.border then
-			self.border:Hide()
-		end
-
-		-- Border-size-parity fix: lazily create self.modernBorder the
-		-- first time a button ever switches to modern style live,
-		-- mirroring self.border's own lazy creation above. Full standard
-		-- backdrop table, same reasoning as Init's own copy above.
-		if not self.modernBorder then
-			self.modernBorder = CreateFrame("Frame", nil, self)
-			self.modernBorder:SetPoint("CENTER", self, "CENTER", 0, -1)
-			self.modernBorder:SetBackdrop({
-				bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-				edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-				tile = true,
-				tileSize = 8,
-				edgeSize = 8,
-				insets = { left = 0, right = 0, top = 0, bottom = 0 },
-			})
-			self.modernBorder:SetBackdropColor(0, 0, 0, 0)
-			self.modernBorder:SetBackdropBorderColor(0, 0, 0, 0)
-		end
-
-		self.modernBorder:Show()
+	elseif self.border then
+		self.border:Hide()
 	end
 
-	-- Reuses ApplySize's own border/modernBorder sizing math
-	-- (size * BTV.BORDER_RATIO) instead of duplicating it here.
+	-- Reuses ApplySize's own border-sizing math (size * BTV.BORDER_RATIO)
+	-- instead of duplicating it here.
 	self:ApplySize(self.buttonSize or BTV.BUTTON_SIZE)
 
-	-- Flush (0px) icon inset for both styles now - see Init's own comment
-	-- for why the old modern-only 2px inset is obsolete now that the
-	-- border lives on a separate oversized overlay for both styles.
+	local iconInset = self.hasNativeBorder and 0 or 2
 	self.icon:ClearAllPoints()
-	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
-	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
+	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", iconInset, -iconInset)
+	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -iconInset, iconInset)
 
-	-- Bg-fill only, no edge - see Init's own comment; matches Init's
-	-- backdrop exactly so this stays in lockstep with it.
+	local backdropInset = self.hasNativeBorder and 0 or 1
 	self:SetBackdrop({
 		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		tile = true,
 		tileSize = 8,
-		insets = { left = 0, right = 0, top = 0, bottom = 0 },
+		edgeSize = 8,
+		insets = { left = backdropInset, right = backdropInset, top = backdropInset, bottom = backdropInset },
 	})
 
 	-- Matches Init's own starting state exactly (see Init's own comment) -
-	-- without this, the fill color stays at whatever it was before this
-	-- call (stale/opaque) rather than starting transparent. Real on/off
+	-- without this, the border color stays at whatever it was before this
+	-- call (stale/opaque) rather than starting transparent, which is what
+	-- let a vanilla-bordered button keep showing its old opaque modern
+	-- backdrop border underneath the new native texture. Real on/off
 	-- state is decided by UpdateBackdropVisibility below.
 	self:SetBackdropColor(0, 0, 0, 0)
+	self:SetBackdropBorderColor(0, 0, 0, 0)
 
 	self:UpdateBackdropVisibility()
 end
@@ -750,27 +726,25 @@ function BTVButtonMixin:UpdateBackdropVisibility()
 	-- still do.
 	local isMainBar = self.parentBar and self.parentBar.config and self.parentBar.config.dynamicMainBar
 
-	local visible = self.slotVisible and
-		(isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid)
-
-	if visible then
+	if self.slotVisible and (isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid) then
 		self:SetBackdropColor(0, 0, 0, 0.75)
+
+		-- Round 15: vanilla-style buttons have their own native-accurate
+		-- border texture (self.border, Init) layered above everything the
+		-- backdrop draws - leaving the backdrop's own white border edge
+		-- turned on here too would double-border those buttons, which is
+		-- exactly what this addon's border texture was added to avoid.
+		-- Modern-style buttons (self.hasNativeBorder false) are
+		-- unaffected - unchanged from before. The dark background FILL
+		-- above is left untouched for every button either way; only the
+		-- border edge color is skipped here, a separate concern from the
+		-- fill.
+		if not self.hasNativeBorder then
+			self:SetBackdropBorderColor(1, 1, 1, 1)
+		end
 	else
 		self:SetBackdropColor(0, 0, 0, 0)
-	end
-
-	-- Border-size-parity fix: the visible border edge now lives on
-	-- self.modernBorder (a separate overlay Frame, modern style only) -
-	-- self's own backdrop has no edgeFile at all any more (Init), so it's
-	-- never toggled here. Vanilla style's self.border texture is a
-	-- simple Show/Hide (ApplyBorderStyle), not content-gated at all -
-	-- unchanged from before.
-	if self.modernBorder and not self.hasNativeBorder then
-		if visible then
-			self.modernBorder:SetBackdropBorderColor(1, 1, 1, 1)
-		else
-			self.modernBorder:SetBackdropBorderColor(0, 0, 0, 0)
-		end
+		self:SetBackdropBorderColor(0, 0, 0, 0)
 	end
 end
 

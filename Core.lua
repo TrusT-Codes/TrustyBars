@@ -28,12 +28,12 @@ BTV.BUTTON_SIZE = 36
 BTV.BUTTON_COLS = 12
 BTV.BUTTON_ROWS = 1
 
--- Real minimum bar spacing, applies to BOTH border styles - both
--- self.border (vanilla) and self.modernBorder (modern) overhang the
--- button frame by the identical BTV.BORDER_RATIO amount, so below this
--- real spacing, adjacent buttons' border overlays visually overlap
--- regardless of style. The UI never shows this floor directly - see
--- Settings.lua's spacing display-offset.
+-- Real minimum bar spacing while vanilla border style is active - below
+-- this the native border texture's overhang causes adjacent buttons to
+-- visually overlap. 0 in modern style (no overhang - modern's border
+-- lives on its own bounded backdrop edge, not an overhanging overlay).
+-- The UI never shows this floor directly - see Settings.lua's spacing
+-- display-offset.
 BTV.VANILLA_SPACING_FLOOR = 4
 
 -- Every custom-bar grid preset the Settings UI offers (1x12, 2x6, 3x4,
@@ -1596,20 +1596,17 @@ end
 -- precision (the disabled version's replacement had only ever computed
 -- one symmetric value for all 4 sides, silently wrong by 1px top/bottom).
 function BTV:GetElementVisualInset(frame)
-	-- Border-size-parity fix: modern-style buttons now get their own
-	-- oversized border overlay (self.modernBorder, Button.lua) sized with
-	-- the exact same BTV.BORDER_RATIO as vanilla's self.border texture -
-	-- both styles overhang their button frame identically now, so this no
-	-- longer gates on BTV:IsVanillaBorderStyle() at all, just on the frame
-	-- actually being an action bar (frame.config.id). The sizing FORMULA
-	-- below is untouched. NOTE: BTV.BORDER_TEXTURE_FUDGE was empirically
-	-- measured against vanilla's UI-Quickslot2 texture art specifically -
-	-- modern's Interface\Tooltips\UI-Tooltip-Border texture has identical
-	-- pixel BOUNDS (same BORDER_RATIO) but may have different internal art
-	-- padding, so this fudge value may need separate live-client
-	-- verification for modern style before trusting it as precisely as
-	-- vanilla's already-diagnosed value.
-	if frame and frame.config and frame.config.id then
+	-- Reads the same global border-style source of truth as Button.lua's
+	-- Init/ApplyBorderStyle (BTV:IsVanillaBorderStyle) instead of a
+	-- hardcoded id range, so this stays correct after the global
+	-- border-style toggle changes which bars actually render the native
+	-- border texture - the sizing FORMULA below is untouched, only the
+	-- condition that decides whether to apply it at all. (Border-size-
+	-- parity fallback: an attempt to give modern style an equally
+	-- overhanging border overlay was reverted as broken/live-tested, back
+	-- to modern's border living on its OWN bounded backdrop edge, which
+	-- doesn't overhang at all - so this gates on vanilla style again.)
+	if frame and frame.config and frame.config.id and self:IsVanillaBorderStyle() then
 		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
 		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
 		local yOffset = self.BORDER_Y_OFFSET or 0
