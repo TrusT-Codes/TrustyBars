@@ -315,17 +315,28 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		-- reasoned-but-unconfirmed default this round supersedes.
 		self.border:SetPoint("CENTER", self, "CENTER", 0, -1)
 	else
-		-- Border-size-parity fix: a plain child Frame, not a texture -
-		-- its backdrop's transparent (no bgFile) center never occludes
-		-- self.icon regardless of relative frame level, only the thin
-		-- edge ring near its own (larger) outer bounds is ever visible,
-		-- exactly like self.border's texture above.
+		-- Border-size-parity fix: a plain child Frame, not a texture - its
+		-- background stays fully transparent (SetBackdropColor below) so
+		-- its center never occludes self.icon regardless of relative
+		-- frame level, only the thin edge ring near its own (larger)
+		-- outer bounds is ever visible, exactly like self.border's
+		-- texture above. Full standard backdrop table (bg+edge+tile+
+		-- tileSize+edgeSize+insets together) - an edge-only table (no
+		-- bgFile/tile/tileSize) is NOT used anywhere else in this
+		-- codebase and was found to make the edge tile across this
+		-- frame's entire (much larger) area instead of rendering as a
+		-- thin ring, rather than being a harmless omission.
 		self.modernBorder = CreateFrame("Frame", nil, self)
 		self.modernBorder:SetPoint("CENTER", self, "CENTER", 0, -1)
 		self.modernBorder:SetBackdrop({
+			bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
 			edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+			tile = true,
+			tileSize = 8,
 			edgeSize = 8,
+			insets = { left = 0, right = 0, top = 0, bottom = 0 },
 		})
+		self.modernBorder:SetBackdropColor(0, 0, 0, 0)
 		self.modernBorder:SetBackdropBorderColor(0, 0, 0, 0)
 	end
 
@@ -599,14 +610,20 @@ function BTVButtonMixin:ApplyBorderStyle()
 
 		-- Border-size-parity fix: lazily create self.modernBorder the
 		-- first time a button ever switches to modern style live,
-		-- mirroring self.border's own lazy creation above.
+		-- mirroring self.border's own lazy creation above. Full standard
+		-- backdrop table, same reasoning as Init's own copy above.
 		if not self.modernBorder then
 			self.modernBorder = CreateFrame("Frame", nil, self)
 			self.modernBorder:SetPoint("CENTER", self, "CENTER", 0, -1)
 			self.modernBorder:SetBackdrop({
+				bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
 				edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+				tile = true,
+				tileSize = 8,
 				edgeSize = 8,
+				insets = { left = 0, right = 0, top = 0, bottom = 0 },
 			})
+			self.modernBorder:SetBackdropColor(0, 0, 0, 0)
 			self.modernBorder:SetBackdropBorderColor(0, 0, 0, 0)
 		end
 
