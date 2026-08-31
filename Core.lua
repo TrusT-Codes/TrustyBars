@@ -1216,7 +1216,7 @@ function BTV:ShowFirstLoginDialog()
 	self:ShowDialog({
 		title = "Welcome to TrustyBars",
 		message = "Thank you for choosing TrustyBars, you are currently using the Profile \"Default\". " ..
-			"It is HIGHLY recommended, to not change this Profile.\n\n" ..
+			"The Default profile is locked and cannot be edited - Edit Layout mode and Settings changes are unavailable while it is active.\n\n" ..
 			"Do you wish to create a new custom profile or a profile for this character?",
 		mode = "confirm",
 		buttons = buttons,
@@ -2033,9 +2033,21 @@ function BTV:IsEditMode()
 	return BTVanillaDB and BTVanillaDB.editMode == true
 end
 
+-- The Default profile is a fixed, always-available baseline and must
+-- never be edited - treats a nil activeProfile (not yet resolved) as
+-- Default too, matching ResolveActiveProfile's own fallback.
+function BTV:IsDefaultProfileActive()
+	return not BTVanillaCharDB or BTVanillaCharDB.activeProfile == self.DEFAULT_PROFILE_NAME
+end
+
 function BTV:SetEditMode(enabled)
 	self:EnsureDB()
 	enabled = enabled and true or false
+
+	if enabled and self:IsDefaultProfileActive() then
+		self:Print("Edit Layout mode is disabled while the Default profile is active. Switch to another profile (Settings > Profiles) to edit your bar layout.")
+		return
+	end
 
 	-- Edit mode always wins over hoverbind mode - force hoverbind off
 	-- first rather than letting both run at once (their button-tint/

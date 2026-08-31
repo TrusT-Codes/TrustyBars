@@ -749,6 +749,8 @@ function BTV:GetOrCreateBarPage(barId)
 	page.barId = barId
 	page.isDefault = isDefault
 
+	page.profileLockWarning = self:CreateProfileLockWarning(page)
+
 	-------------------------------------------------------------------------
 	-- Title
 	-------------------------------------------------------------------------
@@ -1830,6 +1832,131 @@ function BTV:ApplyLiveBarPosition(page)
 end
 
 -------------------------------------------------------------------------
+-- Default-PROFILE lock (Profiles feature follow-up)
+--
+-- Not to be confused with ApplyDefaultLayoutGating below, which gates a
+-- different, unrelated feature (the General tab's "Use Default Blizzard
+-- Layout" checkbox) that happens to share the word "Default" - both gates
+-- are independent and can apply to the same controls simultaneously. The
+-- Default PROFILE is a fixed, always-available baseline and must never be
+-- edited: every bar/simple-bar settings page shows a red warning banner
+-- and has all of its interactive controls locked while it's active.
+-------------------------------------------------------------------------
+
+-- One reusable warning banner per page - a solid strip pinned across the
+-- very top of the page (drawn above the title via a higher frame level)
+-- rather than pushing every other control's hand-tuned Y offset down, so
+-- none of those pixel-tuned layouts need to change. Hidden by default;
+-- toggled by ApplyProfileLockGating below.
+function BTV:CreateProfileLockWarning(page)
+	local banner = CreateFrame("Frame", nil, page)
+
+	banner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
+	banner:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 0)
+	banner:SetHeight(40)
+	banner:SetFrameLevel(page:GetFrameLevel() + 5)
+
+	banner:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 12,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+
+	banner:SetBackdropColor(0.35, 0, 0, 0.9)
+
+	local text = banner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	text:SetPoint("TOPLEFT", banner, "TOPLEFT", INDENT_SECTION, -6)
+	text:SetPoint("TOPRIGHT", banner, "TOPRIGHT", -INDENT_SECTION, -6)
+	text:SetJustifyH("LEFT")
+	text:SetJustifyV("TOP")
+	text:SetTextColor(1, 0.15, 0.15)
+
+	text:SetText(
+		"Editing Settings is prohibited while in default profile mode. " ..
+		"Go to Profile Settings and set up a profile if you wish to " ..
+		"change Settings or access Layout Edit Mode"
+	)
+
+	banner:Hide()
+
+	return banner
+end
+
+local function LockControl(control, locked)
+	control:EnableMouse(not locked)
+	control:SetAlpha(locked and 0.5 or 1)
+
+	-- Templated Buttons additionally need :Disable()/:Enable() -
+	-- EnableMouse alone doesn't grey them out or block their OnClick the
+	-- way it does for sliders/template-less swatch buttons.
+	if control.Disable and control.Enable then
+		if locked then
+			control:Disable()
+		else
+			control:Enable()
+		end
+	end
+end
+
+-- Every optional widget name either a full bar page (GetOrCreateBarPage)
+-- or a simple bar page (CreateSimpleBarPage, including its Experience
+-- Bar-only extras) can have on itself. Checked by presence so the same
+-- list works for both page shapes.
+local PROFILE_LOCK_CONTROL_NAMES = {
+	"xSlider", "ySlider", "buttonSizeSlider", "spacingSlider",
+	"scaleSlider", "resetPositionButton", "enableCheckbox",
+	"buttonCountMinus", "buttonCountPlus", "pageIndicatorSlider",
+	"orientationCheckbox", "keyRingCheckbox", "keyRingScaleSlider",
+	"betterExpBarCheckbox", "expBarShowLevelCheckbox",
+	"expBarShowCurrentOverMaxCheckbox", "expBarShowPercentCheckbox",
+	"expBarShowRestedPercentCheckbox", "expBarShowRestedTotalCheckbox",
+	"expBarFontSizeSlider", "earnedColorSwatch", "restedColorSwatch",
+	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
+}
+
+function BTV:ApplyProfileLockGating(page)
+	local locked = self:IsDefaultProfileActive()
+
+	if page.profileLockWarning then
+		page.profileLockWarning:SetShown(locked)
+	end
+
+	local i
+
+	for i = 1, table.getn(PROFILE_LOCK_CONTROL_NAMES) do
+		local control = page[PROFILE_LOCK_CONTROL_NAMES[i]]
+
+		if control then
+			LockControl(control, locked)
+		end
+	end
+
+	if page.gridSwatches then
+		for i = 1, table.getn(page.gridSwatches) do
+			LockControl(page.gridSwatches[i], locked)
+		end
+	end
+
+	if page.assignmentRows then
+		for i = 1, table.getn(page.assignmentRows) do
+			local row = page.assignmentRows[i]
+
+			if row.leftButton then
+				LockControl(row.leftButton, locked)
+			end
+
+			if row.rightButton then
+				LockControl(row.rightButton, locked)
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------
 -- Default-layout gating (General tab's "Use Default Blizzard Layout")
 --
 -- EnableMouse(false) is used rather than Slider/Button-specific
@@ -2134,6 +2261,8 @@ local function CreateSimpleBarPage(key)
 
 	page.barId = key
 	page.isDefault = true
+
+	page.profileLockWarning = BTV:CreateProfileLockWarning(page)
 
 	local title = page:CreateFontString(
 		nil,
@@ -3271,6 +3400,10 @@ function BTV:RefreshSimpleBarPage(key)
 	-- rule for bar 1 (they stay fully functional regardless of
 	-- useDefaultLayout).
 	ApplyDefaultLayoutGating(page, BTVanillaDB.useDefaultLayout ~= true)
+
+	-- Default-profile lock (independent of the useDefaultLayout gate
+	-- above).
+	self:ApplyProfileLockGating(page)
 end
 
 -- Config table for each simple page - populated here (rather than at
@@ -3622,6 +3755,10 @@ function BTV:RefreshBarSettingsPage(barId)
 			BTVanillaDB.useDefaultLayout ~= true
 		)
 	end
+
+	-- Default-profile lock (independent of the useDefaultLayout gate
+	-- above) - applies to every bar page, not just bar 1.
+	self:ApplyProfileLockGating(page)
 end
 
 -- Shows/hides the Main Bar page's Page Indicator Scale slider per
@@ -4070,6 +4207,10 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
 	end)
 
 	RefreshValue()
+
+	-- Exposed so ApplyProfileLockGating can lock these two buttons too.
+	row.leftButton = leftButton
+	row.rightButton = rightButton
 
 	return row
 end
