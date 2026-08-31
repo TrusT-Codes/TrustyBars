@@ -537,15 +537,19 @@ end
 -- Global border/spacing style sweep (General tab checkbox,
 -- BTVanillaDB.modernBorderStyle / useDefaultLayout's forced-vanilla lock)
 --
--- Re-applies the CURRENT global style (BTV:IsVanillaBorderStyle()) to
--- every bar (1-9) and every button on every bar: canonical buttonSize/
--- spacing via the existing SetBarButtonSize/SetBarSpacing (clamp+write+
--- relayout already handled there), and per-button border/backdrop/
--- icon-inset via Button.lua's BTVButtonMixin:ApplyBorderStyle. One-time
--- reset, not a live lock - the per-bar Settings.lua spacing/size sliders
--- remain freely adjustable afterward. Called from: the new checkbox's
--- OnClick, useDefaultLayoutCheckbox's OnClick, and once at login after
--- every bar (default + extra) exists.
+-- Re-styles every bar's buttons for the CURRENT global style
+-- (BTV:IsVanillaBorderStyle()) via Button.lua's BTVButtonMixin:ApplyBorderStyle,
+-- unconditionally on every call. Separately, exactly once per REAL style
+-- transition (tracked via BTVanillaDB.lastAppliedVanillaStyle, not on
+-- every call - this function also runs unconditionally at every login),
+-- shifts every bar's buttonSize by BTV.MODERN_BUTTON_SIZE_DELTA so the
+-- SAME spacing number keeps looking visually aligned across styles
+-- (empirically measured: vanilla 36px/spacing 2 looks the same as modern
+-- 40px/spacing 2) - spacing itself is deliberately never touched here.
+-- Not a live lock - the per-bar Settings.lua spacing/size sliders remain
+-- freely adjustable afterward. Called from: the new checkbox's OnClick,
+-- useDefaultLayoutCheckbox's OnClick, and once at login after every bar
+-- (default + extra) exists.
 -------------------------------------------------------------------------
 
 function BTV:ApplyGlobalButtonStyle()
@@ -554,15 +558,31 @@ function BTV:ApplyGlobalButtonStyle()
 	end
 
 	local vanilla = self:IsVanillaBorderStyle()
-	local canonicalSpacing
 
-	if vanilla then
-		local mainBarCfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[1]
-		canonicalSpacing = (mainBarCfg and mainBarCfg.spacing) or self.VANILLA_SPACING_FLOOR
+	if BTVanillaDB.lastAppliedVanillaStyle == nil then
+		BTVanillaDB.lastAppliedVanillaStyle = vanilla
+	elseif BTVanillaDB.lastAppliedVanillaStyle ~= vanilla then
+		local delta = vanilla and -self.MODERN_BUTTON_SIZE_DELTA or self.MODERN_BUTTON_SIZE_DELTA
 
-		if canonicalSpacing < self.VANILLA_SPACING_FLOOR then
-			canonicalSpacing = self.VANILLA_SPACING_FLOOR
+		local barId
+		local bar
+
+		for barId, bar in pairs(self.bars) do
+			if bar and bar.config and bar.config.buttonSize then
+				self:SetBarButtonSize(bar, bar.config.buttonSize + delta)
+			end
 		end
+
+		-- The global buttonSize override (if enabled) needs the same
+		-- shift applied to its own stored value, then re-applied so it
+		-- stays authoritative over whatever the per-bar loop above just
+		-- wrote.
+		if BTVanillaDB.globalButtonSizeEnabled and BTVanillaDB.globalButtonSizeValue then
+			BTVanillaDB.globalButtonSizeValue = BTVanillaDB.globalButtonSizeValue + delta
+			self:ApplyGlobalButtonSize()
+		end
+
+		BTVanillaDB.lastAppliedVanillaStyle = vanilla
 	end
 
 	local barId
@@ -570,18 +590,6 @@ function BTV:ApplyGlobalButtonStyle()
 
 	for barId, bar in pairs(self.bars) do
 		if bar and bar.config then
-			self:SetBarButtonSize(bar, self.BUTTON_SIZE)
-
-			-- Modern mode: leave bar.config.spacing completely untouched
-			-- (previously forced every bar to 0 here - a bug, since the
-			-- user should be able to keep/set their own spacing per bar
-			-- once modern style no longer needs alignment with a native
-			-- border's overhang). Vanilla mode still syncs every bar to
-			-- the canonical native spacing so default/extra bars align.
-			if vanilla then
-				self:SetBarSpacing(bar, canonicalSpacing)
-			end
-
 			local i
 
 			for i = 1, table.getn(bar.buttons) do

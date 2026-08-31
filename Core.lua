@@ -36,6 +36,15 @@ BTV.BUTTON_ROWS = 1
 -- display-offset.
 BTV.VANILLA_SPACING_FLOOR = 4
 
+-- Empirically measured (live-tested by the user): modern-style buttons
+-- need this many more pixels of buttonSize than vanilla-style buttons to
+-- LOOK the same size, since modern's border is bounded to its own frame
+-- (a plain SetBackdrop edge) while vanilla's overhangs via a larger
+-- texture. A fixed additive delta, not a ratio - confirmed: vanilla
+-- 36px/spacing 2 looks the same as modern 40px/spacing 2, spacing itself
+-- never needs to change. See BTV:ApplyGlobalButtonStyle (Bar.lua).
+BTV.MODERN_BUTTON_SIZE_DELTA = 4
+
 -- Every custom-bar grid preset the Settings UI offers (1x12, 2x6, 3x4,
 -- 4x3, 6x2, 12x1) totals exactly 12 buttons, so 12 is the fixed size of
 -- the per-slot button pool a custom bar allocates once at creation (see
@@ -648,7 +657,7 @@ local function seedDefaultBars(self)
 			y = anchor.y,
 			cols = grid.cols,
 			rows = grid.rows,
-			buttonSize = self.BUTTON_SIZE,
+			buttonSize = self:GetCurrentButtonSizeBaseline(),
 			spacing = spacing,
 
 			-- Bar.lua's ApplyBarShape falls back to cols*rows when this is
@@ -879,7 +888,7 @@ local function seedExtraBarConfig(self, id)
 		cols = self.BUTTON_COLS,
 		rows = self.BUTTON_ROWS,
 
-		buttonSize = self.BUTTON_SIZE,
+		buttonSize = self:GetCurrentButtonSizeBaseline(),
 
 		slotStart = slotStart,
 		buttonCount = self.BUTTON_COLS * self.BUTTON_ROWS,
@@ -956,6 +965,17 @@ function BTV:EnsureDB()
 	-- preserve both groups' current-but-mismatched looks at once.
 	if BTVanillaDB.modernBorderStyle == nil then
 		BTVanillaDB.modernBorderStyle = false
+	end
+
+	-- Tracks which style every bar's CURRENTLY STORED buttonSize was last
+	-- corrected for (BTV:ApplyGlobalButtonStyle, Bar.lua) - lets that
+	-- function apply BTV.MODERN_BUTTON_SIZE_DELTA exactly once per real
+	-- style transition instead of drifting further on every call (it's
+	-- called unconditionally at every login). Seeded to the CURRENT style
+	-- so an existing install's first load under this logic doesn't
+	-- spuriously shift every bar's size.
+	if BTVanillaDB.lastAppliedVanillaStyle == nil then
+		BTVanillaDB.lastAppliedVanillaStyle = BTV:IsVanillaBorderStyle()
 	end
 
 	-- Global spacing/button-size overrides (General tab). When enabled,
@@ -1812,6 +1832,18 @@ function BTV:IsVanillaBorderStyle()
 	end
 
 	return not (BTVanillaDB and BTVanillaDB.modernBorderStyle)
+end
+
+-- The buttonSize a brand-new bar should seed at, already correct for
+-- whichever style is CURRENTLY active (BTV.MODERN_BUTTON_SIZE_DELTA) -
+-- so a freshly created bar doesn't need an immediate correction from
+-- BTV:ApplyGlobalButtonStyle's transition-only delta.
+function BTV:GetCurrentButtonSizeBaseline()
+	if self:IsVanillaBorderStyle() then
+		return self.BUTTON_SIZE
+	end
+
+	return self.BUTTON_SIZE + self.MODERN_BUTTON_SIZE_DELTA
 end
 
 -------------------------------------------------------------------------
