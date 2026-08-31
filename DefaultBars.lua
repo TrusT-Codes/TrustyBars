@@ -616,8 +616,14 @@ function BTV:SetDefaultBarSpacing(id, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	if spacing < 0 then
-		spacing = 0
+	-- Vanilla border style's texture overhang causes adjacent buttons to
+	-- visually overlap below this real value (BTV.VANILLA_SPACING_FLOOR) -
+	-- 0 in modern style, which has no overhang. Mirrors Bar.lua's own
+	-- SetBarSpacing clamp.
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then

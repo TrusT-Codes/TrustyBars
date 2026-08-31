@@ -28,6 +28,12 @@ BTV.BUTTON_SIZE = 36
 BTV.BUTTON_COLS = 12
 BTV.BUTTON_ROWS = 1
 
+-- Real minimum bar spacing while vanilla border style is active - below
+-- this the native border texture's overhang causes adjacent buttons to
+-- visually overlap. 0 in modern style (no overhang). The UI never shows
+-- this floor directly - see Settings.lua's spacing display-offset.
+BTV.VANILLA_SPACING_FLOOR = 4
+
 -- Every custom-bar grid preset the Settings UI offers (1x12, 2x6, 3x4,
 -- 4x3, 6x2, 12x1) totals exactly 12 buttons, so 12 is the fixed size of
 -- the per-slot button pool a custom bar allocates once at creation (see
@@ -948,6 +954,28 @@ function BTV:EnsureDB()
 	-- preserve both groups' current-but-mismatched looks at once.
 	if BTVanillaDB.modernBorderStyle == nil then
 		BTVanillaDB.modernBorderStyle = false
+	end
+
+	-- Global spacing/button-size overrides (General tab). When enabled,
+	-- one slider value applies to every true action bar (default 1-5 +
+	-- extra 6-9), locking each bar's own per-bar slider. Value is stored
+	-- in the same space each slider itself uses (spacing: DISPLAYED,
+	-- 0-based - see Settings.lua's spacing display-offset; buttonSize:
+	-- real, no offset needed).
+	if BTVanillaDB.globalSpacingEnabled == nil then
+		BTVanillaDB.globalSpacingEnabled = false
+	end
+
+	if BTVanillaDB.globalSpacingValue == nil then
+		BTVanillaDB.globalSpacingValue = 0
+	end
+
+	if BTVanillaDB.globalButtonSizeEnabled == nil then
+		BTVanillaDB.globalButtonSizeEnabled = false
+	end
+
+	if BTVanillaDB.globalButtonSizeValue == nil then
+		BTVanillaDB.globalButtonSizeValue = BTV.BUTTON_SIZE
 	end
 
 	-- Main Bar migration Part 2/3 (DefaultBars.lua's
@@ -2074,6 +2102,12 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- them consistent with whatever the user last chose (or the seeded
 	-- default).
 	BTV:ApplyGlobalButtonStyle()
+
+	-- Global spacing/button-size overrides (General tab): applied AFTER
+	-- the border-style sweep above, so an active global override always
+	-- wins over that sweep's own canonical value.
+	BTV:ApplyGlobalSpacing()
+	BTV:ApplyGlobalButtonSize()
 
 	-- Now a no-op for every default bar (Main Bar migration, Phase 2):
 	-- bars 1-5's real Blizzard buttons are all now permanently hidden -

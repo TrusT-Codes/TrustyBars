@@ -128,6 +128,22 @@ local SPACING_MIN = 0
 local SPACING_MAX = 20
 local SPACING_STEP = 1
 
+-- Real-to-displayed spacing offset for the default/custom bar (1-9)
+-- Spacing slider AND the global Spacing slider (General tab) - NOT the
+-- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope for
+-- the vanilla floor. Vanilla border style's texture overhang causes
+-- adjacent buttons to visually overlap below a real spacing of
+-- BTV.VANILLA_SPACING_FLOOR - rather than showing that floor directly
+-- (a confusing non-zero minimum), every display touchpoint subtracts
+-- this offset so the UI always reads a plain 0-based range regardless of
+-- style: e.g. today's captured native default (commonly real 6) shows as
+-- "2" in vanilla mode, not "6". Real values are only ever written at the
+-- OnValueChanged/refresh boundary - the slider's own on-screen value is
+-- always in DISPLAYED space.
+local function GetSpacingDisplayOffset()
+	return BTV:IsVanillaBorderStyle() and BTV.VANILLA_SPACING_FLOOR or 0
+end
+
 -- Friendly names for the 5 fixed default bars (1-5) now live on
 -- BTV.DEFAULT_BAR_NAMES (Core.lua, round 36) - promoted out of this file
 -- so Bar.lua's EnsureBarOverlay edit-mode label (which loads before this
@@ -1252,9 +1268,12 @@ function BTV:GetOrCreateBarPage(barId)
 			spacingSliderY
 		)
 
+		-- Displayed range (0-based) - see GetSpacingDisplayOffset. Also
+		-- recomputed on every RefreshBarSettingsPage call, since the
+		-- offset can change live with the border-style toggle.
 		spacingSlider:SetMinMaxValues(
-			SPACING_MIN,
-			SPACING_MAX
+			0,
+			SPACING_MAX - GetSpacingDisplayOffset()
 		)
 
 		spacingSlider:SetValueStep(
@@ -1271,9 +1290,7 @@ function BTV:GetOrCreateBarPage(barId)
 		)
 
 		if spacingSliderLow then
-			spacingSliderLow:SetText(
-				tostring(SPACING_MIN)
-			)
+			spacingSliderLow:SetText("0")
 		end
 
 		local spacingSliderHigh = getglobal(
@@ -1282,9 +1299,12 @@ function BTV:GetOrCreateBarPage(barId)
 
 		if spacingSliderHigh then
 			spacingSliderHigh:SetText(
-				tostring(SPACING_MAX)
+				tostring(SPACING_MAX - GetSpacingDisplayOffset())
 			)
 		end
+
+		page.spacingSliderLow = spacingSliderLow
+		page.spacingSliderHigh = spacingSliderHigh
 
 		local spacingValueText = page:CreateFontString(
 			nil,
@@ -1318,18 +1338,22 @@ function BTV:GetOrCreateBarPage(barId)
 
 				value = math.floor(value + 0.5)
 
+				-- The slider's own value is always DISPLAYED (0-based) -
+				-- convert to real only at this write boundary.
 				spacingValueText:SetText(
 					tostring(value)
 				)
 
 				if not this.suppressApply then
+					local real = value + GetSpacingDisplayOffset()
+
 					if page.isDefault then
-						BTV:SetDefaultBarSpacing(page.barId, value)
+						BTV:SetDefaultBarSpacing(page.barId, real)
 					else
 						local bar = BTV.bars[page.barId]
 
 						if bar then
-							BTV:SetBarSpacing(bar, value)
+							BTV:SetBarSpacing(bar, real)
 						end
 					end
 				end
@@ -3505,6 +3529,21 @@ function BTV:RefreshBarSettingsPage(barId)
 	-------------------------------------------------------------------------
 
 	if page.spacingSlider then
+		local offset = GetSpacingDisplayOffset()
+
+		-- Recomputed every refresh - the offset (and therefore the
+		-- displayed range) can change live when the border-style toggle
+		-- flips while this page is already built.
+		page.spacingSlider:SetMinMaxValues(0, SPACING_MAX - offset)
+
+		if page.spacingSliderLow then
+			page.spacingSliderLow:SetText("0")
+		end
+
+		if page.spacingSliderHigh then
+			page.spacingSliderHigh:SetText(tostring(SPACING_MAX - offset))
+		end
+
 		local spacing = cfg.spacing or 0
 
 		if spacing < SPACING_MIN then
@@ -3515,10 +3554,16 @@ function BTV:RefreshBarSettingsPage(barId)
 			spacing = SPACING_MAX
 		end
 
-		page.spacingSlider:SetValue(spacing)
+		local displayed = spacing - offset
+
+		if displayed < 0 then
+			displayed = 0
+		end
+
+		page.spacingSlider:SetValue(displayed)
 
 		if page.spacingValueText then
-			page.spacingValueText:SetText(tostring(spacing))
+			page.spacingValueText:SetText(tostring(displayed))
 		end
 	end
 
@@ -3608,6 +3653,59 @@ function BTV:RefreshBarSettingsPage(barId)
 			page,
 			BTVanillaDB.useDefaultLayout ~= true
 		)
+	end
+
+	-- Locks this page's own spacing/buttonSize sliders whenever the
+	-- corresponding global override (General tab) is on, so a bar page
+	-- opened after the global toggle was already enabled still starts
+	-- locked.
+	BTV:RefreshBarPageGlobalOverrideGating(page)
+end
+
+-- Locks (dims, EnableMouse(false)) a full bar page's own spacing/
+-- buttonSize sliders while the corresponding global override (General
+-- tab) is enabled - only ever called from RefreshBarSettingsPage's
+-- non-simple-bar path above, so simple bar pages (Bag Bar/Micro Menu/
+-- etc.) are naturally never affected, matching the global overrides'
+-- scope (true action bars 1-9 only).
+function BTV:RefreshBarPageGlobalOverrideGating(page)
+	if not page then
+		return
+	end
+
+	if page.spacingSlider then
+		local locked = BTVanillaDB.globalSpacingEnabled == true
+
+		page.spacingSlider:EnableMouse(not locked)
+		page.spacingSlider:SetAlpha(locked and 0.5 or 1)
+	end
+
+	if page.buttonSizeSlider then
+		local locked = BTVanillaDB.globalButtonSizeEnabled == true
+
+		page.buttonSizeSlider:EnableMouse(not locked)
+		page.buttonSizeSlider:SetAlpha(locked and 0.5 or 1)
+	end
+end
+
+-- Live-refreshes the spacing/buttonSize lock on every currently cached
+-- full bar page (1-9) without a full RefreshBarSettingsPage resync -
+-- called from the two new global-override checkboxes/sliders (General
+-- tab) so already-open bar pages lock/unlock immediately. Simple bar
+-- pages (string keys in settingsFrame.pages) are skipped - out of scope
+-- for the global overrides.
+function BTV:RefreshAllBarPagesGlobalOverrideGating()
+	if not settingsFrame then
+		return
+	end
+
+	local id
+	local page
+
+	for id, page in pairs(settingsFrame.pages) do
+		if type(id) == "number" and BTV.bars and BTV.bars[id] then
+			self:RefreshBarPageGlobalOverrideGating(page)
+		end
 	end
 end
 
@@ -3887,6 +3985,12 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
 	n = AppendCandidate(candidates, n, panel.modernBorderStyleCheckbox)
 	n = AppendCandidate(candidates, n, panel.modernBorderStyleDescription)
+	n = AppendCandidate(candidates, n, panel.globalSpacingCheckbox)
+	n = AppendCandidate(candidates, n, panel.globalSpacingSlider)
+	n = AppendCandidate(candidates, n, panel.globalSpacingValueText)
+	n = AppendCandidate(candidates, n, panel.globalButtonSizeCheckbox)
+	n = AppendCandidate(candidates, n, panel.globalButtonSizeSlider)
+	n = AppendCandidate(candidates, n, panel.globalButtonSizeValueText)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
@@ -4369,12 +4473,22 @@ function BTV:GetOrCreateGeneralPanel()
 			-- until next login.
 			BTV:ApplyGlobalButtonStyle()
 
+			-- The global spacing/buttonSize overrides both no-op while
+			-- useDefaultLayout is on (Bar.lua) - re-running them here
+			-- means turning it back OFF immediately re-applies a
+			-- previously-locked-out override instead of waiting for the
+			-- next slider move.
+			BTV:ApplyGlobalSpacing()
+			BTV:ApplyGlobalButtonSize()
+
 			-- Updates the new "Use Modern Button Style" checkbox's own
 			-- checked/grey-out state immediately (RefreshGeneralPanel
 			-- isn't otherwise called from this handler) so it reflects
 			-- the lock the moment useDefaultLayout changes, without
 			-- needing to leave and reopen the General tab.
 			BTV:RefreshGeneralPanel()
+
+			BTV:RefreshAllBarPagesGlobalOverrideGating()
 		end
 	)
 
@@ -5152,6 +5266,229 @@ function BTV:GetOrCreateGeneralPanel()
 
 	panel.modernBorderStyleDescription = modernBorderStyleDescription
 
+	-------------------------------------------------------------------------
+	-- Global Spacing / global ButtonSize overrides
+	--
+	-- Unlike every other control in this panel, these two sliders are
+	-- Shown/Hidden (not just dimmed) per the checkbox's own checked state,
+	-- per the user's explicit spec - the first such reveal pattern in this
+	-- file. Applies to every true action bar (default 1-5 + extra 6-9)
+	-- ONLY, never the simple bars (Bag Bar/Micro Menu/etc.) - see
+	-- BTV:ApplyGlobalSpacing/ApplyGlobalButtonSize (Bar.lua), which iterate
+	-- BTV.bars (simple bars are never in it). Both also lock (dim idiom)
+	-- whenever useDefaultLayout forces vanilla styling, same as
+	-- modernBorderStyleCheckbox above - see the gating block in
+	-- RefreshGeneralPanel.
+	-------------------------------------------------------------------------
+
+	local globalSpacingCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralGlobalSpacingCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	globalSpacingCheckbox:SetWidth(24)
+	globalSpacingCheckbox:SetHeight(24)
+
+	globalSpacingCheckbox:SetPoint(
+		"TOPLEFT",
+		modernBorderStyleDescription,
+		"BOTTOMLEFT",
+		-4,
+		-14
+	)
+
+	local globalSpacingSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralGlobalSpacingSlider",
+		290
+	)
+
+	globalSpacingSlider:SetPoint(
+		"TOPLEFT",
+		globalSpacingCheckbox,
+		"BOTTOMLEFT",
+		20,
+		-28
+	)
+
+	globalSpacingSlider:SetValueStep(SPACING_STEP)
+	SetSliderLabel(globalSpacingSlider, "Global Spacing")
+
+	local globalSpacingSliderLow = getglobal(globalSpacingSlider:GetName() .. "Low")
+	local globalSpacingSliderHigh = getglobal(globalSpacingSlider:GetName() .. "High")
+
+	local globalSpacingValueText = panel:CreateFontString(
+		nil, "OVERLAY", "GameFontNormalSmall"
+	)
+
+	globalSpacingValueText:SetPoint("TOP", globalSpacingSlider, "BOTTOM", 0, -2)
+	globalSpacingValueText:SetText("0")
+
+	globalSpacingSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			globalSpacingValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTVanillaDB.globalSpacingValue = value
+				BTV:ApplyGlobalSpacing()
+			end
+		end
+	)
+
+	globalSpacingCheckbox:SetScript(
+		"OnClick",
+		function()
+			if BTVanillaDB.useDefaultLayout ~= false then
+				this:SetChecked(false)
+				return
+			end
+
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.globalSpacingEnabled = checked
+
+			globalSpacingSlider:SetShown(checked)
+			globalSpacingValueText:SetShown(checked)
+
+			if checked then
+				BTV:ApplyGlobalSpacing()
+			end
+
+			BTV:RefreshAllBarPagesGlobalOverrideGating()
+		end
+	)
+
+	local globalSpacingLabel = getglobal(globalSpacingCheckbox:GetName() .. "Text")
+
+	if globalSpacingLabel then
+		globalSpacingLabel:SetText("Toggle global Spacing")
+	end
+
+	panel.globalSpacingCheckbox = globalSpacingCheckbox
+	panel.globalSpacingSlider = globalSpacingSlider
+	panel.globalSpacingSliderLow = globalSpacingSliderLow
+	panel.globalSpacingSliderHigh = globalSpacingSliderHigh
+	panel.globalSpacingValueText = globalSpacingValueText
+
+	local globalButtonSizeCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralGlobalButtonSizeCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	globalButtonSizeCheckbox:SetWidth(24)
+	globalButtonSizeCheckbox:SetHeight(24)
+
+	globalButtonSizeCheckbox:SetPoint(
+		"TOPLEFT",
+		globalSpacingValueText,
+		"BOTTOMLEFT",
+		-20,
+		-14
+	)
+
+	local globalButtonSizeSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralGlobalButtonSizeSlider",
+		290
+	)
+
+	globalButtonSizeSlider:SetPoint(
+		"TOPLEFT",
+		globalButtonSizeCheckbox,
+		"BOTTOMLEFT",
+		20,
+		-28
+	)
+
+	globalButtonSizeSlider:SetMinMaxValues(BUTTON_SIZE_MIN, BUTTON_SIZE_MAX)
+	globalButtonSizeSlider:SetValueStep(1)
+	SetSliderLabel(globalButtonSizeSlider, "Global Button Size")
+
+	local globalButtonSizeSliderLow = getglobal(globalButtonSizeSlider:GetName() .. "Low")
+
+	if globalButtonSizeSliderLow then
+		globalButtonSizeSliderLow:SetText(tostring(BUTTON_SIZE_MIN))
+	end
+
+	local globalButtonSizeSliderHigh = getglobal(globalButtonSizeSlider:GetName() .. "High")
+
+	if globalButtonSizeSliderHigh then
+		globalButtonSizeSliderHigh:SetText(tostring(BUTTON_SIZE_MAX))
+	end
+
+	local globalButtonSizeValueText = panel:CreateFontString(
+		nil, "OVERLAY", "GameFontNormalSmall"
+	)
+
+	globalButtonSizeValueText:SetPoint("TOP", globalButtonSizeSlider, "BOTTOM", 0, -2)
+	globalButtonSizeValueText:SetText(tostring(BTV.BUTTON_SIZE))
+
+	globalButtonSizeSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			globalButtonSizeValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTVanillaDB.globalButtonSizeValue = value
+				BTV:ApplyGlobalButtonSize()
+			end
+		end
+	)
+
+	globalButtonSizeCheckbox:SetScript(
+		"OnClick",
+		function()
+			if BTVanillaDB.useDefaultLayout ~= false then
+				this:SetChecked(false)
+				return
+			end
+
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.globalButtonSizeEnabled = checked
+
+			globalButtonSizeSlider:SetShown(checked)
+			globalButtonSizeValueText:SetShown(checked)
+
+			if checked then
+				BTV:ApplyGlobalButtonSize()
+			end
+
+			BTV:RefreshAllBarPagesGlobalOverrideGating()
+		end
+	)
+
+	local globalButtonSizeLabel = getglobal(globalButtonSizeCheckbox:GetName() .. "Text")
+
+	if globalButtonSizeLabel then
+		globalButtonSizeLabel:SetText("Toggle global ButtonSize")
+	end
+
+	panel.globalButtonSizeCheckbox = globalButtonSizeCheckbox
+	panel.globalButtonSizeSlider = globalButtonSizeSlider
+	panel.globalButtonSizeValueText = globalButtonSizeValueText
+
 	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
 	-- to the Experience Bar's own settings page (round 17 item 5,
 	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
@@ -5184,6 +5521,59 @@ function BTV:RefreshGeneralPanel()
 	)
 	panel.modernBorderStyleCheckbox:EnableMouse(not vanillaBorderStyleLocked)
 	panel.modernBorderStyleCheckbox:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	-- Global Spacing / global ButtonSize overrides: same
+	-- vanillaBorderStyleLocked lock as modernBorderStyleCheckbox above
+	-- (user-requested), plus their own checked/value sync and the
+	-- Show/Hide reveal of their sliders. The displayed range (spacing
+	-- only) is recomputed here too, same reason as the per-bar slider.
+	local spacingDisplayed = BTVanillaDB.globalSpacingEnabled == true and
+		not vanillaBorderStyleLocked
+
+	panel.globalSpacingCheckbox:SetChecked(spacingDisplayed)
+	panel.globalSpacingCheckbox:EnableMouse(not vanillaBorderStyleLocked)
+	panel.globalSpacingCheckbox:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	local spacingOffset = GetSpacingDisplayOffset()
+
+	panel.globalSpacingSlider:SetMinMaxValues(0, SPACING_MAX - spacingOffset)
+
+	if panel.globalSpacingSliderLow then
+		panel.globalSpacingSliderLow:SetText("0")
+	end
+
+	if panel.globalSpacingSliderHigh then
+		panel.globalSpacingSliderHigh:SetText(tostring(SPACING_MAX - spacingOffset))
+	end
+
+	panel.globalSpacingSlider.suppressApply = true
+	panel.globalSpacingSlider:SetValue(BTVanillaDB.globalSpacingValue or 0)
+	panel.globalSpacingSlider.suppressApply = nil
+	panel.globalSpacingValueText:SetText(tostring(BTVanillaDB.globalSpacingValue or 0))
+
+	panel.globalSpacingSlider:SetShown(spacingDisplayed)
+	panel.globalSpacingValueText:SetShown(spacingDisplayed)
+	panel.globalSpacingSlider:EnableMouse(not vanillaBorderStyleLocked)
+	panel.globalSpacingSlider:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	local buttonSizeDisplayed = BTVanillaDB.globalButtonSizeEnabled == true and
+		not vanillaBorderStyleLocked
+
+	panel.globalButtonSizeCheckbox:SetChecked(buttonSizeDisplayed)
+	panel.globalButtonSizeCheckbox:EnableMouse(not vanillaBorderStyleLocked)
+	panel.globalButtonSizeCheckbox:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	panel.globalButtonSizeSlider.suppressApply = true
+	panel.globalButtonSizeSlider:SetValue(BTVanillaDB.globalButtonSizeValue or BTV.BUTTON_SIZE)
+	panel.globalButtonSizeSlider.suppressApply = nil
+	panel.globalButtonSizeValueText:SetText(
+		tostring(BTVanillaDB.globalButtonSizeValue or BTV.BUTTON_SIZE)
+	)
+
+	panel.globalButtonSizeSlider:SetShown(buttonSizeDisplayed)
+	panel.globalButtonSizeValueText:SetShown(buttonSizeDisplayed)
+	panel.globalButtonSizeSlider:EnableMouse(not vanillaBorderStyleLocked)
+	panel.globalButtonSizeSlider:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
 
 	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
 	-- unchecks this.

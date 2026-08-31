@@ -513,8 +513,13 @@ function BTV:SetBarSpacing(bar, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	if spacing < 0 then
-		spacing = 0
+	-- Vanilla border style's texture overhang causes adjacent buttons to
+	-- visually overlap below this real value (BTV.VANILLA_SPACING_FLOOR) -
+	-- 0 in modern style, which has no overhang.
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then
@@ -547,11 +552,15 @@ function BTV:ApplyGlobalButtonStyle()
 	end
 
 	local vanilla = self:IsVanillaBorderStyle()
-	local canonicalSpacing = 0
+	local canonicalSpacing
 
 	if vanilla then
 		local mainBarCfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[1]
-		canonicalSpacing = (mainBarCfg and mainBarCfg.spacing) or 0
+		canonicalSpacing = (mainBarCfg and mainBarCfg.spacing) or self.VANILLA_SPACING_FLOOR
+
+		if canonicalSpacing < self.VANILLA_SPACING_FLOOR then
+			canonicalSpacing = self.VANILLA_SPACING_FLOOR
+		end
 	end
 
 	local barId
@@ -560,7 +569,16 @@ function BTV:ApplyGlobalButtonStyle()
 	for barId, bar in pairs(self.bars) do
 		if bar and bar.config then
 			self:SetBarButtonSize(bar, self.BUTTON_SIZE)
-			self:SetBarSpacing(bar, canonicalSpacing)
+
+			-- Modern mode: leave bar.config.spacing completely untouched
+			-- (previously forced every bar to 0 here - a bug, since the
+			-- user should be able to keep/set their own spacing per bar
+			-- once modern style no longer needs alignment with a native
+			-- border's overhang). Vanilla mode still syncs every bar to
+			-- the canonical native spacing so default/extra bars align.
+			if vanilla then
+				self:SetBarSpacing(bar, canonicalSpacing)
+			end
 
 			local i
 
@@ -571,6 +589,61 @@ function BTV:ApplyGlobalButtonStyle()
 					btn:ApplyBorderStyle()
 				end
 			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------
+-- Global spacing/button-size overrides (General tab checkboxes,
+-- BTVanillaDB.globalSpacingEnabled/globalButtonSizeEnabled)
+--
+-- Unlike ApplyGlobalButtonStyle's one-time sweep, these are a live lock:
+-- while enabled, the corresponding General-tab slider is the single
+-- source of truth for every true action bar (default 1-5 + extra 6-9,
+-- i.e. everything in self.bars - simple bars like Bag Bar/Micro Menu are
+-- never in self.bars, so they're naturally excluded), and each bar's own
+-- per-bar slider locks (Settings.lua's RefreshBarPageGlobalOverrideGating).
+-- No-ops entirely while disabled - turning a toggle off leaves every
+-- bar's last-applied value in place rather than reverting anything.
+-- Also no-ops while useDefaultLayout is on (its own reset-to-native
+-- cascade already owns bars 1-5's spacing/size in that state, and the
+-- General-tab sliders themselves are locked then too - see
+-- RefreshGeneralPanel).
+-------------------------------------------------------------------------
+
+function BTV:ApplyGlobalSpacing()
+	if not (self.bars and BTVanillaDB.globalSpacingEnabled) or
+		BTVanillaDB.useDefaultLayout ~= false then
+		return
+	end
+
+	local floor = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+	local real = (BTVanillaDB.globalSpacingValue or 0) + floor
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			self:SetBarSpacing(bar, real)
+		end
+	end
+end
+
+function BTV:ApplyGlobalButtonSize()
+	if not (self.bars and BTVanillaDB.globalButtonSizeEnabled) or
+		BTVanillaDB.useDefaultLayout ~= false then
+		return
+	end
+
+	local size = BTVanillaDB.globalButtonSizeValue or self.BUTTON_SIZE
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			self:SetBarButtonSize(bar, size)
 		end
 	end
 end
