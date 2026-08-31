@@ -45,6 +45,14 @@ BTV.VANILLA_SPACING_FLOOR = 4
 -- never needs to change. See BTV:ApplyGlobalButtonStyle (Bar.lua).
 BTV.MODERN_BUTTON_SIZE_DELTA = 4
 
+-- Since every element/button is anchored from a fixed point (not its
+-- visual center), growing buttonSize by MODERN_BUTTON_SIZE_DELTA when
+-- switching to modern style makes the whole bar appear to shift down and
+-- right from that anchor - live-tested and confirmed a 2px up-left
+-- position nudge exactly compensates (and the reverse, 2px down-right,
+-- when shrinking back to vanilla). See BTV:ApplyGlobalButtonStyle.
+BTV.MODERN_BUTTON_SIZE_POSITION_SHIFT = 2
+
 -- Every custom-bar grid preset the Settings UI offers (1x12, 2x6, 3x4,
 -- 4x3, 6x2, 12x1) totals exactly 12 buttons, so 12 is the fixed size of
 -- the per-slot button pool a custom bar allocates once at creation (see

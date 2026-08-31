@@ -564,12 +564,33 @@ function BTV:ApplyGlobalButtonStyle()
 	elseif BTVanillaDB.lastAppliedVanillaStyle ~= vanilla then
 		local delta = vanilla and -self.MODERN_BUTTON_SIZE_DELTA or self.MODERN_BUTTON_SIZE_DELTA
 
+		-- Compensates for the size delta above being anchored, not
+		-- centered - growing to modern shifts the bar up-left, shrinking
+		-- back to vanilla shifts it back down-right.
+		local posShift = self.MODERN_BUTTON_SIZE_POSITION_SHIFT
+		local dx = vanilla and posShift or -posShift
+		local dy = vanilla and -posShift or posShift
+
+		-- useDefaultLayout turning ON forces vanilla=true here regardless
+		-- of modernBorderStyle, and its own OnClick already reset bars
+		-- 1-5's buttonSize/position to their true native values via the
+		-- reset cascade BEFORE calling this function - applying the delta
+		-- on top of that would double-shift them away from native. Skip
+		-- bars 1-5 in that specific case; extra bars 6-9 (never touched
+		-- by that cascade) still need the delta. Every OTHER transition
+		-- (useDefaultLayout turning off, or the style checkbox toggling
+		-- while it's already off) has no such reset to conflict with, so
+		-- bars 1-5 get the delta normally there.
+		local skipDefaultBars = BTVanillaDB.useDefaultLayout ~= false
+
 		local barId
 		local bar
 
 		for barId, bar in pairs(self.bars) do
-			if bar and bar.config and bar.config.buttonSize then
+			if bar and bar.config and bar.config.buttonSize and
+				not (skipDefaultBars and barId >= 1 and barId <= 5) then
 				self:SetBarButtonSize(bar, bar.config.buttonSize + delta)
+				self:SetBarPosition(bar, (bar.config.x or 0) + dx, (bar.config.y or 0) + dy)
 			end
 		end
 
