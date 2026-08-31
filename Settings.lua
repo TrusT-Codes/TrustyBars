@@ -3885,6 +3885,8 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.countValueText)
 	n = AppendCandidate(candidates, n, panel.countResetButton)
 	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
+	n = AppendCandidate(candidates, n, panel.modernBorderStyleCheckbox)
+	n = AppendCandidate(candidates, n, panel.modernBorderStyleDescription)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
@@ -4246,6 +4248,13 @@ function BTV:GetOrCreateGeneralPanel()
 
 			BTVanillaDB.useDefaultLayout = checked
 
+			-- Re-evaluates and applies BTV:IsVanillaBorderStyle() live -
+			-- turning this ON forces every bar back to vanilla styling
+			-- immediately; turning it OFF re-applies whatever
+			-- modernBorderStyle is currently stored instead of leaving
+			-- bars showing the forced-vanilla look until next login.
+			BTV:ApplyGlobalButtonStyle()
+
 			-- Re-gate any default-bar page already built/cached so it
 			-- reflects the new state immediately if it happens to be
 			-- visible (or gets shown next) without needing a reload.
@@ -4351,6 +4360,13 @@ function BTV:GetOrCreateGeneralPanel()
 				-- caught up gating/alpha, not the underlying values.
 				BTV:RefreshDefaultLayoutGatingOnAllPages()
 			end
+
+			-- Updates the new "Use Modern Button Style" checkbox's own
+			-- checked/grey-out state immediately (RefreshGeneralPanel
+			-- isn't otherwise called from this handler) so it reflects
+			-- the lock the moment useDefaultLayout changes, without
+			-- needing to leave and reopen the General tab.
+			BTV:RefreshGeneralPanel()
 		end
 	)
 
@@ -5041,6 +5057,93 @@ function BTV:GetOrCreateGeneralPanel()
 
 	panel.snapToAdjacentDescription = snapToAdjacentDescription
 
+	-------------------------------------------------------------------------
+	-- Global border/spacing style (default bars vs. extra bars alignment)
+	--
+	-- One global checkbox choosing the button border style used by ALL
+	-- bars (default 1-5 AND extra 6-9): "modern" (today's Extra Bar look
+	-- - backdrop border) or "vanilla" (today's default bar look - native
+	-- Blizzard border). Also resets every bar's button size/spacing to a
+	-- shared canonical value so the two bar kinds visually align - see
+	-- BTV:ApplyGlobalButtonStyle (Bar.lua). Locked to vanilla while "Use
+	-- Default Blizzard Layout" is on (BTV:IsVanillaBorderStyle, Core.lua).
+	-------------------------------------------------------------------------
+
+	local modernBorderStyleCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralModernBorderStyleCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	modernBorderStyleCheckbox:SetWidth(24)
+	modernBorderStyleCheckbox:SetHeight(24)
+
+	modernBorderStyleCheckbox:SetPoint(
+		"TOPLEFT",
+		snapToAdjacentDescription,
+		"BOTTOMLEFT",
+		-4,
+		-14
+	)
+
+	modernBorderStyleCheckbox:SetScript(
+		"OnClick",
+		function()
+			-- Belt-and-suspenders re-check, mirrors this addon's existing
+			-- convention (e.g. Button.lua's OnMouseWheel re-checking
+			-- useDefaultLayout) - RefreshGeneralPanel's own gating below
+			-- is what actually prevents this OnClick from firing in the
+			-- normal case (EnableMouse(false) while locked).
+			if BTVanillaDB.useDefaultLayout ~= false then
+				this:SetChecked(false)
+				return
+			end
+
+			BTVanillaDB.modernBorderStyle = this:GetChecked() and true or false
+
+			BTV:ApplyGlobalButtonStyle()
+			BTV:RefreshDefaultLayoutGatingOnAllPages()
+		end
+	)
+
+	local modernBorderStyleLabel = getglobal(
+		modernBorderStyleCheckbox:GetName() .. "Text"
+	)
+
+	if modernBorderStyleLabel then
+		modernBorderStyleLabel:SetText("Use Modern Button Style")
+	end
+
+	panel.modernBorderStyleCheckbox = modernBorderStyleCheckbox
+
+	local modernBorderStyleDescription = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontHighlightSmall"
+	)
+
+	modernBorderStyleDescription:SetPoint(
+		"TOPLEFT",
+		modernBorderStyleCheckbox,
+		"BOTTOMLEFT",
+		4,
+		-10
+	)
+
+	modernBorderStyleDescription:SetWidth(520)
+	modernBorderStyleDescription:SetJustifyH("LEFT")
+
+	modernBorderStyleDescription:SetText(
+		"Choose the button border style used by ALL bars, default and " ..
+		"extra: modern (backdrop border, today's Extra Bar look) or " ..
+		"vanilla (native Blizzard border, today's default bar look). " ..
+		"Also resets every bar's button size and spacing to match. " ..
+		"Locked to vanilla while \"Use Default Blizzard Layout\" is enabled."
+	)
+
+	panel.modernBorderStyleDescription = modernBorderStyleDescription
+
 	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
 	-- to the Experience Bar's own settings page (round 17 item 5,
 	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
@@ -5060,6 +5163,19 @@ function BTV:RefreshGeneralPanel()
 	panel.useDefaultLayoutCheckbox:SetChecked(
 		BTVanillaDB.useDefaultLayout == true
 	)
+
+	-- Locked to unchecked+non-interactive while useDefaultLayout forces
+	-- vanilla styling (BTV:IsVanillaBorderStyle, Core.lua) - reuses the
+	-- established EnableMouse(false)+SetAlpha(0.5) gating idiom
+	-- (ApplyDefaultLayoutGating) rather than :Disable(), matching every
+	-- other gated control in this file.
+	local vanillaBorderStyleLocked = BTVanillaDB.useDefaultLayout ~= false
+
+	panel.modernBorderStyleCheckbox:SetChecked(
+		(not vanillaBorderStyleLocked) and BTVanillaDB.modernBorderStyle == true
+	)
+	panel.modernBorderStyleCheckbox:EnableMouse(not vanillaBorderStyleLocked)
+	panel.modernBorderStyleCheckbox:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
 
 	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
 	-- unchecks this.

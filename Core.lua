@@ -939,6 +939,17 @@ function BTV:EnsureDB()
 		BTVanillaDB.useDefaultLayout = true
 	end
 
+	-- Global border/spacing style (General tab checkbox): true = "modern"
+	-- (today's Extra Bars 6-9 look - backdrop border, spacing 0), false =
+	-- "vanilla" (today's default Bars 1-5 look - native UI-Quickslot2
+	-- texture, captured native spacing). Default false so upgraders' bars
+	-- 1-5 keep their current look; extra bars 6-9 do visually change to
+	-- vanilla the first time this ships, since one global toggle can't
+	-- preserve both groups' current-but-mismatched looks at once.
+	if BTVanillaDB.modernBorderStyle == nil then
+		BTVanillaDB.modernBorderStyle = false
+	end
+
 	-- Main Bar migration Part 2/3 (DefaultBars.lua's
 	-- GetMainBarEffectivePage/RefreshMainBarSlots): both default true,
 	-- matching real vanilla bar 1's own always-on native paging/stance-
@@ -1555,7 +1566,13 @@ end
 -- precision (the disabled version's replacement had only ever computed
 -- one symmetric value for all 4 sides, silently wrong by 1px top/bottom).
 function BTV:GetElementVisualInset(frame)
-	if frame and frame.config and frame.config.id and frame.config.id >= 1 and frame.config.id <= 5 then
+	-- Reads the same global border-style source of truth as Button.lua's
+	-- Init/ApplyBorderStyle (BTV:IsVanillaBorderStyle) instead of a
+	-- hardcoded id range, so this stays correct after the global
+	-- border-style toggle changes which bars actually render the native
+	-- border texture - the sizing FORMULA below is untouched, only the
+	-- condition that decides whether to apply it at all.
+	if frame and frame.config and frame.config.id and self:IsVanillaBorderStyle() then
 		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
 		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
 		local yOffset = self.BORDER_Y_OFFSET or 0
@@ -1745,6 +1762,22 @@ function BTV:ComputeSnapAdjustment(proposedLeft, proposedTop, width, height, exc
 	end
 
 	return adjustedLeft, adjustedTop
+end
+
+-------------------------------------------------------------------------
+-- Global border/spacing style (General tab checkbox)
+-------------------------------------------------------------------------
+
+-- Single source of truth for the global border/spacing style - both
+-- Button.lua's Init/ApplyBorderStyle AND GetElementVisualInset above
+-- must read this exact function, never re-derive the id-based check
+-- independently, or the two could disagree after the toggle flips.
+function BTV:IsVanillaBorderStyle()
+	if BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+		return true
+	end
+
+	return not (BTVanillaDB and BTVanillaDB.modernBorderStyle)
 end
 
 -------------------------------------------------------------------------
@@ -2033,6 +2066,14 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:CreateFixedSlotDefaultBars()
 
 	BTV:ApplyAllDefaultBars()
+
+	-- Global border/spacing style (General tab checkbox): every bar
+	-- (default 1-5 AND extra 6-9) now exists, so apply the currently
+	-- saved global style to all of them - covers a fresh login where
+	-- some/all bars have never had this sweep applied before, keeping
+	-- them consistent with whatever the user last chose (or the seeded
+	-- default).
+	BTV:ApplyGlobalButtonStyle()
 
 	-- Now a no-op for every default bar (Main Bar migration, Phase 2):
 	-- bars 1-5's real Blizzard buttons are all now permanently hidden -

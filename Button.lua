@@ -291,8 +291,7 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	-- UpdateBackdropVisibility's own self.hasNativeBorder check, which
 	-- skips turning that backdrop border opaque for THIS button so the two
 	-- styles can never stack).
-	self.hasNativeBorder = parent.config and parent.config.id and
-		parent.config.id >= 1 and parent.config.id <= 5
+	self.hasNativeBorder = BTV:IsVanillaBorderStyle()
 
 	if self.hasNativeBorder then
 		-- "OVERLAY", explicit sublevel -1 (below equipRing/glow's own
@@ -568,6 +567,51 @@ function BTVButtonMixin:ApplySize(size)
 		self.border:SetWidth(borderSize)
 		self.border:SetHeight(borderSize)
 	end
+end
+
+-- Re-applies the CURRENT global border style (BTV:IsVanillaBorderStyle())
+-- to an already-created button, in place - companion to Init's one-time
+-- border/backdrop/icon-inset setup above, callable repeatedly (from the
+-- General tab's live-toggle sweep, BTV:ApplyGlobalButtonStyle in Bar.lua)
+-- without recreating the button frame. Must stay in lockstep with every
+-- self.hasNativeBorder-gated block in Init - if that ever changes, mirror
+-- the change here too.
+function BTVButtonMixin:ApplyBorderStyle()
+	self.hasNativeBorder = BTV:IsVanillaBorderStyle()
+
+	if self.hasNativeBorder then
+		if not self.border then
+			self.border = self:CreateTexture(nil, "OVERLAY")
+			self.border:SetDrawLayer("OVERLAY", -1)
+			self.border:SetTexture("Interface\\Buttons\\UI-Quickslot2")
+			self.border:SetPoint("CENTER", self, "CENTER", 0, -1)
+		end
+
+		self.border:Show()
+	elseif self.border then
+		self.border:Hide()
+	end
+
+	-- Reuses ApplySize's own border-sizing math (size * BTV.BORDER_RATIO)
+	-- instead of duplicating it here.
+	self:ApplySize(self.buttonSize or BTV.BUTTON_SIZE)
+
+	local iconInset = self.hasNativeBorder and 0 or 2
+	self.icon:ClearAllPoints()
+	self.icon:SetPoint("TOPLEFT", self, "TOPLEFT", iconInset, -iconInset)
+	self.icon:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -iconInset, iconInset)
+
+	local backdropInset = self.hasNativeBorder and 0 or 1
+	self:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = { left = backdropInset, right = backdropInset, top = backdropInset, bottom = backdropInset },
+	})
+
+	self:UpdateBackdropVisibility()
 end
 
 -- Shows or hides this pool slot without destroying it. Used when a bar's

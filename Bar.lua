@@ -290,6 +290,31 @@ local function EnsureBarOverlay(bar)
 		end
 	end)
 
+	-- Scroll-wheel-to-resize, matching drag-to-move's existing
+	-- whole-overlay coverage above - mirrors DefaultBars.lua's
+	-- EnsureContainerOverlay OnMouseWheel handler and Button.lua's
+	-- per-button BTVButtonMixin.OnMouseWheel gating logic, reproduced
+	-- here so scroll-to-resize works anywhere over this bar's overlay,
+	-- not just directly over an individual button.
+	overlay:EnableMouseWheel(true)
+	overlay:SetScript("OnMouseWheel", function()
+		if not BTV:IsEditMode() then
+			return
+		end
+
+		local barId = bar.config.id
+
+		if barId and barId >= 1 and barId <= 5 and
+			BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+			return
+		end
+
+		local delta = arg1 or 0
+		local step = 2
+
+		BTV:SetBarButtonSize(bar, bar.config.buttonSize + (delta * step))
+	end)
+
 	overlay:EnableMouse(false)
 	overlay:Hide()
 
@@ -499,6 +524,55 @@ function BTV:SetBarSpacing(bar, spacing)
 	bar.config.spacing = spacing
 
 	self:ApplyBarShape(bar)
+end
+
+-------------------------------------------------------------------------
+-- Global border/spacing style sweep (General tab checkbox,
+-- BTVanillaDB.modernBorderStyle / useDefaultLayout's forced-vanilla lock)
+--
+-- Re-applies the CURRENT global style (BTV:IsVanillaBorderStyle()) to
+-- every bar (1-9) and every button on every bar: canonical buttonSize/
+-- spacing via the existing SetBarButtonSize/SetBarSpacing (clamp+write+
+-- relayout already handled there), and per-button border/backdrop/
+-- icon-inset via Button.lua's BTVButtonMixin:ApplyBorderStyle. One-time
+-- reset, not a live lock - the per-bar Settings.lua spacing/size sliders
+-- remain freely adjustable afterward. Called from: the new checkbox's
+-- OnClick, useDefaultLayoutCheckbox's OnClick, and once at login after
+-- every bar (default + extra) exists.
+-------------------------------------------------------------------------
+
+function BTV:ApplyGlobalButtonStyle()
+	if not self.bars then
+		return
+	end
+
+	local vanilla = self:IsVanillaBorderStyle()
+	local canonicalSpacing = 0
+
+	if vanilla then
+		local mainBarCfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[1]
+		canonicalSpacing = (mainBarCfg and mainBarCfg.spacing) or 0
+	end
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			self:SetBarButtonSize(bar, self.BUTTON_SIZE)
+			self:SetBarSpacing(bar, canonicalSpacing)
+
+			local i
+
+			for i = 1, table.getn(bar.buttons) do
+				local btn = bar.buttons[i]
+
+				if btn and btn.ApplyBorderStyle then
+					btn:ApplyBorderStyle()
+				end
+			end
+		end
+	end
 end
 
 -------------------------------------------------------------------------
