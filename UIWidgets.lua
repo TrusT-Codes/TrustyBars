@@ -381,50 +381,46 @@ function BTVDialogMixin:Init(config)
 	self.editBox:Hide()
 	self.dropdown:Hide()
 
-	local contentBottom = self.messageText
-
 	if self.mode == "textinput" then
 		self.editBox:SetPoint("TOP", self.messageText, "BOTTOM", 0, -14)
 		self.editBox:SetText(config.defaultText or "")
 		self.editBox:HighlightText()
 		self.editBox:Show()
-		contentBottom = self.editBox
 	elseif self.mode == "dropdown" then
 		self.dropdown:ClearAllPoints()
 		self.dropdown:SetPoint("TOP", self.messageText, "BOTTOM", 0, -10)
 		self.dropdown:SetOptions(config.options or {})
 		self.dropdown:SetSelected((config.options or {})[1])
 		self.dropdown:Show()
-		contentBottom = self.dropdown
 	end
 
-	-- Buttons stack vertically, one per row, rather than side by side - the
-	-- spec's own button labels ("I know what im doing, use default
-	-- profile") are long, and the first-login dialog needs up to 4 of
-	-- them, so a horizontal row either overflows the dialog or forces
-	-- unreadable truncation. Each row is full-width.
+	-- Buttons flow horizontally, wrapping into as many centered rows as
+	-- needed - each row's buttons sit side by side with equal
+	-- BUTTON_GAP_X spacing, and the row itself is centered on the
+	-- dialog's own horizontal center (matching title/message/mode content,
+	-- which are all centered the same way). A row only wraps to a new
+	-- line once it can no longer fit the next button within the dialog's
+	-- usable width, so a single short-label confirm still renders as one
+	-- row, while the first-login dialog's four long labels spread across
+	-- multiple rows instead of forcing one axis to be either overflowing
+	-- (all in one row) or needlessly tall (one per row, the old design).
+	local BUTTON_GAP_X = 12
+	local BUTTON_ROW_GAP_Y = 8
+	local availableWidth = DIALOG_WIDTH - 40
+
 	local i
 	local count = table.getn(self.buttonConfigs)
 	self.defaultButtonIndex = nil
 
+	-- Pass 1: configure every visible button (label/click handler) so its
+	-- real, content-fit width (BTV:StyleModernButton's SetText override)
+	-- is known before row-packing below.
 	for i = 1, 4 do
 		local button = self.buttons[i]
 		local buttonConfig = self.buttonConfigs[i]
 
 		if buttonConfig then
-			-- First button gets a bigger gap below the message/input
-			-- content; every button after that sits a small fixed gap
-			-- below the PREVIOUS button (contentBottom is reassigned to
-			-- the just-shown button at the end of each iteration).
-			local gap = (i == 1) and -14 or -8
-
-			-- SetText (BTV:StyleModernButton's override) resizes the
-			-- button to fit this label, clamped to
-			-- [DIALOG_BUTTON_MIN_WIDTH, DIALOG_WIDTH - 40] - no manual
-			-- SetWidth needed here.
 			button:SetText(buttonConfig.text or "")
-			button:ClearAllPoints()
-			button:SetPoint("TOP", contentBottom, "BOTTOM", 0, gap)
 
 			button:SetScript("OnClick", function()
 				local value = BTV.activeDialog:GetValue()
@@ -441,8 +437,6 @@ function BTVDialogMixin:Init(config)
 			end
 
 			button:Show()
-
-			contentBottom = button
 		else
 			button:Hide()
 		end
@@ -452,35 +446,84 @@ function BTVDialogMixin:Init(config)
 		self.defaultButtonIndex = 1
 	end
 
-	-- Content-aware sizing: measures the ACTUAL height every element ends
-	-- up taking (title/message auto-wrap to their real GetHeight() at the
-	-- fixed width set in OnLoad) and adds up the exact same gaps used to
-	-- anchor them above, rather than guessing a fixed formula - so the
-	-- dialog always fits whatever title/message/mode content/button count
-	-- a given config actually throws at it. Mirrors the anchor chain
-	-- above: TOP_OFFSET (title's own offset from self's TOP, set in
-	-- OnLoad) -> title -> 10px gap -> message -> mode content (if any) ->
-	-- buttons (first gap 14, then 8 each) -> BOTTOM_PADDING.
+	-- Pass 2: greedily wrap buttons 1..count into rows - rows[r] is an
+	-- array of button indices, rowWidths[r] is that row's total width
+	-- (buttons + the BUTTON_GAP_X between them), used to center it below.
+	local rows = {}
+	local rowWidths = {}
+	local rowCount = 0
+
+	for i = 1, count do
+		local button = self.buttons[i]
+		local width = button:GetWidth()
+		local addWidth = width
+
+		if rowCount > 0 and table.getn(rows[rowCount]) > 0 then
+			addWidth = BUTTON_GAP_X + width
+
+			if (rowWidths[rowCount] + addWidth) > availableWidth then
+				rowCount = rowCount + 1
+				rows[rowCount] = {}
+				rowWidths[rowCount] = 0
+				addWidth = width
+			end
+		else
+			rowCount = rowCount + 1
+			rows[rowCount] = {}
+			rowWidths[rowCount] = 0
+		end
+
+		table.insert(rows[rowCount], i)
+		rowWidths[rowCount] = rowWidths[rowCount] + addWidth
+	end
+
+	-- Content-aware sizing/positioning: every button row is anchored
+	-- directly off self's own TOP with a precomputed pixel offset (rather
+	-- than chaining off the previous element's rendered position) so its
+	-- horizontal centering offset can be applied independently of its
+	-- vertical stacking order. Mirrors titleText's own existing pattern of
+	-- anchoring straight to self "TOP". TOP_OFFSET/title/message/mode-
+	-- content gaps match OnLoad's own anchor chain for those elements.
 	local TOP_OFFSET = 18
 	local BOTTOM_PADDING = 20
 
-	local height = TOP_OFFSET
-	height = height + (self.titleText:GetHeight() or 0)
-	height = height + 10 + (self.messageText:GetHeight() or 0)
+	local contentBottomY = TOP_OFFSET
+	contentBottomY = contentBottomY + (self.titleText:GetHeight() or 0)
+	contentBottomY = contentBottomY + 10 + (self.messageText:GetHeight() or 0)
 
 	if self.mode == "textinput" then
-		height = height + 14 + (self.editBox:GetHeight() or 0)
+		contentBottomY = contentBottomY + 14 + (self.editBox:GetHeight() or 0)
 	elseif self.mode == "dropdown" then
-		height = height + 10 + (self.dropdown:GetHeight() or 0)
+		contentBottomY = contentBottomY + 10 + (self.dropdown:GetHeight() or 0)
 	end
 
-	for i = 1, count do
-		local gap = (i == 1) and 14 or 8
+	local rowY = contentBottomY
+	local r
 
-		height = height + gap + DIALOG_BUTTON_HEIGHT
+	for r = 1, rowCount do
+		local rowGap = (r == 1) and 14 or BUTTON_ROW_GAP_Y
+
+		rowY = rowY + rowGap
+
+		local row = rows[r]
+		local cursorX = -(rowWidths[r] / 2)
+		local j
+
+		for j = 1, table.getn(row) do
+			local button = self.buttons[row[j]]
+			local width = button:GetWidth()
+			local centerX = cursorX + (width / 2)
+
+			button:ClearAllPoints()
+			button:SetPoint("TOP", self, "TOP", centerX, -rowY)
+
+			cursorX = cursorX + width + BUTTON_GAP_X
+		end
+
+		rowY = rowY + DIALOG_BUTTON_HEIGHT
 	end
 
-	self:SetHeight(height + BOTTOM_PADDING)
+	self:SetHeight(rowY + BOTTOM_PADDING)
 end
 
 function BTVDialogMixin:GetValue()
