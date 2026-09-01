@@ -3379,35 +3379,53 @@ end
 -- frame tree directly instead (anonymous children are still reachable
 -- via GetChildren()). Open Options -> Action Bars first.
 function BTV:DiagActionBarsPanelTree()
-	self:Print("--- diag13: walking InterfaceOptionsActionBarsPanel tree ---")
+	self:Print("--- diag13: walking InterfaceOptionsFramePanelContainer tree ---")
 
-	local panel = getglobal("InterfaceOptionsActionBarsPanel")
+	local container = getglobal("InterfaceOptionsFramePanelContainer") or getglobal("InterfaceOptionsFrame")
 
-	if not panel then
-		self:Print("InterfaceOptionsActionBarsPanel not found in _G.")
+	if not container then
+		self:Print("Neither InterfaceOptionsFramePanelContainer nor InterfaceOptionsFrame found in _G.")
 		self:Print("--- diag13 end ---")
 		return
 	end
 
-	local children = { panel:GetChildren() }
+	self:Print("Using container: " .. (container.GetName and container:GetName() or "?"))
+
+	local children = { container:GetChildren() }
 	local i
 
 	for i = 1, table.getn(children) do
 		local child = children[i]
-		local okType, objType = pcall(function() return child.GetObjectType and child:GetObjectType() end)
 		local name = (child.GetName and child:GetName()) or "(anonymous)"
+		local okShown, shown = pcall(function() return child:IsShown() end)
 
-		if okType and objType == "CheckButton" then
-			local okEnabled, enabled = pcall(function() return child:IsEnabled() end)
-			local okChecked, checked = pcall(function() return child:GetChecked() end)
+		self:Print(name .. ": IsShown=" .. tostring(okShown and shown))
 
-			self:Print(
-				name ..
-				": IsEnabled=" .. tostring(okEnabled and enabled) ..
-				" GetChecked=" .. tostring(okChecked and checked)
-			)
-		else
-			self:Print(name .. ": type=" .. tostring(okType and objType))
+		-- Only recurse into the currently-SHOWN panel (the Action Bars
+		-- one, if that's the tab open) - printing every panel's full
+		-- child tree would be a huge, mostly-irrelevant dump.
+		if okShown and shown then
+			local grandchildren = { child:GetChildren() }
+			local j
+
+			for j = 1, table.getn(grandchildren) do
+				local gc = grandchildren[j]
+				local gcName = (gc.GetName and gc:GetName()) or "(anonymous)"
+				local okType, objType = pcall(function() return gc.GetObjectType and gc:GetObjectType() end)
+
+				if okType and objType == "CheckButton" then
+					local okEnabled, enabled = pcall(function() return gc:IsEnabled() end)
+					local okChecked, checked = pcall(function() return gc:GetChecked() end)
+
+					self:Print(
+						"  " .. gcName ..
+						": CheckButton IsEnabled=" .. tostring(okEnabled and enabled) ..
+						" GetChecked=" .. tostring(okChecked and checked)
+					)
+				else
+					self:Print("  " .. gcName .. ": type=" .. tostring(okType and objType))
+				end
+			end
 		end
 	end
 
