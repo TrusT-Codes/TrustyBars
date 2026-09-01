@@ -200,6 +200,14 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
+-- Width reserved for the content viewport's scrollbar
+-- (UIPanelScrollFrameTemplate anchors it just outside the scrollframe's
+-- own right edge) - reserved unconditionally, whether or not the current
+-- view's content actually needs to scroll, so nothing has to reflow when
+-- it toggles. Shared by CreateSettingsFrame and
+-- BTV:PositionContentScrollFrame (both below).
+local SETTINGS_SCROLLBAR_RESERVED_WIDTH = 28
+
 -- Fixed vertical band reserved for the Default-profile-lock warning
 -- banner (CreateProfileLockWarning below), anchored right under each
 -- page's title and right above its first content control. Reserved
@@ -449,6 +457,103 @@ local function RefreshGridSwatchSelection(page, cols, rows)
 end
 
 -------------------------------------------------------------------------
+-- Reusable scrollable content area
+--
+-- One generic ScrollFrame + wiring helper, used to back every settings
+-- page/tab (bar pages via contentPanel, the General tab, the Profiles
+-- tab) - so the up/down scrollbar buttons, mouse-wheel scrolling, and
+-- draggable thumb only need to be built and wired once, and any page
+-- that grows past its available height automatically gets scrolling
+-- with zero page-specific code.
+-------------------------------------------------------------------------
+
+-- How far one mouse-wheel notch moves the scrollbar, in pixels.
+local SETTINGS_SCROLL_WHEEL_STEP = 30
+
+-- Creates a native ScrollFrame (UIPanelScrollFrameTemplate already
+-- supplies the up/down arrow buttons and the draggable thumb) parented
+-- to `parent`, with mouse-wheel scrolling wired in. The caller positions/
+-- sizes the returned scrollFrame exactly like it would a plain content
+-- Frame; actual content should be parented into whatever scrollchild
+-- BTV:UpdateScrollFrame below is later given for it (via
+-- scrollFrame:SetScrollChild), not into scrollFrame itself.
+function BTV:CreateScrollFrame(parent, name)
+	local scrollFrame = CreateFrame("ScrollFrame", name, parent, "UIPanelScrollFrameTemplate")
+
+	local scrollBar = getglobal(name .. "ScrollBar")
+
+	scrollFrame.scrollBar = scrollBar
+
+	scrollFrame:EnableMouseWheel(true)
+
+	scrollFrame:SetScript("OnMouseWheel", function()
+		if not scrollBar then
+			return
+		end
+
+		local minVal, maxVal = scrollBar:GetMinMaxValues()
+		local newValue = scrollBar:GetValue() - (arg1 * SETTINGS_SCROLL_WHEEL_STEP)
+
+		if newValue < minVal then
+			newValue = minVal
+		elseif newValue > maxVal then
+			newValue = maxVal
+		end
+
+		scrollBar:SetValue(newValue)
+	end)
+
+	if scrollBar then
+		-- UIPanelScrollBarTemplate's own up/down buttons and thumb-drag
+		-- both work purely by changing the slider's value - this is the
+		-- one place that actually moves the scroll view in response.
+		scrollBar:SetScript("OnValueChanged", function()
+			scrollFrame:SetVerticalScroll(this:GetValue())
+		end)
+	end
+
+	return scrollFrame
+end
+
+-- Points `scrollFrame` at `scrollChild` (a plain Frame the caller already
+-- parents its real page content into - e.g. settingsFrame.contentPanel/
+-- generalPanel/profilesPanel), sizes the scrollchild to
+-- `requiredContentHeight` (the page's real, possibly-taller-than-visible
+-- content height, as already measured by ApplySettingsHeightFromCandidates
+-- below), sizes the scrollFrame itself to the clamped `viewportHeight`,
+-- resets scroll to the top, and shows/hides the scrollbar depending on
+-- whether there's actually anything to scroll. Called every time a page's
+-- content changes, so scrolling turns on/off automatically as content
+-- grows/shrinks - no per-page special-casing needed.
+function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, viewportHeight)
+	scrollChild:SetWidth(scrollFrame:GetWidth())
+	scrollChild:SetHeight(requiredContentHeight)
+
+	scrollFrame:SetScrollChild(scrollChild)
+	scrollFrame:SetHeight(viewportHeight)
+	scrollFrame:SetVerticalScroll(0)
+
+	local scrollBar = scrollFrame.scrollBar
+
+	if scrollBar then
+		local maxScroll = requiredContentHeight - viewportHeight
+
+		if maxScroll < 0 then
+			maxScroll = 0
+		end
+
+		scrollBar:SetMinMaxValues(0, maxScroll)
+		scrollBar:SetValue(0)
+
+		if maxScroll > 0 then
+			scrollBar:Show()
+		else
+			scrollBar:Hide()
+		end
+	end
+end
+
+-------------------------------------------------------------------------
 -- Create main settings frame
 -------------------------------------------------------------------------
 
@@ -684,26 +789,39 @@ local function CreateSettingsFrame()
 
 	-------------------------------------------------------------------------
 	-- Right content panel
+	--
+	-- contentScrollFrame is the fixed, capped-height VIEWPORT (visible
+	-- bounds + border + scrollbar) - contentPanel/generalPanel/
+	-- profilesPanel (created lazily elsewhere) are all just plain Frames
+	-- swapped in as its scroll child (BTV:UpdateScrollFrame) as views
+	-- change, each sized to ITS OWN real content height, which can exceed
+	-- the viewport - that's exactly what makes the scrollbar appear.
 	-------------------------------------------------------------------------
 
-	f.contentPanel = CreateFrame(
-		"Frame",
-		nil,
-		f
-	)
+	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
-	f.contentPanel:SetWidth(580)
-	f.contentPanel:SetHeight(610)
+	f.contentScrollFrame:SetHeight(610)
 
-	f.contentPanel:SetPoint(
+	-- Starts anchored for the "bars" view (narrower, sits beside the
+	-- always-visible bar list) - ShowGeneralView/ShowProfilesView widen it
+	-- to span the full content width via BTV:PositionContentScrollFrame
+	-- (defined further down this file, since it reads the module-level
+	-- settingsFrame upvalue, which isn't assigned until this function
+	-- returns), since the bar list is hidden in those views; ShowBarPage
+	-- puts it back. Both share this one viewport/scrollbar rather than
+	-- each view getting its own, so there's only ever one scroll
+	-- mechanism to wire.
+	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
+
+	f.contentScrollFrame:SetPoint(
 		"TOPRIGHT",
 		f,
 		"TOPRIGHT",
-		-18,
+		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
 		-52
 	)
 
-	f.contentPanel:SetBackdrop({
+	f.contentScrollFrame:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		tile = true,
@@ -717,18 +835,55 @@ local function CreateSettingsFrame()
 		},
 	})
 
-	f.contentPanel:SetBackdropColor(
+	f.contentScrollFrame:SetBackdropColor(
 		0,
 		0,
 		0,
 		0.3
 	)
 
+	f.contentPanel = CreateFrame(
+		"Frame",
+		nil,
+		f.contentScrollFrame
+	)
+
+	f.contentPanel:SetWidth(f.contentScrollFrame:GetWidth())
+	f.contentPanel:SetHeight(610)
+
+	f.contentScrollFrame:SetScrollChild(f.contentPanel)
+
 	f.pages = {}
 
 	settingsFrame = f
 
 	return f
+end
+
+-- Repositions/resizes the shared content scroll viewport for the given
+-- view - "bars" (wide = false, narrower, sits beside the always-visible
+-- bar list) vs "general"/"profiles" (wide = true, spans the full content
+-- width, since the bar list is hidden in those views). Called once at the
+-- top of ShowBarPage/ShowGeneralView/ShowProfilesView, before that view's
+-- own Fit*View/BTV:UpdateScrollFrame call resizes it vertically.
+function BTV:PositionContentScrollFrame(wide)
+	local scrollFrame = settingsFrame.contentScrollFrame
+
+	scrollFrame:ClearAllPoints()
+
+	if wide then
+		scrollFrame:SetPoint("TOPLEFT", settingsFrame.listPanel, "TOPLEFT", 0, 0)
+	else
+		scrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
+	end
+
+	scrollFrame:SetPoint(
+		"TOPRIGHT",
+		settingsFrame,
+		"TOPRIGHT",
+		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
+		-52
+	)
 end
 
 -------------------------------------------------------------------------
@@ -3957,6 +4112,12 @@ local SETTINGS_CHROME_BOTTOM = 18
 -- happens to measure shorter than this.
 local SETTINGS_CONTENT_MIN_HEIGHT = 260
 
+-- The settings window can never grow taller than this fraction of the
+-- player's actual screen height - see ApplySettingsHeightFromCandidates'
+-- own comment on why capping height alone (the window is CENTER-anchored)
+-- is enough to guarantee top/bottom screen padding too.
+local SETTINGS_MAX_HEIGHT_RATIO = 0.9
+
 -- Appends frame to list only if non-nil, at the next free index (n+1).
 -- table.getn/# have undefined behavior on tables with nil "holes" (Lua
 -- 5.0 manual) - since several of the candidate controls below are nil
@@ -3995,11 +4156,14 @@ local function ConsiderFrameBottom(frame, lowestBottom)
 	return lowestBottom
 end
 
--- Resizes contentPanel/listPanel/the outer window to fit the lowest
--- bottom edge found across every frame in candidateList, floored at
--- SETTINGS_CONTENT_MIN_HEIGHT.
-local function ApplySettingsHeightFromCandidates(candidateList)
-	if not settingsFrame then
+-- Resizes `scrollChildPanel` (settingsFrame.contentPanel/generalPanel/
+-- profilesPanel - whichever view is currently being fitted)/listPanel/the
+-- outer window to fit the lowest bottom edge found across every frame in
+-- candidateList, floored at SETTINGS_CONTENT_MIN_HEIGHT and CEILED at the
+-- screen-relative max (BTV:UpdateScrollFrame turns scrolling on for
+-- whatever doesn't fit within that ceiling).
+local function ApplySettingsHeightFromCandidates(candidateList, scrollChildPanel)
+	if not settingsFrame or not scrollChildPanel then
 		return
 	end
 
@@ -4015,6 +4179,15 @@ local function ApplySettingsHeightFromCandidates(candidateList)
 	end
 
 	local top = frameTop - SETTINGS_CHROME_TOP
+
+	-- Every candidate below is a descendant of a scrollchild
+	-- (contentPanel/generalPanel/profilesPanel) - its GetBottom() reads
+	-- as a real SCREEN position that shifts with the current scroll
+	-- offset, so scroll has to be reset to the top BEFORE measuring or a
+	-- previously-scrolled view would measure as shorter than it really
+	-- is. BTV:UpdateScrollFrame resets it again below, but only after
+	-- this measurement already needs it at 0.
+	settingsFrame.contentScrollFrame:SetVerticalScroll(0)
 
 	local lowestBottom = nil
 	local i
@@ -4034,11 +4207,32 @@ local function ApplySettingsHeightFromCandidates(candidateList)
 		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
 	end
 
-	settingsFrame.contentPanel:SetHeight(contentHeight)
-	settingsFrame.listPanel:SetHeight(contentHeight)
+	-- Hard screen-relative ceiling on the VISIBLE viewport (never on the
+	-- real content height above, which BTV:UpdateScrollFrame needs
+	-- unclamped to size the scrollchild correctly) - the window is
+	-- CENTER-anchored to UIParent, so capping height alone guarantees at
+	-- least (1 - SETTINGS_MAX_HEIGHT_RATIO) / 2 of screen height as
+	-- padding above AND below it.
+	local maxViewportHeight = (GetScreenHeight() * SETTINGS_MAX_HEIGHT_RATIO)
+		- SETTINGS_CHROME_TOP - SETTINGS_CHROME_BOTTOM
+
+	local viewportHeight = contentHeight
+
+	if viewportHeight > maxViewportHeight then
+		viewportHeight = maxViewportHeight
+	end
+
+	BTV:UpdateScrollFrame(
+		settingsFrame.contentScrollFrame,
+		scrollChildPanel,
+		contentHeight,
+		viewportHeight
+	)
+
+	settingsFrame.listPanel:SetHeight(viewportHeight)
 
 	settingsFrame:SetHeight(
-		contentHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
+		viewportHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
 	)
 end
 
@@ -4141,7 +4335,11 @@ function BTV:FitSettingsWindowToBarPage(barId)
 		end
 	end
 
-	ApplySettingsHeightFromCandidates(candidates)
+	-- The scrollchild is settingsFrame.contentPanel itself, NOT `page` -
+	-- every bar page uses page:SetAllPoints(settingsFrame.contentPanel)
+	-- (GetOrCreateBarPage), so `page` always just mirrors contentPanel's
+	-- own rect rather than having independently meaningful dimensions.
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentPanel)
 end
 
 -- General view: no bar list is shown here, just the checkbox and its
@@ -4186,7 +4384,7 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
 
-	ApplySettingsHeightFromCandidates(candidates)
+	ApplySettingsHeightFromCandidates(candidates, panel)
 end
 
 -------------------------------------------------------------------------
@@ -4207,6 +4405,10 @@ function BTV:ShowBarPage(barId)
 	settingsFrame.currentView = "bars"
 	settingsFrame.listPanel:Show()
 	settingsFrame.contentPanel:Show()
+
+	-- Narrow content viewport (sits beside the bar list this view shows)
+	-- - see BTV:PositionContentScrollFrame's own comment.
+	self:PositionContentScrollFrame(false)
 
 	if settingsFrame.generalPanel then
 		settingsFrame.generalPanel:Hide()
@@ -4471,26 +4673,16 @@ function BTV:GetOrCreateGeneralPanel()
 		return settingsFrame.generalPanel
 	end
 
+	-- No SetPoint here (deliberately) - this panel is a scrollchild of
+	-- the shared settingsFrame.contentScrollFrame viewport
+	-- (BTV:UpdateScrollFrame, via this view's own Fit*View call), which
+	-- manages its position/size internally (width/height set explicitly
+	-- there); a manual anchor here would fight that instead of just
+	-- widening the empty space this used to occupy uselessly.
 	local panel = CreateFrame(
 		"Frame",
 		nil,
 		settingsFrame
-	)
-
-	panel:SetPoint(
-		"TOPLEFT",
-		settingsFrame.listPanel,
-		"TOPLEFT",
-		0,
-		0
-	)
-
-	panel:SetPoint(
-		"BOTTOMRIGHT",
-		settingsFrame.contentPanel,
-		"BOTTOMRIGHT",
-		0,
-		0
 	)
 
 	local title = panel:CreateFontString(
@@ -5729,26 +5921,16 @@ function BTV:GetOrCreateProfilesPanel()
 		return settingsFrame.profilesPanel
 	end
 
+	-- No SetPoint here (deliberately) - this panel is a scrollchild of
+	-- the shared settingsFrame.contentScrollFrame viewport
+	-- (BTV:UpdateScrollFrame, via this view's own Fit*View call), which
+	-- manages its position/size internally (width/height set explicitly
+	-- there); a manual anchor here would fight that instead of just
+	-- widening the empty space this used to occupy uselessly.
 	local panel = CreateFrame(
 		"Frame",
 		nil,
 		settingsFrame
-	)
-
-	panel:SetPoint(
-		"TOPLEFT",
-		settingsFrame.listPanel,
-		"TOPLEFT",
-		0,
-		0
-	)
-
-	panel:SetPoint(
-		"BOTTOMRIGHT",
-		settingsFrame.contentPanel,
-		"BOTTOMRIGHT",
-		0,
-		0
 	)
 
 	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
@@ -5904,7 +6086,7 @@ function BTV:FitSettingsWindowToProfilesView()
 	n = AppendCandidate(candidates, n, panel.copyButton)
 	n = AppendCandidate(candidates, n, panel.deleteButton)
 
-	ApplySettingsHeightFromCandidates(candidates)
+	ApplySettingsHeightFromCandidates(candidates, panel)
 end
 
 function BTV:RefreshGeneralPanel()
@@ -6073,6 +6255,11 @@ function BTV:ShowGeneralView()
 		settingsFrame.profilesPanel:Hide()
 	end
 
+	-- Wide content viewport (spans the space the bar list would have
+	-- used, since it's hidden in this view) - see
+	-- BTV:PositionContentScrollFrame's own comment.
+	self:PositionContentScrollFrame(true)
+
 	self:RefreshGeneralPanel()
 	self:GetOrCreateGeneralPanel():Show()
 
@@ -6100,6 +6287,11 @@ function BTV:ShowProfilesView()
 	if settingsFrame.generalPanel then
 		settingsFrame.generalPanel:Hide()
 	end
+
+	-- Wide content viewport (spans the space the bar list would have
+	-- used, since it's hidden in this view) - see
+	-- BTV:PositionContentScrollFrame's own comment.
+	self:PositionContentScrollFrame(true)
 
 	self:RefreshProfilesPanel()
 	self:GetOrCreateProfilesPanel():Show()
