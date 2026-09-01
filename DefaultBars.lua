@@ -849,6 +849,65 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	end
 end
 
+-- Same-session reactive sync: reconciles our OWN cfg.enabled (bars 2-5)
+-- FROM the native SHOW_MULTI_ACTIONBAR_1-4 globals whenever
+-- MultiActionBar_Update runs (fires on the real Interface Options
+-- checkbox's own OnClick, among other native triggers). Live-confirmed
+-- via /btv diag11 that toggling the real checkbox correctly flips both
+-- the global AND the real MultiBarLeft/Right frame's shown state on this
+-- fork, so this is safe to trust reactively WITHIN the current session -
+-- never at login (see BTV.SHOW_MULTI_ACTIONBAR_GLOBAL's own comment on
+-- why not: these globals don't survive a real logout on this fork).
+function BTV:ReconcileDefaultBarEnabledFromNative()
+	if not (BTVanillaDB and BTVanillaDB.defaultBars) then
+		return
+	end
+
+	local id
+
+	for id = 2, 5 do
+		local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
+		local cfg = BTVanillaDB.defaultBars[id]
+
+		if nativeGlobal and cfg then
+			local nativeEnabled = getglobal(nativeGlobal) and true or false
+			local currentEnabled = cfg.enabled and true or false
+
+			if nativeEnabled ~= currentEnabled then
+				-- Re-enters SetDefaultBarEnabled, which writes the same
+				-- (already-matching) value back to nativeGlobal and calls
+				-- MultiActionBar_Update() again - re-fires this same
+				-- hook once more, but by then nativeEnabled ==
+				-- currentEnabled already, so it's a harmless one-level
+				-- no-op re-entry, not a loop.
+				self:SetDefaultBarEnabled(id, nativeEnabled)
+
+				-- Keep the Settings window's own displayed checkboxes
+				-- (sidebar + that bar's own page, if currently open) in
+				-- sync too - only if the window has actually been built
+				-- this session, so toggling a native checkbox never
+				-- silently forces our settings UI into existence as a
+				-- side effect.
+				if BTV:IsSettingsFrameCreated() then
+					BTV:RefreshBarList()
+					BTV:RefreshBarSettingsPage(id)
+				end
+			end
+		end
+	end
+end
+
+-- hooksecurefunc runs AFTER the real MultiActionBar_Update has already
+-- applied whatever the native checkbox/globals currently say, so the
+-- reconcile above always reads the new value, never the stale one. Same
+-- top-level "register once at file load" convention as
+-- ChangeActionBarPage's own hook elsewhere in this file.
+if hooksecurefunc and MultiActionBar_Update then
+	hooksecurefunc("MultiActionBar_Update", function()
+		BTV:ReconcileDefaultBarEnabledFromNative()
+	end)
+end
+
 -- Every default bar (1-5) delegates to Bar.lua's own SetBarLayout (which
 -- also re-clamps buttonCount - always a no-op here in practice, since
 -- every grid preset totals exactly 12 and default bars have no

@@ -583,6 +583,15 @@ function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, 
 	end
 end
 
+-- Lets other files (DefaultBars.lua's native-checkbox reconciliation)
+-- check whether the settings window has ever been built this session
+-- WITHOUT forcing it into existence as a side effect - unlike calling any
+-- of the BTV:GetOrCreate*/RefreshBarList-style functions directly, which
+-- all create it lazily if it doesn't exist yet.
+function BTV:IsSettingsFrameCreated()
+	return settingsFrame ~= nil
+end
+
 -------------------------------------------------------------------------
 -- Create main settings frame
 -------------------------------------------------------------------------
