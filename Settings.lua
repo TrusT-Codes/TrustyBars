@@ -5955,6 +5955,7 @@ function BTV:GetOrCreateGeneralPanel()
 				BTV:ApplyGlobalSpacing()
 			end
 
+			BTV:ReflowGeneralOverrideSliders(panel)
 			BTV:RefreshAllBarPagesGlobalOverrideGating()
 		end
 	)
@@ -6072,6 +6073,7 @@ function BTV:GetOrCreateGeneralPanel()
 				BTV:ApplyGlobalButtonSize()
 			end
 
+			BTV:ReflowGeneralOverrideSliders(panel)
 			BTV:RefreshAllBarPagesGlobalOverrideGating()
 		end
 	)
@@ -6331,6 +6333,73 @@ function BTV:FitSettingsWindowToProfilesView()
 	ApplySettingsHeightFromCandidates(candidates, settingsFrame.profilesScrollFrame, panel)
 end
 
+-------------------------------------------------------------------------
+-- General panel: dynamic reflow for the Global Spacing / Global
+-- ButtonSize sliders
+--
+-- Both sliders are SetShown()-toggled by their own checkbox, but the
+-- checkbox/slider immediately below each one was anchored with a FIXED
+-- offset set once at creation time - Hide() doesn't remove a frame from
+-- its neighbors' anchor math the way it would in a real layout system,
+-- so the gap stayed reserved even while the slider was hidden. This
+-- walks the checkbox/slider stack and re-anchors everything after the
+-- first entry to sit flush against whichever entry above it is actually
+-- SHOWN right now, collapsing the gap when a slider is hidden and
+-- restoring it when shown. Column = the stack's two indent levels
+-- (checkboxes sit at the base indent, sliders 20px further right, per
+-- their own original hand-tuned offsets).
+-------------------------------------------------------------------------
+
+local REFLOW_COLUMN_CHECKBOX = 0
+local REFLOW_COLUMN_SLIDER = 20
+local REFLOW_GAP_CHECKBOX_TO_SLIDER = -28
+local REFLOW_GAP_SLIDER_TO_CHECKBOX = -26
+local REFLOW_GAP_CHECKBOX_TO_CHECKBOX = -14
+
+-- entries: ordered array of { frame = <Frame>, column = REFLOW_COLUMN_*,
+-- isOptional = true|nil }. The first entry's own anchor is never touched -
+-- callers set that once, outside this list, to whatever fixed frame it
+-- should follow. An `isOptional` entry that's currently Hidden is skipped
+-- entirely (neither re-anchored nor used as the next entry's anchor
+-- source), so hiding it collapses its slot rather than leaving a gap.
+local function ReflowStack(entries)
+	local prev = entries[1].frame
+	local prevColumn = entries[1].column
+	local i
+
+	for i = 2, table.getn(entries) do
+		local entry = entries[i]
+
+		if (not entry.isOptional) or entry.frame:IsShown() then
+			local gap
+
+			if prevColumn == REFLOW_COLUMN_SLIDER and entry.column == REFLOW_COLUMN_CHECKBOX then
+				gap = REFLOW_GAP_SLIDER_TO_CHECKBOX
+			elseif prevColumn == REFLOW_COLUMN_CHECKBOX and entry.column == REFLOW_COLUMN_SLIDER then
+				gap = REFLOW_GAP_CHECKBOX_TO_SLIDER
+			else
+				gap = REFLOW_GAP_CHECKBOX_TO_CHECKBOX
+			end
+
+			entry.frame:ClearAllPoints()
+			entry.frame:SetPoint("TOPLEFT", prev, "BOTTOMLEFT", entry.column - prevColumn, gap)
+
+			prev = entry.frame
+			prevColumn = entry.column
+		end
+	end
+end
+
+function BTV:ReflowGeneralOverrideSliders(panel)
+	ReflowStack({
+		{ frame = panel.globalSpacingCheckbox, column = REFLOW_COLUMN_CHECKBOX },
+		{ frame = panel.globalSpacingSlider, column = REFLOW_COLUMN_SLIDER, isOptional = true },
+		{ frame = panel.globalButtonSizeCheckbox, column = REFLOW_COLUMN_CHECKBOX },
+		{ frame = panel.globalButtonSizeSlider, column = REFLOW_COLUMN_SLIDER, isOptional = true },
+		{ frame = panel.bypassBar2DepCheckbox, column = REFLOW_COLUMN_CHECKBOX },
+	})
+end
+
 function BTV:RefreshGeneralPanel()
 	local panel = self:GetOrCreateGeneralPanel()
 
@@ -6403,6 +6472,10 @@ function BTV:RefreshGeneralPanel()
 	panel.globalButtonSizeValueText:SetShown(buttonSizeDisplayed)
 	panel.globalButtonSizeSlider:EnableMouse(not vanillaBorderStyleLocked)
 	panel.globalButtonSizeSlider:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	-- Both sliders' Shown state is now final for this refresh - collapse/
+	-- restore the gap below each one accordingly.
+	BTV:ReflowGeneralOverrideSliders(panel)
 
 	panel.bypassBar2DepCheckbox:SetChecked(BTVanillaDB.bypassRightActionBar2Dependency == true)
 
