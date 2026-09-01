@@ -3384,6 +3384,20 @@ function BTV:DiagActionBarsPanelTree()
 	local container = getglobal("InterfaceOptionsFramePanelContainer") or getglobal("InterfaceOptionsFrame")
 
 	if not container then
+		-- Neither guessed name exists - scan _G for anything Frame-shaped
+		-- whose name mentions "Interface" and "Option", so the real name
+		-- can be found instead of guessing again.
+		local key, value
+
+		for key, value in pairs(_G) do
+			if type(key) == "string" and type(value) == "table" and
+				string.find(key, "Interface") and string.find(key, "Option") then
+				self:Print("candidate: " .. key)
+			end
+		end
+	end
+
+	if not container then
 		self:Print("Neither InterfaceOptionsFramePanelContainer nor InterfaceOptionsFrame found in _G.")
 		self:Print("--- diag13 end ---")
 		return
