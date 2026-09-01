@@ -302,7 +302,35 @@ function BTVDialogMixin:Init(config)
 		self.defaultButtonIndex = 1
 	end
 
-	self:SetHeight(80 + (self.mode == "confirm" and 0 or 34) + (count * (DIALOG_BUTTON_HEIGHT + 8)) + 20)
+	-- Content-aware sizing: measures the ACTUAL height every element ends
+	-- up taking (title/message auto-wrap to their real GetHeight() at the
+	-- fixed width set in OnLoad) and adds up the exact same gaps used to
+	-- anchor them above, rather than guessing a fixed formula - so the
+	-- dialog always fits whatever title/message/mode content/button count
+	-- a given config actually throws at it. Mirrors the anchor chain
+	-- above: TOP_OFFSET (title's own offset from self's TOP, set in
+	-- OnLoad) -> title -> 10px gap -> message -> mode content (if any) ->
+	-- buttons (first gap 14, then 8 each) -> BOTTOM_PADDING.
+	local TOP_OFFSET = 18
+	local BOTTOM_PADDING = 20
+
+	local height = TOP_OFFSET
+	height = height + (self.titleText:GetHeight() or 0)
+	height = height + 10 + (self.messageText:GetHeight() or 0)
+
+	if self.mode == "textinput" then
+		height = height + 14 + (self.editBox:GetHeight() or 0)
+	elseif self.mode == "dropdown" then
+		height = height + 10 + (self.dropdown:GetHeight() or 0)
+	end
+
+	for i = 1, count do
+		local gap = (i == 1) and 14 or 8
+
+		height = height + gap + DIALOG_BUTTON_HEIGHT
+	end
+
+	self:SetHeight(height + BOTTOM_PADDING)
 end
 
 function BTVDialogMixin:GetValue()

@@ -200,6 +200,14 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
+-- Fixed vertical band reserved for the Default-profile-lock warning
+-- banner (CreateProfileLockWarning below), anchored right under each
+-- page's title and right above its first content control. Reserved
+-- unconditionally (whether or not the banner is currently shown) so
+-- nothing needs to reflow when it toggles.
+local PROFILE_LOCK_BANNER_TOP = -34
+local PROFILE_LOCK_BANNER_HEIGHT = 40
+
 local SWATCH_SIZE = 46
 local SWATCH_GAP  = 8
 local SWATCH_PAD  = 4
@@ -814,12 +822,17 @@ function BTV:GetOrCreateBarPage(barId)
 	-- spacing instead of hunting through every control's SetPoint.
 	-------------------------------------------------------------------------
 
-	local checkboxY = -44
+	-- Both roots are pushed down by the profile-lock warning banner's
+	-- reserved band (PROFILE_LOCK_BANNER_HEIGHT), which sits between the
+	-- title and here regardless of whether it's currently shown.
+	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+
+	local checkboxY = -44 + contentTopOffset
 
 	-- Position section starts right under the title, or - on bars 2-5 -
 	-- right under the enable checkbox block (checkbox height + the gap
 	-- reserved before Position begins).
-	local positionStartY = -46
+	local positionStartY = -46 + contentTopOffset
 
 	if hasEnableCheckbox then
 		positionStartY = checkboxY - 24 - 14
@@ -1868,17 +1881,17 @@ end
 -- and has all of its interactive controls locked while it's active.
 -------------------------------------------------------------------------
 
--- One reusable warning banner per page - a solid strip pinned across the
--- very top of the page (drawn above the title via a higher frame level)
--- rather than pushing every other control's hand-tuned Y offset down, so
--- none of those pixel-tuned layouts need to change. Hidden by default;
--- toggled by ApplyProfileLockGating below.
+-- One reusable warning banner per page - a solid strip anchored right
+-- below the page's title and right above its first content control
+-- (PROFILE_LOCK_BANNER_TOP/PROFILE_LOCK_BANNER_HEIGHT reserve that band
+-- unconditionally, so nothing needs to reflow when this toggles). Hidden
+-- by default; toggled by ApplyProfileLockGating below.
 function BTV:CreateProfileLockWarning(page)
 	local banner = CreateFrame("Frame", nil, page)
 
-	banner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, 0)
-	banner:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, 0)
-	banner:SetHeight(40)
+	banner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, PROFILE_LOCK_BANNER_TOP)
+	banner:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, PROFILE_LOCK_BANNER_TOP)
+	banner:SetHeight(PROFILE_LOCK_BANNER_HEIGHT)
 	banner:SetFrameLevel(page:GetFrameLevel() + 5)
 
 	banner:SetBackdrop({
@@ -2305,7 +2318,12 @@ local function CreateSimpleBarPage(key)
 
 	title:SetText(config.title .. " Settings (Default)")
 
-	local topY = -46
+	-- Pushed down by the profile-lock warning banner's reserved band, same
+	-- as GetOrCreateBarPage's contentTopOffset above.
+	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+	local enableCheckboxY = -44 + contentTopOffset
+
+	local topY = -46 + contentTopOffset
 
 	if config.hasEnable then
 		local enableCheckbox = CreateFrame(
@@ -2323,7 +2341,7 @@ local function CreateSimpleBarPage(key)
 			page,
 			"TOPLEFT",
 			INDENT_SECTION,
-			-44
+			enableCheckboxY
 		)
 
 		enableCheckbox:SetScript(
@@ -2343,7 +2361,7 @@ local function CreateSimpleBarPage(key)
 
 		page.enableCheckbox = enableCheckbox
 
-		topY = -44 - 24 - 14
+		topY = enableCheckboxY - 24 - 14
 	end
 
 	local minX, maxX, minY, maxY = GetScreenCoordinateRange()
@@ -6203,6 +6221,12 @@ local function CreateBarListRow(barId, isDefault, cfg)
 		)
 
 		row.checkbox = checkbox
+
+		-- Default-profile lock (Profiles feature): this checkbox lets a
+		-- bar be enabled/disabled without opening its full settings page,
+		-- so it needs the same lock ApplyProfileLockGating already applies
+		-- to that page's own enableCheckbox.
+		LockControl(checkbox, BTV:IsDefaultProfileActive())
 	end
 
 	return row
