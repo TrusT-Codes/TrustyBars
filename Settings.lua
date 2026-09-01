@@ -2142,6 +2142,22 @@ end
 -- rather than just being clamped to PROFILE_LOCK_BANNER_HEIGHT's own
 -- (generous, but not guaranteed-sufficient) reserved space.
 local function SetProfileLockBannerMessage(banner, message)
+	-- Explicit SetWidth on BOTH banner and text, computed from `page`'s
+	-- own (reliable, always-explicitly-set) current width - banner/text
+	-- previously relied purely on their TOPLEFT+TOPRIGHT anchor pairs to
+	-- imply their width, which live-tested as NOT reliably wrapping text
+	-- at all (rendered as one long line, clipped by the ancestor
+	-- scrollframe rather than wrapping) - explicit SetWidth is the one
+	-- thing that's proven reliable for width in this environment
+	-- throughout this whole settings-window rework.
+	local page = banner:GetParent()
+	local width = page:GetWidth()
+
+	if width and width > 0 then
+		banner:SetWidth(width)
+		banner.text:SetWidth(width - (2 * INDENT_SECTION))
+	end
+
 	banner.text:SetText(message)
 	banner:SetHeight((banner.text:GetHeight() or 0) + 12)
 end
@@ -4111,15 +4127,24 @@ function BTV:RefreshBarPageGlobalOverrideGating(page)
 		return
 	end
 
+	-- Must also respect the Default-profile/Default-layout lock
+	-- (BTV:ApplyProfileLockGating, called just before this in
+	-- RefreshBarSettingsPage/RefreshSimpleBarPage) - without this, this
+	-- function unconditionally RE-ENABLES the slider whenever the global
+	-- override checkbox happens to be off, blindly overwriting whatever
+	-- that other lock had just set.
+	local alsoLocked = self:IsDefaultProfileActive()
+		or (page.isDefault and BTVanillaDB.useDefaultLayout == true)
+
 	if page.spacingSlider then
-		local locked = BTVanillaDB.globalSpacingEnabled == true
+		local locked = alsoLocked or (BTVanillaDB.globalSpacingEnabled == true)
 
 		page.spacingSlider:EnableMouse(not locked)
 		page.spacingSlider:SetAlpha(locked and 0.5 or 1)
 	end
 
 	if page.buttonSizeSlider then
-		local locked = BTVanillaDB.globalButtonSizeEnabled == true
+		local locked = alsoLocked or (BTVanillaDB.globalButtonSizeEnabled == true)
 
 		page.buttonSizeSlider:EnableMouse(not locked)
 		page.buttonSizeSlider:SetAlpha(locked and 0.5 or 1)
@@ -4260,18 +4285,23 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		return
 	end
 
-	-- Computed from the window's own top edge rather than
-	-- contentPanel:GetTop() directly - contentPanel is Hide()'n while the
-	-- General view is showing (ShowGeneralView), and GetTop()/GetBottom()
-	-- only return real values for currently-shown frames, so relying on
-	-- it here would silently break height-fitting for that view.
-	local frameTop = settingsFrame:GetTop()
+	-- settingsFrame is CENTER-anchored to UIParent, so its own top edge is
+	-- always (screen height / 2) + (its own current height / 2) - computed
+	-- this way rather than settingsFrame:GetTop() (an anchor-derived read)
+	-- because GetHeight() reflects an explicit SetHeight() call
+	-- immediately (a direct property), while GetTop() live-tested as NOT
+	-- reliably resolved yet the instant this function re-runs right after
+	-- a DIFFERENT view's own SetHeight call just changed it (switching
+	-- straight from a short view to a tall one produced a viewport taller
+	-- than the window around it, self-correcting the next time the same
+	-- view was shown - this sidesteps that class of bug entirely).
+	local frameHeight = settingsFrame:GetHeight()
 
-	if not frameTop then
+	if not frameHeight then
 		return
 	end
 
-	local top = frameTop - SETTINGS_CHROME_TOP
+	local top = (GetScreenHeight() / 2) + (frameHeight / 2) - SETTINGS_CHROME_TOP
 
 	-- Every candidate below is a descendant of scrollChildPanel, which is
 	-- PERMANENTLY the given scrollFrame's scroll child (set once, at

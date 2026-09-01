@@ -570,12 +570,16 @@ BTV.DEFAULT_BAR_GRID = {
 -- MULTIACTIONBAR_PREFIXES table uses: default bar id -> MULTIACTIONBAR(id-1)).
 -- Bars 2-5's real native buttons are permanently hidden regardless (see
 -- DefaultBars.lua's CreateFixedSlotDefaultBars) - our own cfg.enabled
--- stays the sole VISUAL authority - but DefaultBars.lua's
--- SetDefaultBarEnabled also mirrors our state into this global (so the
--- real Options checkbox doesn't look stuck/wrong to the player), and
--- seedDefaultBars below reads it once as a sensible starting point for a
--- freshly-seeded bar (e.g. an existing player who already had one of
--- these checked before ever using TrustyBars).
+-- stays the sole VISUAL authority. SAME-SESSION COSMETIC USE ONLY -
+-- docs/01-Environment-Capability-Analysis.md (§5m) already live-confirmed
+-- these globals do NOT persist to this fork's WTF SavedVariables at all
+-- (unlike LOCK_ACTIONBAR), reliably reading nil/reset on every fresh
+-- login regardless of what was true last session - never treat this as
+-- authoritative for anything that needs to survive a login boundary
+-- (seedDefaultBars deliberately does NOT read it, for exactly this
+-- reason). DefaultBars.lua's SetDefaultBarEnabled still mirrors our
+-- state into it (so the real Options checkbox doesn't look stuck/wrong
+-- within the current session), purely cosmetic.
 BTV.SHOW_MULTI_ACTIONBAR_GLOBAL = {
 	[2] = "SHOW_MULTI_ACTIONBAR_1",
 	[3] = "SHOW_MULTI_ACTIONBAR_2",
@@ -672,19 +676,17 @@ local function seedDefaultBars(self)
 			)
 		end
 
-		-- Bars 2-5: read the native "Show ... ActionBar" checkbox's
-		-- current global (BTV.SHOW_MULTI_ACTIONBAR_GLOBAL) as the initial
-		-- enabled state, rather than DEFAULT_BAR_GRID's own hardcoded
-		-- `false` - so a player who already had one of these checked in
-		-- Blizzard's own Interface Options before ever using TrustyBars
-		-- doesn't lose that preference. Bar 1 keeps grid.enabled (nil,
-		-- unused - it has no enable/disable concept at all).
+		-- NOT read from BTV.SHOW_MULTI_ACTIONBAR_GLOBAL here (deliberately) -
+		-- this project's own docs/01-Environment-Capability-Analysis.md
+		-- (§5m) already live-confirmed SHOW_MULTI_ACTIONBAR_1-4 do NOT
+		-- persist to this fork's WTF SavedVariables at all, unlike
+		-- LOCK_ACTIONBAR - they reliably read nil/reset on every fresh
+		-- login regardless of what was true last session. Seeding from
+		-- them here would silently discard the player's real saved
+		-- cfg.enabled (from BTVanillaProfilesDB) on every schema-version
+		-- reseed, and can never actually recover a "prior preference"
+		-- either, since the global itself never survived to be read.
 		local enabled = grid.enabled
-		local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
-
-		if nativeGlobal then
-			enabled = getglobal(nativeGlobal) and true or false
-		end
 
 		result[id] = {
 			-- Bar.lua/Button.lua/HoverBind.lua all key off bar.config.id
