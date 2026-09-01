@@ -1354,6 +1354,15 @@ function BTV:EnsureDB()
 		BTVanillaDB.modernBorderStyle = false
 	end
 
+	-- User option: skips DefaultBars.lua's bar4->bar5 disable cascade
+	-- (BTV:SetDefaultBarEnabled/FixRightActionBar2Checkbox), matching
+	-- native's own "Right ActionBar 2" dependency on "Right ActionBar 1"
+	-- - off by default so behavior matches native unless the player
+	-- opts out.
+	if BTVanillaDB.bypassRightActionBar2Dependency == nil then
+		BTVanillaDB.bypassRightActionBar2Dependency = false
+	end
+
 	-- Tracks which style every bar's CURRENTLY STORED buttonSize was last
 	-- corrected for (BTV:ApplyGlobalButtonStyle, Bar.lua) - lets that
 	-- function apply BTV.MODERN_BUTTON_SIZE_DELTA exactly once per real

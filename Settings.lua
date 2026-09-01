@@ -4535,6 +4535,7 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeCheckbox)
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeSlider)
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeValueText)
+	n = AppendCandidate(candidates, n, panel.bypassBar2DepCheckbox)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
@@ -6044,6 +6045,45 @@ function BTV:GetOrCreateGeneralPanel()
 	panel.globalButtonSizeSlider = globalButtonSizeSlider
 	panel.globalButtonSizeValueText = globalButtonSizeValueText
 
+	-- Right ActionBar 2 dependency bypass (DefaultBars.lua's
+	-- SetDefaultBarEnabled/FixRightActionBar2Checkbox) - lets bar 5 be
+	-- toggled independent of bar 4, in both the addon and the native
+	-- Options checkbox.
+	local bypassBar2DepCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralBypassBar2DepCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	bypassBar2DepCheckbox:SetWidth(24)
+	bypassBar2DepCheckbox:SetHeight(24)
+
+	bypassBar2DepCheckbox:SetPoint(
+		"TOPLEFT",
+		globalButtonSizeValueText,
+		"BOTTOMLEFT",
+		-20,
+		-14
+	)
+
+	bypassBar2DepCheckbox:SetScript(
+		"OnClick",
+		function()
+			BTVanillaDB.bypassRightActionBar2Dependency = this:GetChecked() and true or false
+
+			BTV:FixRightActionBar2Checkbox()
+		end
+	)
+
+	local bypassBar2DepLabel = getglobal(bypassBar2DepCheckbox:GetName() .. "Text")
+
+	if bypassBar2DepLabel then
+		bypassBar2DepLabel:SetText("Allow Right ActionBar 2 independent of Right ActionBar 1")
+	end
+
+	panel.bypassBar2DepCheckbox = bypassBar2DepCheckbox
+
 	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
 	-- to the Experience Bar's own settings page (round 17 item 5,
 	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
@@ -6315,6 +6355,8 @@ function BTV:RefreshGeneralPanel()
 	panel.globalButtonSizeValueText:SetShown(buttonSizeDisplayed)
 	panel.globalButtonSizeSlider:EnableMouse(not vanillaBorderStyleLocked)
 	panel.globalButtonSizeSlider:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	panel.bypassBar2DepCheckbox:SetChecked(BTVanillaDB.bypassRightActionBar2Dependency == true)
 
 	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
 	-- unchecks this.

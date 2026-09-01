@@ -826,9 +826,19 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	end
 
 	-- Matches native's own dependency (bar 5 requires bar 4 - see
-	-- FixRightActionBar2Checkbox): disabling bar 4 also disables bar 5.
-	if id == 4 and not enabled then
+	-- FixRightActionBar2Checkbox) - user can opt out via the General tab.
+	if id == 4 and not enabled and not BTVanillaDB.bypassRightActionBar2Dependency then
 		self:SetDefaultBarEnabled(5, false)
+
+		-- SetDefaultBarEnabled(5, ...) alone doesn't refresh OUR settings
+		-- UI's own bar5 checkbox (only ReconcileDefaultBarEnabledFromNative
+		-- does that, for whichever id it's reconciling - id 4 here, not
+		-- 5) - without this, the bar visually Hide()s but its Settings
+		-- checkbox stays stuck checked until manually re-toggled.
+		if BTV:IsSettingsFrameCreated() then
+			BTV:RefreshBarList()
+			BTV:RefreshBarSettingsPage(5)
+		end
 	end
 
 	-- Mirror our own state into the native "Show ... ActionBar" global
@@ -953,14 +963,48 @@ end
 -- once, the first time this function finds it.
 local hookedBar4Checkbox = false
 
+-- Live-confirmed (/btv diag15) label colors: enabled/normal (1, 0.82, 0),
+-- native's own grey-disabled default is whatever it already renders -
+-- only force the ENABLED color here, never force grey (native handles
+-- that fine on its own; it just never re-applies the enabled color once
+-- we programmatically :Enable() the checkbox).
+local RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR = { 1, 0.82, 0 }
+
+local function SetCheckbox5LabelEnabledColor()
+	local outer = getglobal("OptionsFrameCheckButton5")
+
+	if not outer then
+		return
+	end
+
+	local regions = { outer:GetRegions() }
+	local i
+
+	for i = 1, table.getn(regions) do
+		local r = regions[i]
+		local okType, objType = pcall(function() return r.GetObjectType and r:GetObjectType() end)
+
+		if okType and objType == "FontString" then
+			r:SetTextColor(
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[1],
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[2],
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[3]
+			)
+		end
+	end
+end
+
 function BTV:FixRightActionBar2Checkbox()
 	local control5 = getglobal("OptionsFrameCheckButton5Control")
 
 	if control5 and control5.Enable and control5.Disable then
 		local bar4Cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[4]
+		local shouldEnable = (BTVanillaDB and BTVanillaDB.bypassRightActionBar2Dependency)
+			or (bar4Cfg and bar4Cfg.enabled)
 
-		if bar4Cfg and bar4Cfg.enabled then
+		if shouldEnable then
 			control5:Enable()
+			SetCheckbox5LabelEnabledColor()
 		else
 			control5:Disable()
 		end
