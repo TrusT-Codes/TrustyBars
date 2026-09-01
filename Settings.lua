@@ -709,11 +709,9 @@ local function CreateSettingsFrame()
 	local tabBarsButton = CreateFrame(
 		"Button",
 		nil,
-		f,
-		"UIPanelButtonTemplate"
+		f
 	)
 
-	tabBarsButton:SetWidth(90)
 	tabBarsButton:SetHeight(20)
 
 	tabBarsButton:SetPoint(
@@ -724,6 +722,7 @@ local function CreateSettingsFrame()
 		-34
 	)
 
+	BTV:StyleModernButton(tabBarsButton, 90, 90)
 	tabBarsButton:SetText("Bars")
 
 	tabBarsButton:SetScript(
@@ -736,11 +735,9 @@ local function CreateSettingsFrame()
 	local tabGeneralButton = CreateFrame(
 		"Button",
 		nil,
-		f,
-		"UIPanelButtonTemplate"
+		f
 	)
 
-	tabGeneralButton:SetWidth(90)
 	tabGeneralButton:SetHeight(20)
 
 	tabGeneralButton:SetPoint(
@@ -751,6 +748,7 @@ local function CreateSettingsFrame()
 		0
 	)
 
+	BTV:StyleModernButton(tabGeneralButton, 90, 90)
 	tabGeneralButton:SetText("General")
 
 	tabGeneralButton:SetScript(
@@ -763,11 +761,9 @@ local function CreateSettingsFrame()
 	local tabProfilesButton = CreateFrame(
 		"Button",
 		nil,
-		f,
-		"UIPanelButtonTemplate"
+		f
 	)
 
-	tabProfilesButton:SetWidth(90)
 	tabProfilesButton:SetHeight(20)
 
 	tabProfilesButton:SetPoint(
@@ -778,6 +774,7 @@ local function CreateSettingsFrame()
 		0
 	)
 
+	BTV:StyleModernButton(tabProfilesButton, 90, 90)
 	tabProfilesButton:SetText("Profiles")
 
 	tabProfilesButton:SetScript(
@@ -1638,11 +1635,9 @@ function BTV:GetOrCreateBarPage(barId)
 			local resetPositionButton = CreateFrame(
 				"Button",
 				nil,
-				page,
-				"UIPanelButtonTemplate"
+				page
 			)
 
-			resetPositionButton:SetWidth(200)
 			resetPositionButton:SetHeight(22)
 
 			resetPositionButton:SetPoint(
@@ -1653,6 +1648,7 @@ function BTV:GetOrCreateBarPage(barId)
 				resetButtonY
 			)
 
+			BTV:StyleModernButton(resetPositionButton, 200, 200)
 			resetPositionButton:SetText("Reset to Blizzard Default")
 
 			resetPositionButton:SetScript(
@@ -1778,11 +1774,9 @@ function BTV:GetOrCreateBarPage(barId)
 		local buttonCountMinus = CreateFrame(
 			"Button",
 			"BTVanillaBar" .. tostring(barId) .. "ButtonCountMinus",
-			page,
-			"UIPanelButtonTemplate"
+			page
 		)
 
-		buttonCountMinus:SetWidth(24)
 		buttonCountMinus:SetHeight(22)
 
 		buttonCountMinus:SetPoint(
@@ -1793,6 +1787,7 @@ function BTV:GetOrCreateBarPage(barId)
 			buttonCountRowY
 		)
 
+		BTV:StyleModernButton(buttonCountMinus, 24, 24)
 		buttonCountMinus:SetText("-")
 
 		local buttonCountValueText = page:CreateFontString(
@@ -1816,11 +1811,9 @@ function BTV:GetOrCreateBarPage(barId)
 		local buttonCountPlus = CreateFrame(
 			"Button",
 			"BTVanillaBar" .. tostring(barId) .. "ButtonCountPlus",
-			page,
-			"UIPanelButtonTemplate"
+			page
 		)
 
-		buttonCountPlus:SetWidth(24)
 		buttonCountPlus:SetHeight(22)
 
 		buttonCountPlus:SetPoint(
@@ -1831,6 +1824,7 @@ function BTV:GetOrCreateBarPage(barId)
 			0
 		)
 
+		BTV:StyleModernButton(buttonCountPlus, 24, 24)
 		buttonCountPlus:SetText("+")
 
 		-- Live now (Phase 4 point 3): reads/writes cfg.buttonCount
@@ -3279,14 +3273,13 @@ local function CreateSimpleBarPage(key)
 		local resetColorsButton = CreateFrame(
 			"Button",
 			nil,
-			page,
-			"UIPanelButtonTemplate"
+			page
 		)
 
-		resetColorsButton:SetWidth(200)
 		resetColorsButton:SetHeight(22)
 
 		resetColorsButton:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, cursorY)
+		BTV:StyleModernButton(resetColorsButton, 200, 200)
 		resetColorsButton:SetText("Reset Colors to Default")
 
 		resetColorsButton:SetScript(
@@ -3512,14 +3505,13 @@ local function CreateSimpleBarPage(key)
 	local resetButton = CreateFrame(
 		"Button",
 		nil,
-		page,
-		"UIPanelButtonTemplate"
+		page
 	)
 
-	resetButton:SetWidth(200)
 	resetButton:SetHeight(22)
 
 	resetButton:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, resetY)
+	BTV:StyleModernButton(resetButton, 200, 200)
 	resetButton:SetText("Reset to Blizzard Default")
 
 	resetButton:SetScript(
@@ -5451,11 +5443,9 @@ function BTV:GetOrCreateGeneralPanel()
 	local hotkeyResetButton = CreateFrame(
 		"Button",
 		nil,
-		panel,
-		"UIPanelButtonTemplate"
+		panel
 	)
 
-	hotkeyResetButton:SetWidth(90)
 	hotkeyResetButton:SetHeight(22)
 
 	hotkeyResetButton:SetPoint(
@@ -5466,6 +5456,7 @@ function BTV:GetOrCreateGeneralPanel()
 		4
 	)
 
+	BTV:StyleModernButton(hotkeyResetButton, 90, 90)
 	hotkeyResetButton:SetText("Reset")
 
 	hotkeyResetButton:SetScript(
@@ -5609,11 +5600,9 @@ function BTV:GetOrCreateGeneralPanel()
 	local countResetButton = CreateFrame(
 		"Button",
 		nil,
-		panel,
-		"UIPanelButtonTemplate"
+		panel
 	)
 
-	countResetButton:SetWidth(90)
 	countResetButton:SetHeight(22)
 
 	countResetButton:SetPoint(
@@ -5624,6 +5613,7 @@ function BTV:GetOrCreateGeneralPanel()
 		4
 	)
 
+	BTV:StyleModernButton(countResetButton, 90, 90)
 	countResetButton:SetText("Reset")
 
 	countResetButton:SetScript(
@@ -6186,10 +6176,10 @@ function BTV:GetOrCreateProfilesPanel()
 		end
 	end
 
-	local copyButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-	copyButton:SetWidth(200)
+	local copyButton = CreateFrame("Button", nil, panel)
 	copyButton:SetHeight(22)
 	copyButton:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -14)
+	BTV:StyleModernButton(copyButton, 200, 200)
 	copyButton:SetText("Copy from other profile")
 	panel.copyButton = copyButton
 
@@ -6228,10 +6218,10 @@ function BTV:GetOrCreateProfilesPanel()
 		})
 	end)
 
-	local deleteButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
-	deleteButton:SetWidth(200)
+	local deleteButton = CreateFrame("Button", nil, panel)
 	deleteButton:SetHeight(22)
 	deleteButton:SetPoint("TOPLEFT", copyButton, "BOTTOMLEFT", 0, -8)
+	BTV:StyleModernButton(deleteButton, 200, 200)
 	deleteButton:SetText("Delete profile")
 	panel.deleteButton = deleteButton
 
