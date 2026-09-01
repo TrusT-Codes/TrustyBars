@@ -1983,12 +1983,19 @@ function BTV:ApplyProfileLockGating(page)
 		for i = 1, table.getn(page.assignmentRows) do
 			local row = page.assignmentRows[i]
 
-			if row.leftButton then
-				LockControl(row.leftButton, locked)
-			end
+			if row.dropdown then
+				-- EnableMouse(false) on the dropdown frame itself doesn't
+				-- block its click handling - UIDropDownMenuTemplate's own
+				-- clickable region is a separate child Button
+				-- ("<name>Button", native FrameXML naming convention),
+				-- which needs :Disable()/:Enable() directly.
+				local dropdownButton = getglobal(row.dropdown:GetName() .. "Button")
 
-			if row.rightButton then
-				LockControl(row.rightButton, locked)
+				if dropdownButton then
+					LockControl(dropdownButton, locked)
+				else
+					LockControl(row.dropdown, locked)
+				end
 			end
 		end
 	end
@@ -4264,41 +4271,44 @@ local function ExtraBarAssignmentLabel(assignedId)
 	return "Extra Bar " .. tostring(assignedId - BTV.EXTRA_BAR_ID_START + 1)
 end
 
-local function CycleExtraBarAssignment(current, delta)
-	current = current or 0
-
-	local idx = 1
+-- Same 5 choices (Unassigned + Extra Bar 1-4) for every assignment row, so
+-- the option list itself only ever needs building once. { value = 0 }
+-- represents EXTRA_BAR_ASSIGNMENT_CYCLE's own "Unassigned" sentinel -
+-- translated to/from a real nil only at RefreshValue/onSelect's own
+-- BTVanillaDB read/write boundary below.
+local function BuildExtraBarAssignmentDropdownOptions()
+	local options = {}
 	local i
 
 	for i = 1, table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) do
-		if EXTRA_BAR_ASSIGNMENT_CYCLE[i] == current then
-			idx = i
-			break
-		end
+		local rawValue = EXTRA_BAR_ASSIGNMENT_CYCLE[i]
+
+		options[i] = {
+			text = ExtraBarAssignmentLabel(rawValue ~= 0 and rawValue or nil),
+			value = rawValue,
+		}
 	end
 
-	idx = idx + delta
-
-	if idx < 1 then
-		idx = table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE)
-	elseif idx > table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) then
-		idx = 1
-	end
-
-	return EXTRA_BAR_ASSIGNMENT_CYCLE[idx]
+	return options
 end
 
--- Builds one "< Extra Bar N >" cyclic-assignment row - see
--- EXTRA_BAR_ASSIGNMENT_CYCLE's own comment on why this fallback widget
--- kind was chosen over a true dropdown. getFn must return a raw
--- BTVanillaDB value (a real Extra Bar id 6-9, or nil/false for
--- unassigned) - never the 0 sentinel, which is purely an internal cycling
--- detail of this function.
-local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
+local EXTRA_BAR_ASSIGNMENT_DROPDOWN_OPTIONS = BuildExtraBarAssignmentDropdownOptions()
+
+-- Builds one Extra Bar assignment row, styled to match the real native
+-- dropdown the Profiles tab uses (BTV:CreateInlineDropdown) rather than
+-- the old hand-built "< Extra Bar N >" cycle-button pair. dropdownName
+-- must be a unique, stable global frame name (UIDropDownMenuTemplate's own
+-- requirement - see BTV:CreateInlineDropdown's header comment); callers
+-- pass one keyed off the row's stable identity (stance index / "page bar")
+-- so repeated rebuilds re-use the same underlying frame. getFn must return
+-- a raw BTVanillaDB value (a real Extra Bar id 6-9, or nil/false for
+-- unassigned) - never the 0 sentinel, which is purely an internal
+-- EXTRA_BAR_ASSIGNMENT_CYCLE/dropdown-options detail of this function.
+local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn, dropdownName)
 	local row = CreateFrame("Frame", nil, parent)
 
 	row:SetWidth(500)
-	row:SetHeight(22)
+	row:SetHeight(32)
 
 	local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -4307,49 +4317,26 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
 	label:SetJustifyH("LEFT")
 	label:SetText(labelText)
 
-	local leftButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+	local dropdown = BTV:CreateInlineDropdown(row, 140, dropdownName)
 
-	leftButton:SetWidth(24)
-	leftButton:SetHeight(22)
-	leftButton:SetPoint("LEFT", label, "RIGHT", 8, 0)
-	leftButton:SetText("<")
-
-	local valueText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	valueText:SetPoint("LEFT", leftButton, "RIGHT", 8, 0)
-	valueText:SetWidth(90)
-	valueText:SetJustifyH("CENTER")
-
-	local rightButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-
-	rightButton:SetWidth(24)
-	rightButton:SetHeight(22)
-	rightButton:SetPoint("LEFT", valueText, "RIGHT", 8, 0)
-	rightButton:SetText(">")
+	dropdown:SetPoint("LEFT", label, "RIGHT", -8, -2)
+	dropdown:SetOptions(EXTRA_BAR_ASSIGNMENT_DROPDOWN_OPTIONS)
 
 	local function RefreshValue()
-		valueText:SetText(ExtraBarAssignmentLabel(getFn()))
+		local current = getFn() or 0
+
+		dropdown:SetSelected(current, ExtraBarAssignmentLabel(current ~= 0 and current or nil))
 	end
 
-	leftButton:SetScript("OnClick", function()
-		local nextValue = CycleExtraBarAssignment(getFn() or 0, -1)
-
-		setFn(nextValue ~= 0 and nextValue or nil)
+	dropdown.onSelect = function(value)
+		setFn(value ~= 0 and value or nil)
 		RefreshValue()
-	end)
-
-	rightButton:SetScript("OnClick", function()
-		local nextValue = CycleExtraBarAssignment(getFn() or 0, 1)
-
-		setFn(nextValue ~= 0 and nextValue or nil)
-		RefreshValue()
-	end)
+	end
 
 	RefreshValue()
 
-	-- Exposed so ApplyProfileLockGating can lock these two buttons too.
-	row.leftButton = leftButton
-	row.rightButton = rightButton
+	-- Exposed so ApplyProfileLockGating can lock this dropdown too.
+	row.dropdown = dropdown
 
 	return row
 end
@@ -4423,7 +4410,11 @@ function BTV:RebuildMainBarAssignmentRows()
 					BTVanillaDB.mainBarStanceBarAssignment[s] = value
 
 					BTV:RefreshMainBarSlots()
-				end
+				end,
+				-- Named by stance index (stable across rebuilds within the
+				-- same class/session) - required, not optional, per
+				-- CreateExtraBarAssignmentRow's own dropdownName comment.
+				"BTVanillaMainBarStanceAssignmentDropdown" .. tostring(s)
 			)
 
 			row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
@@ -4431,7 +4422,7 @@ function BTV:RebuildMainBarAssignmentRows()
 			rowIndex = rowIndex + 1
 			page.assignmentRows[rowIndex] = row
 
-			y = y - 26
+			y = y - 34
 		end
 	end
 
@@ -4446,7 +4437,8 @@ function BTV:RebuildMainBarAssignmentRows()
 				BTVanillaDB.mainBarPageBarAssignment = value
 
 				BTV:RefreshMainBarSlots()
-			end
+			end,
+			"BTVanillaMainBarPageBarAssignmentDropdown"
 		)
 
 		row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
@@ -4454,7 +4446,7 @@ function BTV:RebuildMainBarAssignmentRows()
 		rowIndex = rowIndex + 1
 		page.assignmentRows[rowIndex] = row
 
-		y = y - 26
+		y = y - 34
 	end
 
 	-- Never 0 - a zero-height frame is a harmless but needless edge case

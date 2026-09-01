@@ -63,17 +63,25 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	local dropdown = self
 
 	UIDropDownMenu_Initialize(self, function()
-		local info = {}
+		local info
 		local i
 
 		for i = 1, table.getn(dropdown.options) do
-			local optionValue = dropdown.options[i]
+			local option = dropdown.options[i]
+
+			-- Each entry is either a plain string (label IS the value - the
+			-- original/common case, e.g. profile names) or a
+			-- { text = "...", value = ... } table when the underlying
+			-- stored value isn't itself a sensible display label (e.g. a
+			-- numeric bar id) - both shapes share one code path here.
+			local optionText = (type(option) == "table") and option.text or option
+			local optionValue = (type(option) == "table") and option.value or option
 
 			info = {}
-			info.text = optionValue
+			info.text = optionText
 			info.notCheckable = true
 			info.func = function()
-				dropdown:SetSelected(optionValue)
+				dropdown:SetSelected(optionValue, optionText)
 
 				if dropdown.onSelect then
 					dropdown.onSelect(optionValue)
@@ -87,14 +95,42 @@ end
 
 -- options: a plain array of strings (already ordered by the caller - e.g.
 -- BTV:GetProfileNames() with a trailing "Create new profile" sentinel
--- appended by Settings.lua where relevant).
+-- appended by Settings.lua where relevant), OR an array of
+-- { text = "...", value = ... } tables when the value isn't itself a
+-- usable label.
 function BTVInlineDropdownMixin:SetOptions(options)
 	self.options = options or {}
 end
 
-function BTVInlineDropdownMixin:SetSelected(value)
+-- displayText is optional - when omitted (the plain-string-options case),
+-- `value` itself is shown, same as before. When options are
+-- { text =, value = } pairs, callers should pass the matching text
+-- explicitly (as OnLoad's own selection handler above does); this function
+-- falls back to searching self.options for a matching value so a caller
+-- driving the initial/refreshed selection from stored data alone still
+-- shows the right label without duplicating the options table.
+function BTVInlineDropdownMixin:SetSelected(value, displayText)
 	self.selected = value
-	UIDropDownMenu_SetText(value, self)
+
+	if not displayText then
+		local i
+
+		for i = 1, table.getn(self.options) do
+			local option = self.options[i]
+
+			if type(option) == "table" then
+				if option.value == value then
+					displayText = option.text
+					break
+				end
+			elseif option == value then
+				displayText = option
+				break
+			end
+		end
+	end
+
+	UIDropDownMenu_SetText(displayText or value, self)
 end
 
 function BTVInlineDropdownMixin:GetSelected()
