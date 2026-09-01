@@ -1103,6 +1103,8 @@ function BTV:GetOrCreateBarPage(barId)
 				else
 					BTV:SetExtraBarEnabled(this.barId, checked)
 				end
+
+				BTV:RefreshBarList()
 			end
 		)
 
@@ -2661,6 +2663,8 @@ local function CreateSimpleBarPage(key)
 				local checked = this:GetChecked() and true or false
 
 				config.setEnabled(checked)
+
+				BTV:RefreshBarList()
 			end
 		)
 
