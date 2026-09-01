@@ -824,6 +824,23 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	if id == 2 and enabled ~= wasEnabled and BTVanillaDB.useDefaultLayout ~= false then
 		self:ReflowStanceBarForBar2Toggle(enabled)
 	end
+
+	-- Mirror our own state into the native "Show ... ActionBar" global
+	-- (Interface Options -> Action Bars) purely so that checkbox doesn't
+	-- look stuck/wrong to the player - our own cfg.enabled above stays
+	-- the sole VISUAL authority, since bars 2-5's real native buttons are
+	-- permanently Show()-no-op'd regardless (CreateFixedSlotDefaultBars),
+	-- so calling MultiActionBar_Update() here can never actually make a
+	-- real native button reappear.
+	local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
+
+	if nativeGlobal then
+		setglobal(nativeGlobal, enabled and 1 or nil)
+
+		if MultiActionBar_Update then
+			MultiActionBar_Update()
+		end
+	end
 end
 
 -- Every default bar (1-5) delegates to Bar.lua's own SetBarLayout (which

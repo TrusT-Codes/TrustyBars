@@ -200,12 +200,12 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
--- Width reserved for the content viewport's scrollbar
+-- Width reserved for each content viewport's scrollbar
 -- (UIPanelScrollFrameTemplate anchors it just outside the scrollframe's
 -- own right edge) - reserved unconditionally, whether or not the current
 -- view's content actually needs to scroll, so nothing has to reflow when
 -- it toggles. Shared by CreateSettingsFrame and
--- BTV:PositionContentScrollFrame (both below).
+-- BTV:CreateWideContentScrollFrame (both below).
 local SETTINGS_SCROLLBAR_RESERVED_WIDTH = 28
 
 -- Fixed vertical band reserved for the Default-profile-lock warning
@@ -797,27 +797,25 @@ local function CreateSettingsFrame()
 	-------------------------------------------------------------------------
 	-- Right content panel
 	--
-	-- contentScrollFrame is the fixed, capped-height VIEWPORT (visible
-	-- bounds + border + scrollbar) - contentPanel/generalPanel/
-	-- profilesPanel (created lazily elsewhere) are all just plain Frames
-	-- swapped in as its scroll child (BTV:UpdateScrollFrame) as views
-	-- change, each sized to ITS OWN real content height, which can exceed
-	-- the viewport - that's exactly what makes the scrollbar appear.
+	-- contentScrollFrame is the fixed VIEWPORT (visible bounds + border +
+	-- scrollbar) for the Bars view specifically - contentPanel is its
+	-- permanent scroll child (BTV:UpdateScrollFrame resizes it to fit
+	-- whichever bar page is showing, which can exceed the viewport -
+	-- that's exactly what makes the scrollbar appear). General/Profiles
+	-- each get their OWN scrollframe+scrollchild pair the same shape
+	-- (BTV:CreateWideContentScrollFrame below, called from
+	-- GetOrCreateGeneralPanel/GetOrCreateProfilesPanel) rather than
+	-- sharing this one - re-targeting a single shared scrollframe's
+	-- scroll child at a DIFFERENT frame after creation (tried first) left
+	-- that frame with no resolvable position/size at all the first time
+	-- it was ever attached, rendering completely empty; every scrollframe
+	-- here is instead permanently paired with its one scrollchild from
+	-- the moment both are created, never re-targeted.
 	-------------------------------------------------------------------------
 
 	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
 	f.contentScrollFrame:SetHeight(610)
-
-	-- Starts anchored for the "bars" view (narrower, sits beside the
-	-- always-visible bar list) - ShowGeneralView/ShowProfilesView widen it
-	-- to span the full content width via BTV:PositionContentScrollFrame
-	-- (defined further down this file, since it reads the module-level
-	-- settingsFrame upvalue, which isn't assigned until this function
-	-- returns), since the bar list is hidden in those views; ShowBarPage
-	-- puts it back. Both share this one viewport/scrollbar rather than
-	-- each view getting its own, so there's only ever one scroll
-	-- mechanism to wire.
 	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
 
 	f.contentScrollFrame:SetPoint(
@@ -867,16 +865,28 @@ local function CreateSettingsFrame()
 	return f
 end
 
--- Repositions/resizes the shared content scroll viewport for the given
--- view - "bars" (wide = false, narrower, sits beside the always-visible
--- bar list) vs "general"/"profiles" (wide = true, spans the full content
--- width, since the bar list is hidden in those views). Called once at the
--- top of ShowBarPage/ShowGeneralView/ShowProfilesView, before that view's
--- own Fit*View/BTV:UpdateScrollFrame call resizes it vertically.
-function BTV:PositionContentScrollFrame(wide)
-	local scrollFrame = settingsFrame.contentScrollFrame
+-- Creates one scrollframe+scrollchild pair spanning the FULL content
+-- width (the space the bar list would otherwise occupy, since it's
+-- hidden in General/Profiles) - shared shape for GetOrCreateGeneralPanel/
+-- GetOrCreateProfilesPanel below, each calling this once to build their
+-- own independent pair (see CreateSettingsFrame's own comment on why each
+-- view gets its own rather than sharing one). Returns scrollFrame,
+-- scrollChild - caller stores both (e.g. settingsFrame.generalScrollFrame/
+-- generalPanel) and builds its real content into scrollChild.
+function BTV:CreateWideContentScrollFrame(name)
+	local scrollFrame = BTV:CreateScrollFrame(settingsFrame, name)
 
-	scrollFrame:ClearAllPoints()
+	scrollFrame:SetHeight(610)
+
+	-- settingsFrame:GetWidth() is a fixed literal (SetWidth(780) once, in
+	-- CreateSettingsFrame, never anchor-derived) so it's always
+	-- immediately correct to read - unlike the two-opposing-anchor
+	-- implied width this used to be computed from (TOPLEFT to listPanel +
+	-- TOPRIGHT here), which was not guaranteed resolved yet the moment
+	-- code right after this reads it back via GetWidth().
+	scrollFrame:SetWidth(
+		settingsFrame:GetWidth() - 18 - 18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH
+	)
 
 	scrollFrame:SetPoint(
 		"TOPRIGHT",
@@ -886,22 +896,25 @@ function BTV:PositionContentScrollFrame(wide)
 		-52
 	)
 
-	-- Explicit SetWidth in BOTH cases (never a second, opposing anchor
-	-- point) - an anchor-implied width (e.g. TOPLEFT to listPanel +
-	-- TOPRIGHT here) is not guaranteed to already be resolved the moment
-	-- code right after this call reads GetWidth() (BTV:UpdateScrollFrame
-	-- does, to size the scrollchild), which was silently producing a 0/
-	-- stale width - explicit SetWidth is always immediately correct.
-	-- settingsFrame:GetWidth() itself is a fixed literal (SetWidth(780)
-	-- once, in CreateSettingsFrame, never anchor-derived), so it's always
-	-- safe to read here too.
-	if wide then
-		scrollFrame:SetWidth(
-			settingsFrame:GetWidth() - 18 - 18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH
-		)
-	else
-		scrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
-	end
+	scrollFrame:SetBackdrop({
+		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+
+	scrollFrame:SetBackdropColor(0, 0, 0, 0.3)
+
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+
+	scrollChild:SetWidth(scrollFrame:GetWidth())
+	scrollChild:SetHeight(610)
+
+	scrollFrame:SetScrollChild(scrollChild)
+
+	return scrollFrame, scrollChild
 end
 
 -------------------------------------------------------------------------
@@ -2152,16 +2165,14 @@ end
 -- Every optional widget name either a full bar page (GetOrCreateBarPage)
 -- or a simple bar page (CreateSimpleBarPage, including its Experience
 -- Bar-only extras) can have on itself. Checked by presence so the same
--- list works for both page shapes.
---
--- enableCheckbox is deliberately NOT in this list (user decision) - a bar
--- can still be enabled/disabled while the Default profile is active, it
--- just can't be otherwise edited; the bar-list sidebar's own inline
--- enable checkbox (CreateBarListRow) mirrors this and is never locked
--- either.
+-- list works for both page shapes. enableCheckbox IS locked like
+-- everything else here by default - it's only exempted, inline below,
+-- for the numbered default bars (1-5), where the user wants
+-- enable/disable to stay the one available option even while everything
+-- else on the page is locked.
 local PROFILE_LOCK_CONTROL_NAMES = {
 	"xSlider", "ySlider", "buttonSizeSlider", "spacingSlider",
-	"scaleSlider", "resetPositionButton",
+	"scaleSlider", "resetPositionButton", "enableCheckbox",
 	"buttonCountMinus", "buttonCountPlus", "pageIndicatorSlider",
 	"orientationCheckbox", "keyRingCheckbox", "keyRingScaleSlider",
 	"betterExpBarCheckbox", "expBarShowLevelCheckbox",
@@ -2171,12 +2182,13 @@ local PROFILE_LOCK_CONTROL_NAMES = {
 	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
 }
 
--- alsoCheckLayoutLock: true on the pages ApplyDefaultLayoutGating also
--- gates (bar 1's page, every simple/native-backed page) - the banner
--- shows for THAT lock too there, with its own message, even though the
--- control-locking below stays driven purely by the Default-profile lock
--- (ApplyDefaultLayoutGating already handles disabling controls for its
--- own lock, separately, at its own call site).
+-- alsoCheckLayoutLock: true on the pages the Default-layout lock also
+-- applies to (bar 1's page, every simple/native-backed page) - the
+-- banner shows for THAT lock too there, with its own message, and the
+-- SAME combined lock now drives control-locking below too (user
+-- decision: while EITHER lock is active, enable/disable is the only
+-- thing that should stay available on a numbered default bar - every
+-- other control locks the same way under either reason).
 function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
 	local profileLocked = self:IsDefaultProfileActive()
 	local layoutLocked = alsoCheckLayoutLock and (BTVanillaDB.useDefaultLayout == true)
@@ -2193,26 +2205,29 @@ function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
 		end
 	end
 
-	-- Control-locking below is driven by profileLocked ONLY, not the
-	-- combined `locked` used for the banner above - ApplyDefaultLayoutGating
-	-- already independently disables its own (smaller) set of controls for
-	-- the layout lock at its own call site; folding layoutLocked in here
-	-- too would additionally lock controls (resetPositionButton,
-	-- buttonCountMinus/Plus, pageIndicatorSlider, ...) that layout-lock was
-	-- never meant to restrict.
+	-- Numbered default bars (1-5) keep enable/disable available even
+	-- while everything else locks - every other page (extra bars 6-9,
+	-- simple/native-backed pages) has NO exemption, its enable checkbox
+	-- locks exactly like every other control.
+	local barId = page.barId
+	local isNumberedDefaultBar = type(barId) == "number" and barId >= 1 and barId <= 5
+
 	local i
 
 	for i = 1, table.getn(PROFILE_LOCK_CONTROL_NAMES) do
-		local control = page[PROFILE_LOCK_CONTROL_NAMES[i]]
+		local name = PROFILE_LOCK_CONTROL_NAMES[i]
+		local control = page[name]
 
 		if control then
-			LockControl(control, profileLocked)
+			local exempt = isNumberedDefaultBar and name == "enableCheckbox"
+
+			LockControl(control, locked and not exempt)
 		end
 	end
 
 	if page.gridSwatches then
 		for i = 1, table.getn(page.gridSwatches) do
-			LockControl(page.gridSwatches[i], profileLocked)
+			LockControl(page.gridSwatches[i], locked)
 		end
 	end
 
@@ -2229,9 +2244,9 @@ function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
 				local dropdownButton = getglobal(row.dropdown:GetName() .. "Button")
 
 				if dropdownButton then
-					LockControl(dropdownButton, profileLocked)
+					LockControl(dropdownButton, locked)
 				else
-					LockControl(row.dropdown, profileLocked)
+					LockControl(row.dropdown, locked)
 				end
 			end
 		end
@@ -2247,9 +2262,13 @@ end
 -- template-less grid swatch buttons), whereas Disable() only reliably
 -- changes appearance/behavior on templated Button widgets. Controls stay
 -- visible and keep showing their current value either way (point 3 of
--- the spec) - only interactivity is gated. Only default bars (1-5) ever
--- call this; custom bars' pages never have it applied, so they're always
--- fully interactive regardless of BTVanillaDB.useDefaultLayout.
+-- the spec) - only interactivity is gated. Only simple/native-backed
+-- pages (Stance/Bag/Micro/Latency/Exp Bar) call this now - numbered
+-- default bars (1-5) get the SAME layout-lock effect through
+-- BTV:ApplyProfileLockGating's own combined lock instead (its
+-- alsoCheckLayoutLock parameter), which also exempts their enable
+-- checkbox; custom bars' pages never have either applied, so they're
+-- always fully interactive regardless of BTVanillaDB.useDefaultLayout.
 -------------------------------------------------------------------------
 
 local function ApplyDefaultLayoutGating(page, interactive)
@@ -4060,32 +4079,19 @@ function BTV:RefreshBarSettingsPage(barId)
 	end
 
 	-------------------------------------------------------------------------
-	-- Default-layout gating (bar 1 ONLY - major architecture migration,
-	-- Phase 1 of 2: bars 2-5 are now real Bar.lua bar objects, always
-	-- fully editable exactly like a custom bar id 6+, never gated by
-	-- useDefaultLayout at all - that toggle now only has meaning for bar
-	-- 1's position/size/spacing controls. Bar 1 itself is ALSO a real
-	-- Bar.lua bar object as of the Main Bar migration (Phase 2), but its
-	-- settings page keeps this same gating - useDefaultLayout locking bar
-	-- 1's drag/resize is a deliberately preserved behavior, per that
-	-- migration's Part 4). The enable checkbox and Reset to Blizzard
-	-- Default button are deliberately excluded even for bar 1, per the
-	-- spec - they stay fully functional regardless of useDefaultLayout.
+	-- Default-layout lock, numbered default bars (1-5) - user decision:
+	-- while "Use Default Blizzard Layout" is on, every one of these
+	-- bars' controls locks EXCEPT enable/disable, exactly like the
+	-- Default-profile lock - both reasons share the same combined lock
+	-- and control list now (BTV:ApplyProfileLockGating below), rather
+	-- than this being a separate, narrower, bar-1-only gate.
 	-------------------------------------------------------------------------
 
-	if barId == 1 then
-		ApplyDefaultLayoutGating(
-			page,
-			BTVanillaDB.useDefaultLayout ~= true
-		)
-	end
-
 	-- Default-profile lock (independent of the useDefaultLayout gate
-	-- above) - applies to every bar page, not just bar 1. Only bar 1 is
-	-- also subject to the layout lock (the ApplyDefaultLayoutGating call
-	-- above only ever runs for barId == 1), so only its banner should
-	-- reflect that lock too.
-	self:ApplyProfileLockGating(page, barId == 1)
+	-- above) - applies to every bar page, not just numbered default bars.
+	-- Only numbered default bars (1-5) are also subject to the layout
+	-- lock, so only their banner/controls should reflect that lock too.
+	self:ApplyProfileLockGating(page, page.isDefault)
 
 	-- Locks this page's own spacing/buttonSize sliders whenever the
 	-- corresponding global override (General tab) is on, so a bar page
@@ -4249,8 +4255,8 @@ end
 -- candidateList, floored at SETTINGS_CONTENT_MIN_HEIGHT and CEILED at the
 -- screen-relative max (BTV:UpdateScrollFrame turns scrolling on for
 -- whatever doesn't fit within that ceiling).
-local function ApplySettingsHeightFromCandidates(candidateList, scrollChildPanel)
-	if not settingsFrame or not scrollChildPanel then
+local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel)
+	if not settingsFrame or not scrollFrame or not scrollChildPanel then
 		return
 	end
 
@@ -4267,21 +4273,15 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollChildPanel
 
 	local top = frameTop - SETTINGS_CHROME_TOP
 
-	-- Attach scrollChildPanel as the scrollframe's active scroll child
-	-- BEFORE measuring below (not only after, via BTV:UpdateScrollFrame) -
-	-- a panel that has never been attached yet (first time this view is
-	-- shown) carries no anchor of its own at all, so its descendants'
-	-- GetBottom() calls would have nothing resolvable to measure from,
-	-- silently finding no lowestBottom and returning empty-handed (the
-	-- page rendering completely empty). Also set its width immediately
-	-- (BTV:UpdateScrollFrame does this again below, harmlessly) since
-	-- wrapped-text candidates (e.g. the profile-lock warning banner)
-	-- measure their own height from it. Scroll is reset to the top here
-	-- too, since a previously-scrolled view would otherwise measure as
-	-- shorter than it really is.
-	scrollChildPanel:SetWidth(settingsFrame.contentScrollFrame:GetWidth())
-	settingsFrame.contentScrollFrame:SetScrollChild(scrollChildPanel)
-	settingsFrame.contentScrollFrame:SetVerticalScroll(0)
+	-- Every candidate below is a descendant of scrollChildPanel, which is
+	-- PERMANENTLY the given scrollFrame's scroll child (set once, at
+	-- creation - see CreateSettingsFrame/BTV:CreateWideContentScrollFrame's
+	-- own comments on why nothing here ever re-targets SetScrollChild at
+	-- a different frame) - its GetBottom() reads as a real SCREEN
+	-- position that shifts with the current scroll offset, so scroll has
+	-- to be reset to the top BEFORE measuring or a previously-scrolled
+	-- view would measure as shorter than it really is.
+	scrollFrame:SetVerticalScroll(0)
 
 	local lowestBottom = nil
 	local i
@@ -4317,7 +4317,7 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollChildPanel
 	end
 
 	BTV:UpdateScrollFrame(
-		settingsFrame.contentScrollFrame,
+		scrollFrame,
 		scrollChildPanel,
 		contentHeight,
 		viewportHeight
@@ -4433,7 +4433,7 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	-- every bar page uses page:SetAllPoints(settingsFrame.contentPanel)
 	-- (GetOrCreateBarPage), so `page` always just mirrors contentPanel's
 	-- own rect rather than having independently meaningful dimensions.
-	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentPanel)
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentScrollFrame, settingsFrame.contentPanel)
 end
 
 -- General view: no bar list is shown here, just the checkbox and its
@@ -4478,7 +4478,7 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
 
-	ApplySettingsHeightFromCandidates(candidates, panel)
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
 end
 
 -------------------------------------------------------------------------
@@ -4498,14 +4498,19 @@ function BTV:ShowBarPage(barId)
 	-- every caller remembering to do it.
 	settingsFrame.currentView = "bars"
 	settingsFrame.listPanel:Show()
+	settingsFrame.contentScrollFrame:Show()
 	settingsFrame.contentPanel:Show()
 
-	-- Narrow content viewport (sits beside the bar list this view shows)
-	-- - see BTV:PositionContentScrollFrame's own comment.
-	self:PositionContentScrollFrame(false)
+	if settingsFrame.generalScrollFrame then
+		settingsFrame.generalScrollFrame:Hide()
+	end
 
 	if settingsFrame.generalPanel then
 		settingsFrame.generalPanel:Hide()
+	end
+
+	if settingsFrame.profilesScrollFrame then
+		settingsFrame.profilesScrollFrame:Hide()
 	end
 
 	if settingsFrame.profilesPanel then
@@ -4767,17 +4772,13 @@ function BTV:GetOrCreateGeneralPanel()
 		return settingsFrame.generalPanel
 	end
 
-	-- No SetPoint here (deliberately) - this panel is a scrollchild of
-	-- the shared settingsFrame.contentScrollFrame viewport
-	-- (BTV:UpdateScrollFrame, via this view's own Fit*View call), which
-	-- manages its position/size internally (width/height set explicitly
-	-- there); a manual anchor here would fight that instead of just
-	-- widening the empty space this used to occupy uselessly.
-	local panel = CreateFrame(
-		"Frame",
-		nil,
-		settingsFrame
-	)
+	-- Own dedicated scrollframe+scrollchild pair (BTV:CreateWideContentScrollFrame)
+	-- - see CreateSettingsFrame's own comment on why this doesn't share
+	-- the Bars view's contentScrollFrame.
+	local scrollFrame, panel = BTV:CreateWideContentScrollFrame("BTVanillaSettingsGeneralScrollFrame")
+
+	settingsFrame.generalScrollFrame = scrollFrame
+	scrollFrame:Hide()
 
 	local title = panel:CreateFontString(
 		nil,
@@ -6015,17 +6016,13 @@ function BTV:GetOrCreateProfilesPanel()
 		return settingsFrame.profilesPanel
 	end
 
-	-- No SetPoint here (deliberately) - this panel is a scrollchild of
-	-- the shared settingsFrame.contentScrollFrame viewport
-	-- (BTV:UpdateScrollFrame, via this view's own Fit*View call), which
-	-- manages its position/size internally (width/height set explicitly
-	-- there); a manual anchor here would fight that instead of just
-	-- widening the empty space this used to occupy uselessly.
-	local panel = CreateFrame(
-		"Frame",
-		nil,
-		settingsFrame
-	)
+	-- Own dedicated scrollframe+scrollchild pair (BTV:CreateWideContentScrollFrame)
+	-- - see CreateSettingsFrame's own comment on why this doesn't share
+	-- the Bars view's contentScrollFrame.
+	local scrollFrame, panel = BTV:CreateWideContentScrollFrame("BTVanillaSettingsProfilesScrollFrame")
+
+	settingsFrame.profilesScrollFrame = scrollFrame
+	scrollFrame:Hide()
 
 	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
 	title:SetPoint("TOPLEFT", panel, "TOPLEFT", INDENT_SECTION, -14)
@@ -6180,7 +6177,7 @@ function BTV:FitSettingsWindowToProfilesView()
 	n = AppendCandidate(candidates, n, panel.copyButton)
 	n = AppendCandidate(candidates, n, panel.deleteButton)
 
-	ApplySettingsHeightFromCandidates(candidates, panel)
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.profilesScrollFrame, panel)
 end
 
 function BTV:RefreshGeneralPanel()
@@ -6342,17 +6339,23 @@ function BTV:ShowGeneralView()
 	end
 
 	settingsFrame.listPanel:Hide()
+	settingsFrame.contentScrollFrame:Hide()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "general"
+
+	-- Ensure the General panel (and its own dedicated scrollframe) exist
+	-- before trying to Show() the scrollframe below.
+	self:GetOrCreateGeneralPanel()
+
+	if settingsFrame.profilesScrollFrame then
+		settingsFrame.profilesScrollFrame:Hide()
+	end
 
 	if settingsFrame.profilesPanel then
 		settingsFrame.profilesPanel:Hide()
 	end
 
-	-- Wide content viewport (spans the space the bar list would have
-	-- used, since it's hidden in this view) - see
-	-- BTV:PositionContentScrollFrame's own comment.
-	self:PositionContentScrollFrame(true)
+	settingsFrame.generalScrollFrame:Show()
 
 	self:RefreshGeneralPanel()
 	self:GetOrCreateGeneralPanel():Show()
@@ -6375,17 +6378,23 @@ function BTV:ShowProfilesView()
 	end
 
 	settingsFrame.listPanel:Hide()
+	settingsFrame.contentScrollFrame:Hide()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "profiles"
+
+	-- Ensure the Profiles panel (and its own dedicated scrollframe) exist
+	-- before trying to Show() the scrollframe below.
+	self:GetOrCreateProfilesPanel()
+
+	if settingsFrame.generalScrollFrame then
+		settingsFrame.generalScrollFrame:Hide()
+	end
 
 	if settingsFrame.generalPanel then
 		settingsFrame.generalPanel:Hide()
 	end
 
-	-- Wide content viewport (spans the space the bar list would have
-	-- used, since it's hidden in this view) - see
-	-- BTV:PositionContentScrollFrame's own comment.
-	self:PositionContentScrollFrame(true)
+	settingsFrame.profilesScrollFrame:Show()
 
 	self:RefreshProfilesPanel()
 	self:GetOrCreateProfilesPanel():Show()
@@ -6500,10 +6509,19 @@ local function CreateBarListRow(barId, isDefault, cfg)
 
 		row.checkbox = checkbox
 
-		-- Deliberately NOT locked by the Default-profile lock (user
-		-- decision) - a bar can still be enabled/disabled while the
-		-- Default profile is active, matching page.enableCheckbox's own
-		-- exemption (PROFILE_LOCK_CONTROL_NAMES's own comment).
+		-- Only exempt for numbered default bars (2-5 - bar 1 never gets a
+		-- sidebar checkbox at all) from BOTH the Default-profile AND
+		-- Default-layout locks, matching page.enableCheckbox's own
+		-- exemption on those pages (BTV:ApplyProfileLockGating). Bag Bar/
+		-- Micro Menu and Extra Bars (6-9) get NO exemption - their
+		-- checkbox locks exactly like every other control on their page,
+		-- under the Default-profile lock only (layout lock never applies
+		-- to them).
+		local isNumberedDefaultBar = isDefault and type(barId) == "number" and barId ~= 1
+
+		if not isNumberedDefaultBar then
+			LockControl(checkbox, BTV:IsDefaultProfileActive())
+		end
 	end
 
 	return row

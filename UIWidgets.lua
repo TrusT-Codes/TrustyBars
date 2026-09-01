@@ -57,8 +57,20 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	self.options = {}
 	self.selected = nil
 	self.onSelect = nil
+	self.widthPixels = widthPixels or 160
 
-	UIDropDownMenu_SetWidth(widthPixels or 160, self)
+	UIDropDownMenu_SetWidth(self.widthPixels, self)
+
+	-- Re-applied on every OnShow too, not just here - live-tested reports
+	-- of the Left/Middle/Right skin pieces rendering fragmented (visible
+	-- gaps between them) on a dropdown built while its page was still
+	-- hidden (e.g. RebuildMainBarAssignmentRows runs before ShowBarPage's
+	-- own :Show() call) suggest UIDropDownMenuTemplate's skin textures
+	-- don't reliably finish settling into the width this call already
+	-- passed them at that point - cheap to just redo once actually shown.
+	self:SetScript("OnShow", function()
+		UIDropDownMenu_SetWidth(this.widthPixels, this)
+	end)
 
 	local dropdown = self
 

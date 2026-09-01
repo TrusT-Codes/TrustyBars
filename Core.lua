@@ -564,6 +564,25 @@ BTV.DEFAULT_BAR_GRID = {
 	[5] = { cols = 1,  rows = 12, enabled = false },     -- Right 2.
 }
 
+-- Native vanilla FrameXML global backing each default bar's own built-in
+-- Interface Options -> Action Bars checkbox ("Show Bottom Left
+-- ActionBar", etc. - MULTIACTIONBAR1-4, same mapping HoverBind.lua's own
+-- MULTIACTIONBAR_PREFIXES table uses: default bar id -> MULTIACTIONBAR(id-1)).
+-- Bars 2-5's real native buttons are permanently hidden regardless (see
+-- DefaultBars.lua's CreateFixedSlotDefaultBars) - our own cfg.enabled
+-- stays the sole VISUAL authority - but DefaultBars.lua's
+-- SetDefaultBarEnabled also mirrors our state into this global (so the
+-- real Options checkbox doesn't look stuck/wrong to the player), and
+-- seedDefaultBars below reads it once as a sensible starting point for a
+-- freshly-seeded bar (e.g. an existing player who already had one of
+-- these checked before ever using TrustyBars).
+BTV.SHOW_MULTI_ACTIONBAR_GLOBAL = {
+	[2] = "SHOW_MULTI_ACTIONBAR_1",
+	[3] = "SHOW_MULTI_ACTIONBAR_2",
+	[4] = "SHOW_MULTI_ACTIONBAR_3",
+	[5] = "SHOW_MULTI_ACTIONBAR_4",
+}
+
 -- Friendly display names for the 5 fixed default bars (1-5) - round 36
 -- (Item 2) promotes this out of Settings.lua's own file-local copy into a
 -- single BTV-level source of truth, since Bar.lua's EnsureBarOverlay now
@@ -653,6 +672,20 @@ local function seedDefaultBars(self)
 			)
 		end
 
+		-- Bars 2-5: read the native "Show ... ActionBar" checkbox's
+		-- current global (BTV.SHOW_MULTI_ACTIONBAR_GLOBAL) as the initial
+		-- enabled state, rather than DEFAULT_BAR_GRID's own hardcoded
+		-- `false` - so a player who already had one of these checked in
+		-- Blizzard's own Interface Options before ever using TrustyBars
+		-- doesn't lose that preference. Bar 1 keeps grid.enabled (nil,
+		-- unused - it has no enable/disable concept at all).
+		local enabled = grid.enabled
+		local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
+
+		if nativeGlobal then
+			enabled = getglobal(nativeGlobal) and true or false
+		end
+
 		result[id] = {
 			-- Bar.lua/Button.lua/HoverBind.lua all key off bar.config.id
 			-- (frame naming, BTV.DEFAULT_BAR_BINDING_PREFIXES lookups) -
@@ -661,7 +694,7 @@ local function seedDefaultBars(self)
 			-- own real Blizzard frames directly, out of scope this pass).
 			id = id,
 
-			enabled = grid.enabled,
+			enabled = enabled,
 			point = anchor.point,
 			relativePoint = anchor.relativePoint,
 			x = anchor.x,
