@@ -214,7 +214,14 @@ local SETTINGS_SCROLLBAR_RESERVED_WIDTH = 28
 -- unconditionally (whether or not the banner is currently shown) so
 -- nothing needs to reflow when it toggles.
 local PROFILE_LOCK_BANNER_TOP = -34
-local PROFILE_LOCK_BANNER_HEIGHT = 40
+
+-- Generous reserve for the LONGER of the two possible lock messages
+-- (BTV:CreateProfileLockWarning) wrapped at the narrowest page width this
+-- banner ever appears at - the banner's own real height is still
+-- recomputed dynamically from its actual wrapped text
+-- (BTV:ApplyProfileLockGating), so this is a safety margin against
+-- overlapping the control below it, not a hard cap.
+local PROFILE_LOCK_BANNER_HEIGHT = 56
 
 local SWATCH_SIZE = 46
 local SWATCH_GAP  = 8
@@ -871,12 +878,6 @@ function BTV:PositionContentScrollFrame(wide)
 
 	scrollFrame:ClearAllPoints()
 
-	if wide then
-		scrollFrame:SetPoint("TOPLEFT", settingsFrame.listPanel, "TOPLEFT", 0, 0)
-	else
-		scrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
-	end
-
 	scrollFrame:SetPoint(
 		"TOPRIGHT",
 		settingsFrame,
@@ -884,6 +885,23 @@ function BTV:PositionContentScrollFrame(wide)
 		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
 		-52
 	)
+
+	-- Explicit SetWidth in BOTH cases (never a second, opposing anchor
+	-- point) - an anchor-implied width (e.g. TOPLEFT to listPanel +
+	-- TOPRIGHT here) is not guaranteed to already be resolved the moment
+	-- code right after this call reads GetWidth() (BTV:UpdateScrollFrame
+	-- does, to size the scrollchild), which was silently producing a 0/
+	-- stale width - explicit SetWidth is always immediately correct.
+	-- settingsFrame:GetWidth() itself is a fixed literal (SetWidth(780)
+	-- once, in CreateSettingsFrame, never anchor-derived), so it's always
+	-- safe to read here too.
+	if wide then
+		scrollFrame:SetWidth(
+			settingsFrame:GetWidth() - 18 - 18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH
+		)
+	else
+		scrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
+	end
 end
 
 -------------------------------------------------------------------------
@@ -1969,12 +1987,22 @@ function BTV:GetOrCreateBarPage(barId)
 
 		local assignmentContainer = CreateFrame("Frame", nil, page)
 
+		-- Anchored straight to `page`'s own left margin, NOT to
+		-- pageIndicatorValueText - that FontString only has a single
+		-- "TOP" anchor point (centered under the 290px-wide slider above
+		-- it, not left-aligned), so its BOTTOMLEFT sits ~215px in from
+		-- the page's real left edge. Anchoring off it pushed every
+		-- assignment row (and its dropdown) that same ~215px to the
+		-- right, overflowing past the page's visible width entirely -
+		-- the Y offset below approximates where that BOTTOMLEFT used to
+		-- land (slider height 17 + value text's own -2 gap/height + the
+		-- original -14 gap), just measured from `page` at the correct X.
 		assignmentContainer:SetPoint(
 			"TOPLEFT",
-			pageIndicatorValueText,
-			"BOTTOMLEFT",
-			-4,
-			-14
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			pageIndicatorSliderY - 44
 		)
 
 		assignmentContainer:SetWidth(500)
@@ -2036,11 +2064,29 @@ end
 -- and has all of its interactive controls locked while it's active.
 -------------------------------------------------------------------------
 
+-- Text shown while the Default PROFILE is active - takes priority over
+-- the layout-lock text below if both conditions happen to be true at
+-- once (the Default profile's own restriction is the broader one).
+local PROFILE_LOCK_MESSAGE_PROFILE =
+	"Editing Settings is prohibited while in default profile mode. " ..
+	"Go to Profile Settings and set up a profile if you wish to " ..
+	"change Settings or access Layout Edit Mode."
+
+-- Text shown while "Use Default Blizzard Layout" (General tab) is on, on
+-- pages that gate ONLY applies to (bar 1 and the simple/native-backed
+-- pages - see ApplyDefaultLayoutGating's own header comment).
+local PROFILE_LOCK_MESSAGE_LAYOUT =
+	"Editing Settings is prohibited while using the Default Blizzard " ..
+	"Layout. Disable Default Blizzard Layout under General Settings " ..
+	"if you wish to change Settings or access Layout Edit Mode."
+
 -- One reusable warning banner per page - a solid strip anchored right
 -- below the page's title and right above its first content control
 -- (PROFILE_LOCK_BANNER_TOP/PROFILE_LOCK_BANNER_HEIGHT reserve that band
 -- unconditionally, so nothing needs to reflow when this toggles). Hidden
--- by default; toggled by ApplyProfileLockGating below.
+-- by default; toggled (and its exact height/text) set by
+-- ApplyProfileLockGating below - text isn't fixed at creation time since
+-- which of the two messages above applies can change live.
 function BTV:CreateProfileLockWarning(page)
 	local banner = CreateFrame("Frame", nil, page)
 
@@ -2068,15 +2114,23 @@ function BTV:CreateProfileLockWarning(page)
 	text:SetJustifyV("TOP")
 	text:SetTextColor(1, 0.15, 0.15)
 
-	text:SetText(
-		"Editing Settings is prohibited while in default profile mode. " ..
-		"Go to Profile Settings and set up a profile if you wish to " ..
-		"change Settings or access Layout Edit Mode"
-	)
+	banner.text = text
 
 	banner:Hide()
 
 	return banner
+end
+
+-- Sets the banner's message and resizes the banner to fit however many
+-- lines that message actually wraps to at the page's CURRENT width
+-- (text:GetHeight() reflects real wrapped height once SetText runs, same
+-- content-aware-sizing technique UIWidgets.lua's dialog uses) - so a
+-- longer message, a narrower window, or a translation never gets cut off
+-- rather than just being clamped to PROFILE_LOCK_BANNER_HEIGHT's own
+-- (generous, but not guaranteed-sufficient) reserved space.
+local function SetProfileLockBannerMessage(banner, message)
+	banner.text:SetText(message)
+	banner:SetHeight((banner.text:GetHeight() or 0) + 12)
 end
 
 local function LockControl(control, locked)
@@ -2099,9 +2153,15 @@ end
 -- or a simple bar page (CreateSimpleBarPage, including its Experience
 -- Bar-only extras) can have on itself. Checked by presence so the same
 -- list works for both page shapes.
+--
+-- enableCheckbox is deliberately NOT in this list (user decision) - a bar
+-- can still be enabled/disabled while the Default profile is active, it
+-- just can't be otherwise edited; the bar-list sidebar's own inline
+-- enable checkbox (CreateBarListRow) mirrors this and is never locked
+-- either.
 local PROFILE_LOCK_CONTROL_NAMES = {
 	"xSlider", "ySlider", "buttonSizeSlider", "spacingSlider",
-	"scaleSlider", "resetPositionButton", "enableCheckbox",
+	"scaleSlider", "resetPositionButton",
 	"buttonCountMinus", "buttonCountPlus", "pageIndicatorSlider",
 	"orientationCheckbox", "keyRingCheckbox", "keyRingScaleSlider",
 	"betterExpBarCheckbox", "expBarShowLevelCheckbox",
@@ -2111,26 +2171,48 @@ local PROFILE_LOCK_CONTROL_NAMES = {
 	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
 }
 
-function BTV:ApplyProfileLockGating(page)
-	local locked = self:IsDefaultProfileActive()
+-- alsoCheckLayoutLock: true on the pages ApplyDefaultLayoutGating also
+-- gates (bar 1's page, every simple/native-backed page) - the banner
+-- shows for THAT lock too there, with its own message, even though the
+-- control-locking below stays driven purely by the Default-profile lock
+-- (ApplyDefaultLayoutGating already handles disabling controls for its
+-- own lock, separately, at its own call site).
+function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
+	local profileLocked = self:IsDefaultProfileActive()
+	local layoutLocked = alsoCheckLayoutLock and (BTVanillaDB.useDefaultLayout == true)
+	local locked = profileLocked or layoutLocked
 
 	if page.profileLockWarning then
 		page.profileLockWarning:SetShown(locked)
+
+		if locked then
+			SetProfileLockBannerMessage(
+				page.profileLockWarning,
+				profileLocked and PROFILE_LOCK_MESSAGE_PROFILE or PROFILE_LOCK_MESSAGE_LAYOUT
+			)
+		end
 	end
 
+	-- Control-locking below is driven by profileLocked ONLY, not the
+	-- combined `locked` used for the banner above - ApplyDefaultLayoutGating
+	-- already independently disables its own (smaller) set of controls for
+	-- the layout lock at its own call site; folding layoutLocked in here
+	-- too would additionally lock controls (resetPositionButton,
+	-- buttonCountMinus/Plus, pageIndicatorSlider, ...) that layout-lock was
+	-- never meant to restrict.
 	local i
 
 	for i = 1, table.getn(PROFILE_LOCK_CONTROL_NAMES) do
 		local control = page[PROFILE_LOCK_CONTROL_NAMES[i]]
 
 		if control then
-			LockControl(control, locked)
+			LockControl(control, profileLocked)
 		end
 	end
 
 	if page.gridSwatches then
 		for i = 1, table.getn(page.gridSwatches) do
-			LockControl(page.gridSwatches[i], locked)
+			LockControl(page.gridSwatches[i], profileLocked)
 		end
 	end
 
@@ -2147,9 +2229,9 @@ function BTV:ApplyProfileLockGating(page)
 				local dropdownButton = getglobal(row.dropdown:GetName() .. "Button")
 
 				if dropdownButton then
-					LockControl(dropdownButton, locked)
+					LockControl(dropdownButton, profileLocked)
 				else
-					LockControl(row.dropdown, locked)
+					LockControl(row.dropdown, profileLocked)
 				end
 			end
 		end
@@ -3617,8 +3699,10 @@ function BTV:RefreshSimpleBarPage(key)
 	ApplyDefaultLayoutGating(page, BTVanillaDB.useDefaultLayout ~= true)
 
 	-- Default-profile lock (independent of the useDefaultLayout gate
-	-- above).
-	self:ApplyProfileLockGating(page)
+	-- above) - every simple page is also subject to that layout lock
+	-- (the ApplyDefaultLayoutGating call just above), so the banner
+	-- should reflect it here too.
+	self:ApplyProfileLockGating(page, true)
 end
 
 -- Config table for each simple page - populated here (rather than at
@@ -3997,8 +4081,11 @@ function BTV:RefreshBarSettingsPage(barId)
 	end
 
 	-- Default-profile lock (independent of the useDefaultLayout gate
-	-- above) - applies to every bar page, not just bar 1.
-	self:ApplyProfileLockGating(page)
+	-- above) - applies to every bar page, not just bar 1. Only bar 1 is
+	-- also subject to the layout lock (the ApplyDefaultLayoutGating call
+	-- above only ever runs for barId == 1), so only its banner should
+	-- reflect that lock too.
+	self:ApplyProfileLockGating(page, barId == 1)
 
 	-- Locks this page's own spacing/buttonSize sliders whenever the
 	-- corresponding global override (General tab) is on, so a bar page
@@ -4180,13 +4267,20 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollChildPanel
 
 	local top = frameTop - SETTINGS_CHROME_TOP
 
-	-- Every candidate below is a descendant of a scrollchild
-	-- (contentPanel/generalPanel/profilesPanel) - its GetBottom() reads
-	-- as a real SCREEN position that shifts with the current scroll
-	-- offset, so scroll has to be reset to the top BEFORE measuring or a
-	-- previously-scrolled view would measure as shorter than it really
-	-- is. BTV:UpdateScrollFrame resets it again below, but only after
-	-- this measurement already needs it at 0.
+	-- Attach scrollChildPanel as the scrollframe's active scroll child
+	-- BEFORE measuring below (not only after, via BTV:UpdateScrollFrame) -
+	-- a panel that has never been attached yet (first time this view is
+	-- shown) carries no anchor of its own at all, so its descendants'
+	-- GetBottom() calls would have nothing resolvable to measure from,
+	-- silently finding no lowestBottom and returning empty-handed (the
+	-- page rendering completely empty). Also set its width immediately
+	-- (BTV:UpdateScrollFrame does this again below, harmlessly) since
+	-- wrapped-text candidates (e.g. the profile-lock warning banner)
+	-- measure their own height from it. Scroll is reset to the top here
+	-- too, since a previously-scrolled view would otherwise measure as
+	-- shorter than it really is.
+	scrollChildPanel:SetWidth(settingsFrame.contentScrollFrame:GetWidth())
+	settingsFrame.contentScrollFrame:SetScrollChild(scrollChildPanel)
 	settingsFrame.contentScrollFrame:SetVerticalScroll(0)
 
 	local lowestBottom = nil
@@ -6406,11 +6500,10 @@ local function CreateBarListRow(barId, isDefault, cfg)
 
 		row.checkbox = checkbox
 
-		-- Default-profile lock (Profiles feature): this checkbox lets a
-		-- bar be enabled/disabled without opening its full settings page,
-		-- so it needs the same lock ApplyProfileLockGating already applies
-		-- to that page's own enableCheckbox.
-		LockControl(checkbox, BTV:IsDefaultProfileActive())
+		-- Deliberately NOT locked by the Default-profile lock (user
+		-- decision) - a bar can still be enabled/disabled while the
+		-- Default profile is active, matching page.enableCheckbox's own
+		-- exemption (PROFILE_LOCK_CONTROL_NAMES's own comment).
 	end
 
 	return row
