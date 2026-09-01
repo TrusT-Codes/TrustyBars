@@ -138,6 +138,112 @@ function BTVInlineDropdownMixin:GetSelected()
 end
 
 -------------------------------------------------------------------------
+-- Modern button styling
+--
+-- UIPanelButtonTemplate's native 3-slice texture is built for short,
+-- fixed-width labels (e.g. "Okay"/"Cancel") - stretched out to the wide,
+-- variable widths this addon's dialogs need for long button labels (the
+-- first-login dialog's own "I know what im doing, use default profile"),
+-- its corner/middle pieces visibly distort. This backdrop-based button
+-- instead scales cleanly to any width (SetBackdrop tiles/stretches its
+-- edge and background independently, unlike a fixed 3-slice texture) and
+-- matches the "modern" border look already used elsewhere in this addon
+-- (Button.lua's own modern button style) for one consistent visual
+-- language. General-purpose (not dialog-specific) since this file is
+-- meant to be the pilot for a broader future UI redesign.
+-------------------------------------------------------------------------
+
+-- Turns a plain, template-less Button frame into a modern-styled one.
+-- Caller still creates the frame (CreateFrame("Button", ...)), sets its
+-- own SetHeight/OnClick/etc as normal - this only applies the visuals and
+-- installs a :SetText that both updates the label AND resizes the button
+-- to fit it (BTV_BUTTON_PADDING_X either side), clamped to
+-- [minWidth, maxWidth] so a short label doesn't look stretched and a long
+-- one doesn't overflow its container. Pass 0/math.huge (or omit) for no
+-- clamping on that side.
+local BTV_BUTTON_PADDING_X = 32
+
+function BTV:StyleModernButton(button, minWidth, maxWidth)
+	button:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+
+	button:SetBackdropColor(0.08, 0.08, 0.08, 0.85)
+	button:SetBackdropBorderColor(0.55, 0.55, 0.55, 1)
+
+	local text = button:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	text:SetPoint("CENTER", button, "CENTER", 0, 0)
+	text:SetJustifyH("CENTER")
+
+	button.text = text
+	button.minWidth = minWidth or 0
+	button.maxWidth = maxWidth or 0
+
+	-- Overrides the native Button:SetText - a plain, template-less Button
+	-- has no default font region wired to it the way a templated one
+	-- does, and this addon still wants every caller to just say
+	-- button:SetText(...) as normal.
+	button.SetText = function(self, value)
+		text:SetText(value or "")
+
+		local width = (text:GetStringWidth() or 0) + BTV_BUTTON_PADDING_X
+
+		if self.minWidth and self.minWidth > 0 and width < self.minWidth then
+			width = self.minWidth
+		end
+
+		if self.maxWidth and self.maxWidth > 0 and width > self.maxWidth then
+			width = self.maxWidth
+		end
+
+		self:SetWidth(width)
+	end
+
+	button:SetScript("OnEnter", function()
+		this:SetBackdropBorderColor(1, 0.82, 0, 1)
+	end)
+
+	button:SetScript("OnLeave", function()
+		this:SetBackdropBorderColor(0.55, 0.55, 0.55, 1)
+	end)
+
+	button:SetScript("OnMouseDown", function()
+		if this:IsEnabled() ~= false then
+			this.text:SetPoint("CENTER", this, "CENTER", 1, -1)
+		end
+	end)
+
+	button:SetScript("OnMouseUp", function()
+		this.text:SetPoint("CENTER", this, "CENTER", 0, 0)
+	end)
+
+	-- :Disable()/:Enable() are native Button methods (grey out + block
+	-- clicks) - just also dim our own backdrop/text to match, since the
+	-- native greyed-out look is baked into UIPanelButtonTemplate's
+	-- texture, which this button no longer has.
+	local nativeDisable = button.Disable
+	local nativeEnable = button.Enable
+
+	button.Disable = function(self)
+		nativeDisable(self)
+		self:SetBackdropColor(0.08, 0.08, 0.08, 0.5)
+		self.text:SetTextColor(0.5, 0.5, 0.5)
+	end
+
+	button.Enable = function(self)
+		nativeEnable(self)
+		self:SetBackdropColor(0.08, 0.08, 0.08, 0.85)
+		self.text:SetTextColor(1, 1, 1)
+	end
+end
+
+-------------------------------------------------------------------------
 -- BTVDialogMixin
 --
 -- One reusable dialog frame covering every shape the spec needs:
@@ -161,7 +267,7 @@ BTVDialogMixin = {}
 
 local DIALOG_WIDTH = 360
 local DIALOG_BUTTON_HEIGHT = 22
-local DIALOG_BUTTON_WIDTH = 140
+local DIALOG_BUTTON_MIN_WIDTH = 100
 
 local function EnsureDialogFrame()
 	if BTV.activeDialog then
@@ -239,10 +345,15 @@ function BTVDialogMixin:OnLoad()
 	local i
 
 	for i = 1, 4 do
-		local button = CreateFrame("Button", nil, self, "UIPanelButtonTemplate")
+		local button = CreateFrame("Button", nil, self)
 
-		button:SetWidth(DIALOG_BUTTON_WIDTH)
 		button:SetHeight(DIALOG_BUTTON_HEIGHT)
+
+		-- Min width keeps very short labels ("OK") from looking like a
+		-- tiny nub; max width is the same usable width the title/message
+		-- text already wraps to, so a long label is the only thing that
+		-- ever grows a button to full dialog width.
+		BTV:StyleModernButton(button, DIALOG_BUTTON_MIN_WIDTH, DIALOG_WIDTH - 40)
 		button:Hide()
 
 		self.buttons[i] = button
@@ -307,7 +418,10 @@ function BTVDialogMixin:Init(config)
 			-- the just-shown button at the end of each iteration).
 			local gap = (i == 1) and -14 or -8
 
-			button:SetWidth(DIALOG_WIDTH - 40)
+			-- SetText (BTV:StyleModernButton's override) resizes the
+			-- button to fit this label, clamped to
+			-- [DIALOG_BUTTON_MIN_WIDTH, DIALOG_WIDTH - 40] - no manual
+			-- SetWidth needed here.
 			button:SetText(buttonConfig.text or "")
 			button:ClearAllPoints()
 			button:SetPoint("TOP", contentBottom, "BOTTOM", 0, gap)
