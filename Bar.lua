@@ -572,6 +572,16 @@ function BTV:ApplyGlobalButtonStyle()
 		local dx = vanilla and posShift or -posShift
 		local dy = vanilla and -posShift or posShift
 
+		-- Opposite sign to the buttonSize delta above: buttonSize +
+		-- spacing must stay visually constant across a switch (going to
+		-- modern, buttons grow +delta so the real gap between them
+		-- shrinks by the same amount, and vice versa going to vanilla).
+		-- The DISPLAYED spacing number never changes because
+		-- GetSpacingDisplayOffset (Settings.lua) is conditional on style
+		-- and exactly cancels this real-value shift when computing the
+		-- shown number.
+		local spacingDelta = vanilla and self.VANILLA_SPACING_FLOOR or -self.VANILLA_SPACING_FLOOR
+
 		-- useDefaultLayout turning ON forces vanilla=true here regardless
 		-- of modernBorderStyle, and its own OnClick already reset bars
 		-- 1-5's buttonSize/position to their true native values via the
@@ -592,6 +602,7 @@ function BTV:ApplyGlobalButtonStyle()
 				not (skipDefaultBars and barId >= 1 and barId <= 5) then
 				self:SetBarButtonSize(bar, bar.config.buttonSize + delta)
 				self:SetBarPosition(bar, (bar.config.x or 0) + dx, (bar.config.y or 0) + dy)
+				self:SetBarSpacing(bar, (bar.config.spacing or 0) + spacingDelta)
 			end
 		end
 

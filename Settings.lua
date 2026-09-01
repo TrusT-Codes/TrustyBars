@@ -132,17 +132,17 @@ local SPACING_STEP = 1
 -- (1-9) spacing slider - NOT the simple-bar (Bag Bar/Micro Menu/etc.)
 -- slider, and NOT the global-spacing slider's own displayed number
 -- (that one shows BTVanillaDB.globalSpacingValue raw, un-offset - see
--- Bar.lua's ApplyGlobalSpacing). Deliberately a FIXED constant,
--- unconditional on border style, even though the REAL minimum spacing
--- clamp (Bar.lua's SetBarSpacing) stays vanilla-only (0 in modern) -
--- this is what makes the per-bar slider's DISPLAYED number invariant
--- across a style switch (ApplyGlobalButtonStyle never touches a bar's
--- real spacing, so real - offset stays the same number in both styles
--- only if offset itself doesn't change with style). Real values are
--- only ever written at the OnValueChanged/refresh boundary - the
--- slider's own on-screen value is always in DISPLAYED space.
+-- Bar.lua's ApplyGlobalSpacing). Vanilla-only, matching the real minimum
+-- spacing clamp (Bar.lua's SetBarSpacing) exactly - the displayed number
+-- stays constant across a style switch not because this offset is
+-- frozen, but because BTV:ApplyGlobalButtonStyle (Bar.lua) actively
+-- converts the REAL spacing value by the same amount in the opposite
+-- direction of the buttonSize delta on every transition, so
+-- real - offset always nets out to the same displayed number. Real
+-- values are only ever written at the OnValueChanged/refresh boundary -
+-- the slider's own on-screen value is always in DISPLAYED space.
 local function GetSpacingDisplayOffset()
-	return BTV.VANILLA_SPACING_FLOOR
+	return BTV:IsVanillaBorderStyle() and BTV.VANILLA_SPACING_FLOOR or 0
 end
 
 -- Friendly names for the 5 fixed default bars (1-5) now live on
