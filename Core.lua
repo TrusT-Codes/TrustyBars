@@ -3145,6 +3145,80 @@ function BTV:DiagBarGap(id1, id2)
 	end
 end
 
+-- "diag10": the Profiles dialog (UIWidgets.lua's BTVDialogMixin) reported
+-- live-tested as showing only its backdrop/border - fully draggable, no
+-- Lua error, but title/message/buttons all invisible. Forces open a known
+-- test dialog and dumps every child's IsShown/GetText/size/strata/level/
+-- alpha so the actual runtime state is visible instead of guessed at from
+-- source alone.
+function BTV:DiagDialog()
+	BTV:ShowDialog({
+		title = "Diag10 Test Title",
+		message = "Diag10 test message body.",
+		mode = "confirm",
+		buttons = {
+			{ text = "Diag Button One", isDefault = true, onClick = function() end },
+			{ text = "Diag Button Two", onClick = function() end },
+		},
+	})
+
+	local dialog = BTV.activeDialog
+
+	if not dialog then
+		self:Print("DiagDialog: BTV.activeDialog is nil after ShowDialog - Mixin/OnLoad never completed.")
+		return
+	end
+
+	self:Print("DiagDialog: dialog shown=" .. tostring(dialog:IsShown()) ..
+		" w=" .. tostring(dialog:GetWidth()) ..
+		" h=" .. tostring(dialog:GetHeight()) ..
+		" strata=" .. tostring(dialog:GetFrameStrata()) ..
+		" level=" .. tostring(dialog:GetFrameLevel()) ..
+		" alpha=" .. tostring(dialog:GetAlpha()))
+
+	if dialog.titleText then
+		self:Print("DiagDialog: titleText shown=" .. tostring(dialog.titleText:IsShown()) ..
+			" text='" .. tostring(dialog.titleText:GetText()) .. "'" ..
+			" alpha=" .. tostring(dialog.titleText:GetAlpha()) ..
+			" w=" .. tostring(dialog.titleText:GetWidth()) ..
+			" fontObj=" .. tostring(dialog.titleText:GetFontObject()))
+	else
+		self:Print("DiagDialog: dialog.titleText is nil!")
+	end
+
+	if dialog.messageText then
+		self:Print("DiagDialog: messageText shown=" .. tostring(dialog.messageText:IsShown()) ..
+			" text='" .. tostring(dialog.messageText:GetText()) .. "'" ..
+			" alpha=" .. tostring(dialog.messageText:GetAlpha()) ..
+			" w=" .. tostring(dialog.messageText:GetWidth()))
+	else
+		self:Print("DiagDialog: dialog.messageText is nil!")
+	end
+
+	if dialog.buttons then
+		local i
+
+		for i = 1, 4 do
+			local btn = dialog.buttons[i]
+
+			if btn then
+				self:Print("DiagDialog: button" .. tostring(i) ..
+					" shown=" .. tostring(btn:IsShown()) ..
+					" text='" .. tostring(btn:GetText()) .. "'" ..
+					" strata=" .. tostring(btn:GetFrameStrata()) ..
+					" level=" .. tostring(btn:GetFrameLevel()) ..
+					" w=" .. tostring(btn:GetWidth()) ..
+					" h=" .. tostring(btn:GetHeight()) ..
+					" alpha=" .. tostring(btn:GetAlpha()))
+			else
+				self:Print("DiagDialog: button" .. tostring(i) .. " is nil!")
+			end
+		end
+	else
+		self:Print("DiagDialog: dialog.buttons is nil!")
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3184,6 +3258,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		local id2 = spacePos and string.sub(rest, spacePos + 1) or nil
 
 		BTV:DiagBarGap(id1, id2)
+	elseif msg == "diag10" then
+		BTV:DiagDialog()
 	else
 		BTV:ToggleMainMenu()
 	end
