@@ -594,3 +594,136 @@ function BTV:ShowDialog(config)
 
 	return dialog
 end
+
+-------------------------------------------------------------------------
+-- BTVListRowMixin
+--
+-- Generic reusable list-row widget: the same SetBackdrop technique as
+-- BTV:StyleModernButton above, but with its border alpha at 0 at rest
+-- (fading in on hover) instead of always visible - the "divided list,
+-- highlight on hover/select" look from this client's native Options
+-- window, rather than a dialog-style button. Shared by both the bar-list
+-- sidebar (Settings.lua's CreateBarListRow) and the settings search
+-- results list - one widget, two call sites, per the UI-redesign plan.
+--
+-- States: rest / hover / selected / selected+hover / disabled. Disabled
+-- always wins - a disabled row never shows a hover/selected highlight
+-- (even if it was selected before becoming disabled, e.g. bar5's row
+-- losing its dependency lock's grey-out) and blocks the onClick callback.
+-------------------------------------------------------------------------
+
+BTVListRowMixin = {}
+
+local LIST_ROW_BORDER_REST = { 0, 0, 0, 0 }
+local LIST_ROW_BORDER_HOVER = { 1, 0.82, 0, 1 }
+local LIST_ROW_BORDER_SELECTED = { 1, 0.82, 0, 0.7 }
+local LIST_ROW_BG_REST = { 1, 1, 1, 0.04 }
+local LIST_ROW_BG_HOVER = { 1, 1, 1, 0.12 }
+local LIST_ROW_BG_SELECTED = { 1, 0.82, 0, 0.18 }
+local LIST_ROW_BG_SELECTED_HOVER = { 1, 0.82, 0, 0.26 }
+local LIST_ROW_BG_DISABLED = { 1, 1, 1, 0.02 }
+
+-- parent: frame to anchor into. name: optional - unlike
+-- BTVInlineDropdownMixin's UIDropDownMenuTemplate wrapper, this widget has
+-- no native FrameXML machinery that depends on a real GetName().
+function BTV:CreateListRow(parent, name)
+	local row = CreateFrame("Button", name, parent)
+
+	Mixin(row, BTVListRowMixin)
+	row:OnLoad()
+
+	return row
+end
+
+function BTVListRowMixin:OnLoad()
+	self:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 10,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+
+	self.isSelected = false
+	self.isDisabled = false
+	self.isHovering = false
+	self.onClick = nil
+
+	self.label = self:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+	self.label:SetPoint("LEFT", self, "LEFT", 8, 0)
+	self.label:SetJustifyH("LEFT")
+
+	self:SetScript("OnEnter", function()
+		this.isHovering = true
+		this:UpdateVisualState()
+	end)
+
+	self:SetScript("OnLeave", function()
+		this.isHovering = false
+		this:UpdateVisualState()
+	end)
+
+	self:SetScript("OnClick", function()
+		if (not this.isDisabled) and this.onClick then
+			this.onClick(this)
+		end
+	end)
+
+	self:UpdateVisualState()
+end
+
+function BTVListRowMixin:SetLabel(text)
+	self.label:SetText(text or "")
+end
+
+function BTVListRowMixin:SetOnClick(onClick)
+	self.onClick = onClick
+end
+
+function BTVListRowMixin:SetSelected(selected)
+	self.isSelected = selected and true or false
+	self:UpdateVisualState()
+end
+
+function BTVListRowMixin:IsRowSelected()
+	return self.isSelected
+end
+
+-- Disabled overrides hover/selected visuals entirely (matches the existing
+-- LockControl/dim convention used elsewhere in Settings.lua, e.g. bar5's
+-- dependency lock) and blocks the onClick callback above - mouse events
+-- still reach OnEnter/OnLeave (kept enabled) so a disabled row can still
+-- show a tooltip explaining why it's locked, if a caller wants one.
+function BTVListRowMixin:SetDisabled(disabled)
+	self.isDisabled = disabled and true or false
+	self:UpdateVisualState()
+end
+
+function BTVListRowMixin:UpdateVisualState()
+	if self.isDisabled then
+		self:SetBackdropColor(LIST_ROW_BG_DISABLED[1], LIST_ROW_BG_DISABLED[2], LIST_ROW_BG_DISABLED[3], LIST_ROW_BG_DISABLED[4])
+		self:SetBackdropBorderColor(LIST_ROW_BORDER_REST[1], LIST_ROW_BORDER_REST[2], LIST_ROW_BORDER_REST[3], LIST_ROW_BORDER_REST[4])
+		self.label:SetTextColor(0.5, 0.5, 0.5)
+		return
+	end
+
+	self.label:SetTextColor(1, 1, 1)
+
+	local bg = LIST_ROW_BG_REST
+	local border = LIST_ROW_BORDER_REST
+
+	if self.isSelected and self.isHovering then
+		bg = LIST_ROW_BG_SELECTED_HOVER
+		border = LIST_ROW_BORDER_SELECTED
+	elseif self.isSelected then
+		bg = LIST_ROW_BG_SELECTED
+		border = LIST_ROW_BORDER_SELECTED
+	elseif self.isHovering then
+		bg = LIST_ROW_BG_HOVER
+		border = LIST_ROW_BORDER_HOVER
+	end
+
+	self:SetBackdropColor(bg[1], bg[2], bg[3], bg[4])
+	self:SetBackdropBorderColor(border[1], border[2], border[3], border[4])
+end
