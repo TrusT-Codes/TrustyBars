@@ -262,10 +262,6 @@ local function SettingsFrame_OnDragStop()
 	this:StopMovingOrSizing()
 end
 
-local function BarListButton_OnClick()
-	BTV:ShowBarPage(this.barId)
-end
-
 local function IsDefaultBarId(barId)
 	return barId ~= nil and barId >= 1 and barId <= 5
 end
@@ -824,7 +820,32 @@ local function CreateSettingsFrame()
 		-64
 	)
 
+	-- Same backdrop technique/values as contentScrollFrame just below, so
+	-- the row list reads as one bordered/divided container, matching the
+	-- native Options window's own list style (UI-redesign plan).
+	f.listPanel:SetBackdrop({
+		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = {
+			left = 2,
+			right = 2,
+			top = 2,
+			bottom = 2
+		},
+	})
+
+	f.listPanel:SetBackdropColor(
+		0,
+		0,
+		0,
+		0.3
+	)
+
 	f.barButtons = {}
+	f.barButtonsByBarId = {}
 
 	local listTitle = f.listPanel:CreateFontString(
 		nil,
@@ -4625,6 +4646,28 @@ function BTV:ShowBarPage(barId)
 
 	settingsFrame.activeBarId = barId
 
+	-- Keep the sidebar row's persistent gold highlight in sync with
+	-- whichever bar page is actually showing (BTVListRowMixin:SetSelected).
+	-- Both lookups are nil-guarded: barButtonsByBarId may not have an
+	-- entry yet (list not built this session) or ever (e.g. bagbar/
+	-- micromenu/latencybar/expbar rows are conditionally absent per
+	-- RefreshBarList's own exists checks).
+	if settingsFrame.selectedBarId ~= nil and settingsFrame.selectedBarId ~= barId then
+		local oldRow = settingsFrame.barButtonsByBarId[settingsFrame.selectedBarId]
+
+		if oldRow then
+			oldRow:SetSelected(false)
+		end
+	end
+
+	local newRow = settingsFrame.barButtonsByBarId[barId]
+
+	if newRow then
+		newRow:SetSelected(true)
+	end
+
+	settingsFrame.selectedBarId = barId
+
 	-- Fix 3: resize the window to fit this page's actual controls now
 	-- that it (and the always-visible bar list) are both on-screen and
 	-- positioned - GetTop()/GetBottom() only return real values for
@@ -6643,28 +6686,25 @@ end
 -------------------------------------------------------------------------
 
 local function CreateBarListRow(barId, isDefault, cfg)
-	local row = CreateFrame(
-		"Button",
-		nil,
-		settingsFrame.listPanel,
-		"UIPanelButtonTemplate"
-	)
+	local row = BTV:CreateListRow(settingsFrame.listPanel, nil)
 
 	-- Wide enough for the longest friendly name ("Right Action Bar 2")
 	-- plus the inline enable checkbox some rows also carry.
 	row:SetWidth(110)
 	row:SetHeight(LIST_ROW_HEIGHT)
 
-	row:SetText(
+	row:SetLabel(
 		GetBarDisplayName(barId, isDefault)
 	)
 
 	row.barId = barId
 
-	row:SetScript(
-		"OnClick",
-		BarListButton_OnClick
-	)
+	-- Inlined rather than reusing the old BarListButton_OnClick (which read
+	-- this.barId per the engine this-convention) - BTVListRowMixin's
+	-- onClick is instead invoked as onClick(row), an explicit arg.
+	row:SetOnClick(function(clickedRow)
+		BTV:ShowBarPage(clickedRow.barId)
+	end)
 
 	-- Bars 2-5 (default only) AND the Bag Bar/Micro Menu (feature 3 - the
 	-- only two of the three "simple" string-keyed pages that can be
@@ -6765,16 +6805,17 @@ local function CreateBarListRow(barId, isDefault, cfg)
 		end
 	end
 
-	-- Dim (not disable - navigating to bar 5's own page is still how you
-	-- reach the bypass-aware enableCheckbox there) the row button itself
-	-- too, so its locked state is visible at a glance in the list, not
-	-- just on the small checkbox beside it.
+	-- Grey out (BTVListRowMixin:SetDisabled - also blocks the row's own
+	-- onClick, but bar 5's page is still reachable via its own checkbox's
+	-- lock/the bypass option, same as before) the row itself too, so its
+	-- locked state is visible at a glance in the list, not just on the
+	-- small checkbox beside it.
 	if isDefault and barId == 5 then
 		local bar4Cfg = BTVanillaDB.defaultBars[4]
 		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
 			or (bar4Cfg and bar4Cfg.enabled == true)
 
-		row:SetAlpha(allowed and 1 or 0.5)
+		row:SetDisabled(not allowed)
 	end
 
 	return row
@@ -6807,6 +6848,7 @@ function BTV:RefreshBarList()
 	end
 
 	settingsFrame.barButtons = {}
+	settingsFrame.barButtonsByBarId = {}
 
 	local yOffset = -24
 	local rowIndex = 0
@@ -6839,6 +6881,7 @@ function BTV:RefreshBarList()
 
 			rowIndex = rowIndex + 1
 			settingsFrame.barButtons[rowIndex] = row
+			settingsFrame.barButtonsByBarId[id] = row
 
 			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
 		end
@@ -6901,6 +6944,7 @@ function BTV:RefreshBarList()
 
 			rowIndex = rowIndex + 1
 			settingsFrame.barButtons[rowIndex] = row
+			settingsFrame.barButtonsByBarId[key] = row
 
 			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
 		end
@@ -6936,7 +6980,8 @@ function BTV:RefreshBarList()
 
 	-- The divider shares the same tracked-widget list purely so it gets
 	-- hidden/recreated alongside everything else on refresh - it has no
-	-- barId/checkbox and BarListButton_OnClick is never bound to it.
+	-- barId/checkbox/onClick, and (unlike every real row) is deliberately
+	-- NOT added to barButtonsByBarId.
 	settingsFrame.barButtons[rowIndex] = divider
 
 	yOffset = yOffset - 14
@@ -6963,6 +7008,7 @@ function BTV:RefreshBarList()
 
 			rowIndex = rowIndex + 1
 			settingsFrame.barButtons[rowIndex] = row
+			settingsFrame.barButtonsByBarId[cfg.id] = row
 
 			yOffset = yOffset - (LIST_ROW_HEIGHT + LIST_ROW_GAP)
 		end
@@ -6973,6 +7019,19 @@ function BTV:RefreshBarList()
 	-- permanent Extra Bars, always listed in the loop above - a user
 	-- enables/disables one via its inline checkbox rather than adding a
 	-- new one, so there is nothing left for this button to do.
+
+	-- Rows are all rebuilt fresh above (RefreshBarList can run after a bar
+	-- page is already showing - profile switch, bar enable/disable) - the
+	-- new row for the already-selected bar has isSelected == false until
+	-- this restores it, since BTVListRowMixin state lives on the row
+	-- instance, not the barId.
+	if settingsFrame.selectedBarId ~= nil then
+		local selectedRow = settingsFrame.barButtonsByBarId[settingsFrame.selectedBarId]
+
+		if selectedRow then
+			selectedRow:SetSelected(true)
+		end
+	end
 end
 
 -- BTV:DeleteBar - REMOVED (Stance/Page Bar Assignment feature, Part 1).
