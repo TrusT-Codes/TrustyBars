@@ -28,6 +28,34 @@ BTV.BUTTON_SIZE = 36
 BTV.BUTTON_COLS = 12
 BTV.BUTTON_ROWS = 1
 
+-- Real minimum bar spacing while vanilla border style is active - below
+-- this the native border texture's overhang causes adjacent buttons to
+-- visually overlap. 0 in modern style (no overhang - modern's border
+-- lives on its own bounded backdrop edge, not an overhanging overlay).
+-- The UI never shows this floor directly - see Settings.lua's spacing
+-- display-offset.
+BTV.VANILLA_SPACING_FLOOR = 4
+
+-- Empirically measured (live-tested by the user): modern-style buttons
+-- need this many more pixels of buttonSize than vanilla-style buttons to
+-- LOOK the same size, since modern's border is bounded to its own frame
+-- (a plain SetBackdrop edge) while vanilla's overhangs via a larger
+-- texture. A fixed additive delta, not a ratio - confirmed: vanilla
+-- 36px/spacing 2 looks the same as modern 40px/spacing 2. The DISPLAYED
+-- spacing number never changes across a switch, but the REAL spacing
+-- value does, by this same amount in the opposite direction (buttonSize
+-- + spacing stays visually constant) - see BTV:ApplyGlobalButtonStyle
+-- (Bar.lua).
+BTV.MODERN_BUTTON_SIZE_DELTA = 4
+
+-- Since every element/button is anchored from a fixed point (not its
+-- visual center), growing buttonSize by MODERN_BUTTON_SIZE_DELTA when
+-- switching to modern style makes the whole bar appear to shift down and
+-- right from that anchor - live-tested and confirmed a 2px up-left
+-- position nudge exactly compensates (and the reverse, 2px down-right,
+-- when shrinking back to vanilla). See BTV:ApplyGlobalButtonStyle.
+BTV.MODERN_BUTTON_SIZE_POSITION_SHIFT = 2
+
 -- Every custom-bar grid preset the Settings UI offers (1x12, 2x6, 3x4,
 -- 4x3, 6x2, 12x1) totals exactly 12 buttons, so 12 is the fixed size of
 -- the per-slot button pool a custom bar allocates once at creation (see
@@ -56,6 +84,43 @@ BTV.EQUIP_RING_RATIO = 62 / 36
 -- needing a separate backdrop layer (see Button.lua's border texture,
 -- which replicates this for default bars 1-5).
 BTV.BORDER_RATIO = 66 / 36
+
+-- Round 16: live-confirmed real vanilla's own border art is centered with
+-- a y = -1 offset (1px down from exact center), not a bare 0,0 -
+-- Button.lua's self.border anchor replicates this. This is a FIXED pixel
+-- offset (not proportional to buttonSize, unlike BORDER_RATIO), so it
+-- makes the border's TOP overhang 1px LESS than its bottom overhang
+-- regardless of button size - live re-confirmed via diag2/diag9 (14px top
+-- vs 16px bottom overhang at the default 36px button size, vs. an exactly
+-- symmetric 15px left/right). BTV:GetElementVisualInset below uses this to
+-- return the true per-side overhang instead of one uniform value.
+BTV.BORDER_Y_OFFSET = 1
+
+-- (v1.0 polish pass, live-tested) Even with the exact, live-measured
+-- per-side overhang above, the edit-mode overlay for default bars still
+-- looked way too big - diag2/diag9 measured the border TEXTURE's own
+-- declared bounds correctly, but the texture's actual VISIBLE (opaque)
+-- ring art apparently doesn't extend all the way to those bounds - some
+-- of the declared 66x66 border is invisible/transparent padding baked
+-- into the image itself (present in both our rendering and vanilla's,
+-- per diag4 - not a texture-crop mismatch, an intrinsic property of the
+-- asset). This is a flat pixel value (not proportional to buttonSize,
+-- same category as BORDER_Y_OFFSET) subtracted from every side's overhang
+-- in BTV:GetElementVisualInset, floored at 0. Start at 12 - may need
+-- further tuning with live feedback.
+BTV.BORDER_TEXTURE_FUDGE = 12
+
+-- (v1.0 polish pass, live-tested) Micro Menu's real GetHitRectInsets()
+-- (18px on top only, per diag8) trims most, but not all, of the visual
+-- gap between the edit-mode overlay and the buttons' actual icon art -
+-- live testing found the real clickable area still starts 1-2px above
+-- where the icon visually begins. In the SAME local-unit system as
+-- GetHitRectInsets() itself (DefaultBars.lua's GetHitInsets/
+-- ApplyChainAnchoredShape/EnsureContainerOverlay apply the same
+-- effective-scale conversion to this as to the hit-rect values, so it
+-- scales correctly if the user changes Micro Menu's own scale). Live-
+-- tested: 1 still left a sliver, 2 is correct.
+BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 2
 
 -- "Snap to Adjacent Elements" (round 35, BTV:ComputeSnapAdjustment below):
 -- how close (in real screen pixels, i.e. already GetEffectiveScale()-
@@ -603,7 +668,7 @@ local function seedDefaultBars(self)
 			y = anchor.y,
 			cols = grid.cols,
 			rows = grid.rows,
-			buttonSize = self.BUTTON_SIZE,
+			buttonSize = self:GetCurrentButtonSizeBaseline(),
 			spacing = spacing,
 
 			-- Bar.lua's ApplyBarShape falls back to cols*rows when this is
@@ -834,7 +899,7 @@ local function seedExtraBarConfig(self, id)
 		cols = self.BUTTON_COLS,
 		rows = self.BUTTON_ROWS,
 
-		buttonSize = self.BUTTON_SIZE,
+		buttonSize = self:GetCurrentButtonSizeBaseline(),
 
 		slotStart = slotStart,
 		buttonCount = self.BUTTON_COLS * self.BUTTON_ROWS,
@@ -900,6 +965,50 @@ function BTV:EnsureDB()
 	-- like custom bars.
 	if BTVanillaDB.useDefaultLayout == nil then
 		BTVanillaDB.useDefaultLayout = true
+	end
+
+	-- Global border/spacing style (General tab checkbox): true = "modern"
+	-- (today's Extra Bars 6-9 look - backdrop border, spacing 0), false =
+	-- "vanilla" (today's default Bars 1-5 look - native UI-Quickslot2
+	-- texture, captured native spacing). Default false so upgraders' bars
+	-- 1-5 keep their current look; extra bars 6-9 do visually change to
+	-- vanilla the first time this ships, since one global toggle can't
+	-- preserve both groups' current-but-mismatched looks at once.
+	if BTVanillaDB.modernBorderStyle == nil then
+		BTVanillaDB.modernBorderStyle = false
+	end
+
+	-- Tracks which style every bar's CURRENTLY STORED buttonSize was last
+	-- corrected for (BTV:ApplyGlobalButtonStyle, Bar.lua) - lets that
+	-- function apply BTV.MODERN_BUTTON_SIZE_DELTA exactly once per real
+	-- style transition instead of drifting further on every call (it's
+	-- called unconditionally at every login). Seeded to the CURRENT style
+	-- so an existing install's first load under this logic doesn't
+	-- spuriously shift every bar's size.
+	if BTVanillaDB.lastAppliedVanillaStyle == nil then
+		BTVanillaDB.lastAppliedVanillaStyle = BTV:IsVanillaBorderStyle()
+	end
+
+	-- Global spacing/button-size overrides (General tab). When enabled,
+	-- one slider value applies to every true action bar (default 1-5 +
+	-- extra 6-9), locking each bar's own per-bar slider. Value is stored
+	-- in the same space each slider itself uses (spacing: DISPLAYED,
+	-- 0-based - see Settings.lua's spacing display-offset; buttonSize:
+	-- real, no offset needed).
+	if BTVanillaDB.globalSpacingEnabled == nil then
+		BTVanillaDB.globalSpacingEnabled = false
+	end
+
+	if BTVanillaDB.globalSpacingValue == nil then
+		BTVanillaDB.globalSpacingValue = 0
+	end
+
+	if BTVanillaDB.globalButtonSizeEnabled == nil then
+		BTVanillaDB.globalButtonSizeEnabled = false
+	end
+
+	if BTVanillaDB.globalButtonSizeValue == nil then
+		BTVanillaDB.globalButtonSizeValue = BTV.BUTTON_SIZE
 	end
 
 	-- Main Bar migration Part 2/3 (DefaultBars.lua's
@@ -1457,22 +1566,28 @@ end
 -- per-pair special-casing needed. Returns nil if the region can't report a
 -- position yet (e.g. hidden/never laid out).
 --
--- `inset` (v1.0 polish pass, optional, defaults to 0): default bars 1-5
--- draw a native-accurate border texture (Button.lua's self.border) sized
--- to BTV.BORDER_RATIO (66/36) of the button - i.e. the VISIBLE border
--- overhangs the button/bar frame by (BORDER_RATIO-1)/2 * buttonSize on
--- every side (see BTV:GetElementVisualInset below). Without this, two
--- default bars whose FRAMES snap flush end up with their VISIBLE borders
--- overlapping by that overhang amount - `inset` (in the same local units
--- as GetLeft()/GetWidth(), pre-scale) lets a caller expand the reported
--- bounds outward on every side so the box returned actually matches the
--- bar's visible extent, not just its frame.
-local function GetRealScreenBounds(region, inset)
+-- `insetLeft/insetRight/insetTop/insetBottom` (v1.0 polish pass, optional,
+-- each defaults to 0): default bars 1-5 draw a native-accurate border
+-- texture (Button.lua's self.border) sized to BTV.BORDER_RATIO (66/36) of
+-- the button - i.e. the VISIBLE border overhangs the button/bar frame on
+-- every side (see BTV:GetElementVisualInset below, which is NOT symmetric
+-- top vs. bottom - the border's own y=-1 anchor offset, round 16, live-
+-- confirmed via diag2/diag9, makes the top overhang 1px less and the
+-- bottom 1px more than the left/right overhang). Without this, two default
+-- bars whose FRAMES snap flush end up with their VISIBLE borders
+-- overlapping by that overhang amount - these four params (in the same
+-- local units as GetLeft()/GetWidth(), pre-scale) let a caller expand the
+-- reported bounds outward on each side independently so the box returned
+-- actually matches the bar's visible extent, not just its frame.
+local function GetRealScreenBounds(region, insetLeft, insetRight, insetTop, insetBottom)
 	if not region or not region.GetLeft then
 		return nil
 	end
 
-	inset = inset or 0
+	insetLeft = insetLeft or 0
+	insetRight = insetRight or 0
+	insetTop = insetTop or 0
+	insetBottom = insetBottom or 0
 
 	local left, right, top, bottom = region:GetLeft(), region:GetRight(), region:GetTop(), region:GetBottom()
 	local scale = region:GetEffectiveScale()
@@ -1481,35 +1596,71 @@ local function GetRealScreenBounds(region, inset)
 		return nil
 	end
 
-	return (left - inset) * scale, (right + inset) * scale, (top + inset) * scale, (bottom - inset) * scale
+	return (left - insetLeft) * scale, (right + insetRight) * scale, (top + insetTop) * scale, (bottom - insetBottom) * scale
 end
 
--- (v1.0 polish pass) Returns how far, in local units (pre-scale, same as
--- GetLeft()/GetWidth()), a frame's VISIBLE extent overhangs its own frame
--- bounds on every side - 0 for anything without such an overhang. Only
--- default bars (id 1-5) currently have one: their buttons draw a native-
--- accurate border texture (Button.lua's self.border) at BTV.BORDER_RATIO
--- (66/36) of the button size, centered on the button, which is a
--- deliberate/correct replication of real vanilla action-button art (round
--- 15/16) - not a bug. Custom bars (id 6+) use a SetBackdrop edge inset
--- essentially at the frame edge, and every chain-anchored container/
--- native-wrapped element (Bag Bar, Micro Menu, Key Ring, Latency Bar, Exp
--- Bar, Page Indicator) has no known equivalent overhang, so they all
--- return 0 here.
+-- (v1.0 polish pass, RE-ENABLED after live-client diagnosis) Returns how
+-- far, in local units (pre-scale, same as GetLeft()/GetWidth()), a frame's
+-- VISIBLE extent overhangs its own frame bounds on each side independently
+-- - left, right, top, bottom - all 0 for anything without such an
+-- overhang. Only default bars (id 1-5) currently have one: their buttons
+-- draw a native-accurate border texture (Button.lua's self.border) at
+-- BTV.BORDER_RATIO (66/36) of the button size, centered on the button
+-- except for the BTV.BORDER_Y_OFFSET (1px) vertical nudge - a deliberate/
+-- correct replication of real vanilla action-button art (round 15/16), not
+-- a bug. Custom bars (id 6+) use a SetBackdrop edge inset essentially at
+-- the frame edge, and every chain-anchored container/native-wrapped
+-- element (Bag Bar, Micro Menu, Key Ring, Latency Bar, Exp Bar, Page
+-- Indicator) has no known equivalent overhang, so they all return 0 here.
+--
+-- This was disabled for a while after an early live-client report that
+-- the resulting overlay/snap boxes were far larger than intended - the
+-- per-button math alone never explained that magnitude on paper, and a
+-- prior single-uniform-value version of this function was suspected as
+-- the culprit. Subsequent diagnostics (diag2, diag9) directly measured the
+-- real border-vs-frame overhang on live bars and found it exactly matches
+-- this formula (14px top / 16px bottom / 15px left / 15px right at the
+-- default 36px button size - precisely BORDER_RATIO's per-side overhang
+-- with the 1px BORDER_Y_OFFSET vertical asymmetry, nothing more) - so
+-- whatever the original "way too big" report was actually measuring, it
+-- was not this formula's own output. Re-enabled with full per-side
+-- precision (the disabled version's replacement had only ever computed
+-- one symmetric value for all 4 sides, silently wrong by 1px top/bottom).
 function BTV:GetElementVisualInset(frame)
-	-- (v1.0 polish pass, DISABLED after live-client testing) This used to
-	-- return a nonzero inset for default bars (id 1-5), computed from
-	-- BTV.BORDER_RATIO. The live client reported the resulting edit-mode
-	-- overlay/snap boxes as far larger than intended - "impossible to
-	-- align default bars with default bars or Extra Bars" - even though
-	-- the per-button math alone (buttonSize * (BORDER_RATIO-1)/2, at most
-	-- ~27px for the largest allowed button size) doesn't explain that
-	-- magnitude on paper. Rather than guess further without a live client
-	-- to iterate against, this is disabled (always returns 0, restoring
-	-- the original frame-flush behavior everywhere it's used) until it can
-	-- be re-diagnosed and re-tuned with live feedback - see
-	-- docs/plan/default-bar-visual-inset-regression.md.
-	return 0
+	-- Reads the same global border-style source of truth as Button.lua's
+	-- Init/ApplyBorderStyle (BTV:IsVanillaBorderStyle) instead of a
+	-- hardcoded id range, so this stays correct after the global
+	-- border-style toggle changes which bars actually render the native
+	-- border texture - the sizing FORMULA below is untouched, only the
+	-- condition that decides whether to apply it at all. (Border-size-
+	-- parity fallback: an attempt to give modern style an equally
+	-- overhanging border overlay was reverted as broken/live-tested, back
+	-- to modern's border living on its OWN bounded backdrop edge, which
+	-- doesn't overhang at all - so this gates on vanilla style again.)
+	if frame and frame.config and frame.config.id and self:IsVanillaBorderStyle() then
+		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
+		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
+		local yOffset = self.BORDER_Y_OFFSET or 0
+		local fudge = self.BORDER_TEXTURE_FUDGE or 0
+
+		local left = uniform - fudge
+		local right = uniform - fudge
+		local top = uniform - yOffset - fudge
+		local bottom = uniform + yOffset - fudge
+
+		-- Floored at 0 (never a negative inset - that would flip the
+		-- overlay/snap box to shrink INWARD past the frame instead of just
+		-- stopping at it) - only matters for very small configured button
+		-- sizes, where BORDER_TEXTURE_FUDGE could exceed the raw overhang.
+		if left < 0 then left = 0 end
+		if right < 0 then right = 0 end
+		if top < 0 then top = 0 end
+		if bottom < 0 then bottom = 0 end
+
+		return left, right, top, bottom
+	end
+
+	return 0, 0, 0, 0
 end
 
 -- Every currently visible/enabled draggable element EXCEPT `excludeElement`
@@ -1676,6 +1827,34 @@ function BTV:ComputeSnapAdjustment(proposedLeft, proposedTop, width, height, exc
 	end
 
 	return adjustedLeft, adjustedTop
+end
+
+-------------------------------------------------------------------------
+-- Global border/spacing style (General tab checkbox)
+-------------------------------------------------------------------------
+
+-- Single source of truth for the global border/spacing style - both
+-- Button.lua's Init/ApplyBorderStyle AND GetElementVisualInset above
+-- must read this exact function, never re-derive the id-based check
+-- independently, or the two could disagree after the toggle flips.
+function BTV:IsVanillaBorderStyle()
+	if BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+		return true
+	end
+
+	return not (BTVanillaDB and BTVanillaDB.modernBorderStyle)
+end
+
+-- The buttonSize a brand-new bar should seed at, already correct for
+-- whichever style is CURRENTLY active (BTV.MODERN_BUTTON_SIZE_DELTA) -
+-- so a freshly created bar doesn't need an immediate correction from
+-- BTV:ApplyGlobalButtonStyle's transition-only delta.
+function BTV:GetCurrentButtonSizeBaseline()
+	if self:IsVanillaBorderStyle() then
+		return self.BUTTON_SIZE
+	end
+
+	return self.BUTTON_SIZE + self.MODERN_BUTTON_SIZE_DELTA
 end
 
 -------------------------------------------------------------------------
@@ -1964,6 +2143,20 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:CreateFixedSlotDefaultBars()
 
 	BTV:ApplyAllDefaultBars()
+
+	-- Global border/spacing style (General tab checkbox): every bar
+	-- (default 1-5 AND extra 6-9) now exists, so apply the currently
+	-- saved global style to all of them - covers a fresh login where
+	-- some/all bars have never had this sweep applied before, keeping
+	-- them consistent with whatever the user last chose (or the seeded
+	-- default).
+	BTV:ApplyGlobalButtonStyle()
+
+	-- Global spacing/button-size overrides (General tab): applied AFTER
+	-- the border-style sweep above, so an active global override always
+	-- wins over whatever that sweep's own per-bar delta just wrote.
+	BTV:ApplyGlobalSpacing()
+	BTV:ApplyGlobalButtonSize()
 
 	-- Now a no-op for every default bar (Main Bar migration, Phase 2):
 	-- bars 1-5's real Blizzard buttons are all now permanently hidden -
@@ -2282,6 +2475,296 @@ function BTV:DiagMicroMenuPageIndicator()
 	end
 end
 
+-- Live-tested: geometry alone (GetLeft/Right/Top/Bottom, GetWidth/Height)
+-- says our default-bar border fully covers the icon with margin on every
+-- side, but a live A/B against completely vanilla UI shows no gap at all
+-- on the left - so the border TEXTURE's declared frame size and its
+-- actually-drawn (visible) art apparently don't match 1:1. GetTexCoord()
+-- is what would reveal that: if real vanilla's ActionButton1 NormalTexture
+-- crops its UV rect away from the full 0..1 range (i.e. only shows part of
+-- the source image) while ours doesn't, that crop is exactly what's
+-- missing. GetTexCoord can return either 4 values (left, right, top,
+-- bottom) or 8 (four corner x,y pairs) depending on this client's exact
+-- API surface - printed generically via select("#", ...) rather than
+-- assumed, per this repo's "don't guess API behavior" convention.
+function BTV:DiagBorderTexCoord()
+	local function dumpTexture(label, tex)
+		if not tex then
+			self:Print(label .. ": missing")
+			return
+		end
+
+		self:Print(label .. ": texture=" .. tostring(tex:GetTexture()) ..
+			" w=" .. tostring(tex:GetWidth()) .. " h=" .. tostring(tex:GetHeight()))
+
+		local coords = { tex:GetTexCoord() }
+		local n = table.getn(coords)
+		local parts = {}
+		local i
+
+		for i = 1, n do
+			parts[i] = tostring(coords[i])
+		end
+
+		self:Print(label .. ": GetTexCoord (" .. tostring(n) .. " values) = " .. table.concat(parts, ", "))
+	end
+
+	local bar = self.bars and self.bars[1]
+	local btn = bar and bar.buttons and bar.buttons[1]
+
+	if btn then
+		self:Print("our button1: buttonSize=" .. tostring(btn.buttonSize) ..
+			" w=" .. tostring(btn:GetWidth()) .. " h=" .. tostring(btn:GetHeight()))
+		dumpTexture("our border", btn.border)
+	else
+		self:Print("our button1: not found")
+	end
+
+	local nativeBtn = getglobal("ActionButton1")
+
+	if nativeBtn then
+		self:Print("ActionButton1: w=" .. tostring(nativeBtn:GetWidth()) .. " h=" .. tostring(nativeBtn:GetHeight()))
+		dumpTexture("ActionButton1 NormalTexture", nativeBtn.GetNormalTexture and nativeBtn:GetNormalTexture())
+	else
+		self:Print("ActionButton1: missing")
+	end
+end
+
+-- Live-tested: Micro Menu's edit-mode overlay visibly extends well above
+-- its buttons even though diag3's own container-vs-buttons comparison
+-- came out exactly matching. This isolates whether the OVERLAY frame
+-- itself (container.btvOverlay, a separate CreateFrame(..., UIParent)
+-- SetAllPoints(container)) has actually drifted from `container`'s own
+-- bounds - if these two blocks of numbers don't match, the bug is in how
+-- the overlay tracks the container; if they DO match, the discrepancy is
+-- somewhere else entirely (e.g. the backdrop border, or a completely
+-- different frame being mistaken for this one).
+function BTV:DiagMicroMenuOverlay()
+	local c = self.microMenuContainer
+
+	if not c then
+		self:Print("microMenuContainer: missing")
+		return
+	end
+
+	self:Print("microMenuContainer: L=" .. tostring(c:GetLeft()) ..
+		" R=" .. tostring(c:GetRight()) ..
+		" T=" .. tostring(c:GetTop()) ..
+		" B=" .. tostring(c:GetBottom()))
+
+	local overlay = c.btvOverlay
+
+	if not overlay then
+		self:Print("microMenuContainer.btvOverlay: missing")
+		return
+	end
+
+	self:Print("microMenuContainer.btvOverlay: L=" .. tostring(overlay:GetLeft()) ..
+		" R=" .. tostring(overlay:GetRight()) ..
+		" T=" .. tostring(overlay:GetTop()) ..
+		" B=" .. tostring(overlay:GetBottom()) ..
+		" shown=" .. tostring(overlay:IsShown()))
+end
+
+-- Live-tested: diag4 showed our default-bar border texture is byte-for-
+-- byte identical to real vanilla ActionButton1's (same texture path, same
+-- size, same TexCoord) - so the earlier "border texture doesn't match its
+-- own declared bounds" theory is disproven; the border itself renders
+-- exactly like vanilla. The one confirmed difference between our default-
+-- bar buttons and a real ActionButton1 is that ours ALSO gets a custom
+-- SetBackdrop background fill (Button.lua's UpdateBackdropVisibility -
+-- SetBackdropColor(0,0,0,0.75) applies even when hasNativeBorder is true,
+-- only the backdrop BORDER color is skipped for those buttons) sitting on
+-- the BACKGROUND layer, beneath everything else - a real ActionButton1 has
+-- no such fill. If the border ring texture has any naturally see-through
+-- area near where it approaches the icon (plausible for a decorative ring
+-- asset), our backdrop fill would tint that sliver dark while vanilla
+-- (with nothing behind it there) wouldn't. This zeroes bar 1's own
+-- buttons' backdrop alpha for a quick visual A/B - if the gap disappears,
+-- that confirms the theory; a /reload undoes this (nothing is saved).
+function BTV:DiagZeroDefaultBarBackdropFill()
+	local bar = self.bars and self.bars[1]
+
+	if not bar or not bar.buttons then
+		self:Print("DiagZeroDefaultBarBackdropFill: bar 1 not found")
+		return
+	end
+
+	local i
+
+	for i = 1, table.getn(bar.buttons) do
+		local btn = bar.buttons[i]
+
+		if btn then
+			btn:SetBackdropColor(0, 0, 0, 0)
+		end
+	end
+
+	self:Print("Bar 1's backdrop fill set to fully transparent - check the icon/border gap now. /reload to undo (nothing is saved).")
+end
+
+-- Live-tested: zeroing the backdrop fill (diag6) made the gap MORE visible,
+-- not less - the opposite of what "backdrop tinting a transparent border
+-- sliver" would predict. That disproves the backdrop theory: the backdrop
+-- was actually partially MASKING a real, structural gap (by filling it
+-- with black, similar in tone to whatever's normally behind it) rather
+-- than causing one. Combined with diag4 already proving the border texture
+-- itself is pixel-identical to vanilla, the last unverified piece specific
+-- to hasNativeBorder buttons is whether OUR icon (Button.lua's flat
+-- iconInset = 2, chosen for round 13/14's own reasoning, not necessarily
+-- live-measured against vanilla's real icon) sits exactly where vanilla's
+-- real icon does. This dumps ActionButton1's own icon texture
+-- (ActionButton1Icon, the real global per FrameXML convention) bounds
+-- directly next to our button1.icon's, so an inset mismatch (real vanilla
+-- icon extending further outward, closer to where the border ring visually
+-- starts, than ours) would show up as a straightforward before/after
+-- comparison rather than a further guess.
+function BTV:DiagIconInset()
+	local nativeIcon = getglobal("ActionButton1Icon")
+
+	if nativeIcon then
+		self:Print("ActionButton1Icon: L=" .. tostring(nativeIcon:GetLeft()) ..
+			" R=" .. tostring(nativeIcon:GetRight()) ..
+			" T=" .. tostring(nativeIcon:GetTop()) ..
+			" B=" .. tostring(nativeIcon:GetBottom()) ..
+			" W=" .. tostring(nativeIcon:GetWidth()) ..
+			" H=" .. tostring(nativeIcon:GetHeight()))
+	else
+		self:Print("ActionButton1Icon: missing")
+	end
+
+	local nativeBtn = getglobal("ActionButton1")
+
+	if nativeBtn then
+		self:Print("ActionButton1: L=" .. tostring(nativeBtn:GetLeft()) ..
+			" R=" .. tostring(nativeBtn:GetRight()) ..
+			" T=" .. tostring(nativeBtn:GetTop()) ..
+			" B=" .. tostring(nativeBtn:GetBottom()))
+	end
+
+	local bar = self.bars and self.bars[1]
+	local btn = bar and bar.buttons and bar.buttons[1]
+
+	if btn and btn.icon then
+		self:Print("our button1.icon: L=" .. tostring(btn.icon:GetLeft()) ..
+			" R=" .. tostring(btn.icon:GetRight()) ..
+			" T=" .. tostring(btn.icon:GetTop()) ..
+			" B=" .. tostring(btn.icon:GetBottom()) ..
+			" W=" .. tostring(btn.icon:GetWidth()) ..
+			" H=" .. tostring(btn.icon:GetHeight()))
+
+		self:Print("our button1: L=" .. tostring(btn:GetLeft()) ..
+			" R=" .. tostring(btn:GetRight()) ..
+			" T=" .. tostring(btn:GetTop()) ..
+			" B=" .. tostring(btn:GetBottom()))
+	else
+		self:Print("our button1.icon: missing")
+	end
+end
+
+-- Live-tested: even after anchoring the Micro Menu overlay directly to its
+-- first/last SHOWN button's real frame bounds (v1.0 polish pass), the
+-- overlay still looked too big. GetLeft/Right/Top/Bottom (what every prior
+-- diagnostic measured) report a Button's FRAME bounds - but a real Button
+-- widget can additionally define GetHitRectInsets(), which shrinks its
+-- actual clickable/visually-relevant area within that frame without
+-- changing the frame's own reported size at all. MicroButtons are known to
+-- have a taller frame (58px, per diag3) than their visible icon art (a
+-- decorative "flare" shape above/below the actual clickable button) - if
+-- that extra height is expressed via a hit-rect inset rather than the
+-- frame's own size, every earlier L/R/T/B-based diagnostic would have
+-- missed it entirely, since none of them checked this. Dumps each Micro
+-- Menu button's frame size next to its hit-rect insets (left, right, top,
+-- bottom - the amount trimmed off each edge of the frame to get to the
+-- real clickable rect, per the native GetHitRectInsets() API).
+function BTV:DiagMicroMenuHitRects()
+	local micro = {
+		"CharacterMicroButton", "SpellbookMicroButton", "TalentMicroButton",
+		"QuestLogMicroButton", "SocialsMicroButton", "WorldMapMicroButton",
+		"MainMenuMicroButton", "HelpMicroButton",
+	}
+
+	local i
+
+	for i = 1, table.getn(micro) do
+		local f = getglobal(micro[i])
+
+		if f then
+			local w, h = f:GetWidth(), f:GetHeight()
+			local left, right, top, bottom = f:GetHitRectInsets()
+
+			self:Print(micro[i] .. ": frame=" .. tostring(w) .. "x" .. tostring(h) ..
+				" hitInsets(L,R,T,B)=" .. tostring(left) .. ", " .. tostring(right) ..
+				", " .. tostring(top) .. ", " .. tostring(bottom))
+		end
+	end
+end
+
+-- (v1.0 polish pass) Instead of guessing a blind "padding" constant for
+-- default bars' still-slightly-off snap/overlay alignment, this measures
+-- the ACTUAL gap between two bars the user has already positioned exactly
+-- how they want them (both frame-to-frame and border-to-border, for
+-- whichever button 1 has a border) - reusable for any pair of bar ids
+-- (1-9), not just the two the user happens to ask about right now. Prints
+-- both bars' own frame bounds, button 1's border bounds where
+-- self.hasNativeBorder, and the horizontal (bar2.left - bar1.right) and
+-- vertical (bar1.bottom - bar2.top) gaps for both frame and border edges -
+-- whichever of the two actually corresponds to how the bars are arranged
+-- is the number that matters; the other one is meaningless noise from
+-- bars that aren't actually side by side/stacked in that direction.
+function BTV:DiagBarGap(id1, id2)
+	id1 = tonumber(id1)
+	id2 = tonumber(id2)
+
+	if not id1 or not id2 then
+		self:Print("DiagBarGap: usage /btv diag9 <id1> <id2>")
+		return
+	end
+
+	local bar1 = self.bars and self.bars[id1]
+	local bar2 = self.bars and self.bars[id2]
+
+	if not bar1 or not bar2 then
+		self:Print("DiagBarGap: bar " .. tostring(not bar1 and id1 or id2) .. " not found")
+		return
+	end
+
+	local function dump(id, bar)
+		self:Print("bar " .. tostring(id) .. ": L=" .. tostring(bar:GetLeft()) ..
+			" R=" .. tostring(bar:GetRight()) ..
+			" T=" .. tostring(bar:GetTop()) ..
+			" B=" .. tostring(bar:GetBottom()))
+
+		local btn = bar.buttons and bar.buttons[1]
+
+		if btn and btn.border then
+			self:Print("bar " .. tostring(id) .. " button1.border: L=" .. tostring(btn.border:GetLeft()) ..
+				" R=" .. tostring(btn.border:GetRight()) ..
+				" T=" .. tostring(btn.border:GetTop()) ..
+				" B=" .. tostring(btn.border:GetBottom()))
+
+			return btn.border
+		end
+
+		return nil
+	end
+
+	local border1 = dump(id1, bar1)
+	local border2 = dump(id2, bar2)
+
+	self:Print("frame gap horizontal (bar" .. tostring(id2) .. ".L - bar" .. tostring(id1) .. ".R) = " ..
+		tostring(bar2:GetLeft() - bar1:GetRight()))
+	self:Print("frame gap vertical (bar" .. tostring(id1) .. ".B - bar" .. tostring(id2) .. ".T) = " ..
+		tostring(bar1:GetBottom() - bar2:GetTop()))
+
+	if border1 and border2 then
+		self:Print("border gap horizontal (bar" .. tostring(id2) .. ".border.L - bar" .. tostring(id1) .. ".border.R) = " ..
+			tostring(border2:GetLeft() - border1:GetRight()))
+		self:Print("border gap vertical (bar" .. tostring(id1) .. ".border.B - bar" .. tostring(id2) .. ".border.T) = " ..
+			tostring(border1:GetBottom() - border2:GetTop()))
+	end
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2304,6 +2787,23 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagDefaultBarInset(arg)
 	elseif msg == "diag3" then
 		BTV:DiagMicroMenuPageIndicator()
+	elseif msg == "diag4" then
+		BTV:DiagBorderTexCoord()
+	elseif msg == "diag5" then
+		BTV:DiagMicroMenuOverlay()
+	elseif msg == "diag6" then
+		BTV:DiagZeroDefaultBarBackdropFill()
+	elseif msg == "diag7" then
+		BTV:DiagIconInset()
+	elseif msg == "diag8" then
+		BTV:DiagMicroMenuHitRects()
+	elseif string.find(msg, "^diag9 ") then
+		local rest = string.sub(msg, string.find(msg, " ") + 1)
+		local spacePos = string.find(rest, " ")
+		local id1 = spacePos and string.sub(rest, 1, spacePos - 1) or rest
+		local id2 = spacePos and string.sub(rest, spacePos + 1) or nil
+
+		BTV:DiagBarGap(id1, id2)
 	else
 		BTV:ToggleMainMenu()
 	end

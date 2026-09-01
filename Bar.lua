@@ -211,22 +211,19 @@ local function EnsureBarOverlay(bar)
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
 
-	-- (v1.0 polish pass) Intended to expand past `bar`'s own frame bounds
-	-- for default bars (id 1-5) so this tint reaches the visible native
-	-- border's outer edge instead of stopping at the frame. DISABLED for
-	-- now - BTV:GetElementVisualInset (Core.lua) always returns 0 after a
-	-- live-client regression report ("way too big", broke snapping between
-	-- default bars) that didn't match the math on paper - see that
-	-- function's comment and docs/plan/default-bar-visual-inset-regression.md.
-	-- With inset always 0 this unconditionally takes the `else` branch
-	-- below, i.e. plain SetAllPoints(bar), identical to pre-this-feature
-	-- behavior for every bar kind. Left wired up (rather than deleted) so
-	-- re-enabling it later is a one-line change in GetElementVisualInset.
-	local inset = BTV:GetElementVisualInset(bar)
+	-- (v1.0 polish pass, RE-ENABLED after live-client diagnosis) Expands
+	-- past `bar`'s own frame bounds for default bars (id 1-5) so this tint
+	-- reaches the visible native border's outer edge instead of stopping
+	-- at the frame - each side independently, since the border's own
+	-- y=-1 anchor offset (BTV.BORDER_Y_OFFSET) makes the top/bottom
+	-- overhang asymmetric (see BTV:GetElementVisualInset's comment,
+	-- Core.lua). Custom bars (id 6+, all 4 insets 0) keep the exact
+	-- SetAllPoints(bar) behavior they always had.
+	local insetLeft, insetRight, insetTop, insetBottom = BTV:GetElementVisualInset(bar)
 
-	if inset ~= 0 then
-		overlay:SetPoint("TOPLEFT", bar, "TOPLEFT", -inset, inset)
-		overlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", inset, -inset)
+	if insetLeft ~= 0 or insetRight ~= 0 or insetTop ~= 0 or insetBottom ~= 0 then
+		overlay:SetPoint("TOPLEFT", bar, "TOPLEFT", -insetLeft, insetTop)
+		overlay:SetPoint("BOTTOMRIGHT", bar, "BOTTOMRIGHT", insetRight, -insetBottom)
 	else
 		overlay:SetAllPoints(bar)
 	end
@@ -291,6 +288,31 @@ local function EnsureBarOverlay(bar)
 		if arg1 == "RightButton" then
 			BTV:OpenBarSettings(bar)
 		end
+	end)
+
+	-- Scroll-wheel-to-resize, matching drag-to-move's existing
+	-- whole-overlay coverage above - mirrors DefaultBars.lua's
+	-- EnsureContainerOverlay OnMouseWheel handler and Button.lua's
+	-- per-button BTVButtonMixin.OnMouseWheel gating logic, reproduced
+	-- here so scroll-to-resize works anywhere over this bar's overlay,
+	-- not just directly over an individual button.
+	overlay:EnableMouseWheel(true)
+	overlay:SetScript("OnMouseWheel", function()
+		if not BTV:IsEditMode() then
+			return
+		end
+
+		local barId = bar.config.id
+
+		if barId and barId >= 1 and barId <= 5 and
+			BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+			return
+		end
+
+		local delta = arg1 or 0
+		local step = 2
+
+		BTV:SetBarButtonSize(bar, bar.config.buttonSize + (delta * step))
 	end)
 
 	overlay:EnableMouse(false)
@@ -491,8 +513,16 @@ function BTV:SetBarSpacing(bar, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	if spacing < 0 then
-		spacing = 0
+	-- Vanilla-only real minimum spacing - modern needs none (global
+	-- spacing override depends on this asymmetry to compute the right
+	-- real value per style; Settings.lua's GetSpacingDisplayOffset
+	-- separately keeps the per-bar slider's DISPLAYED number invariant
+	-- across a style switch, so the two together give the desired
+	-- behavior without forcing modern's real minimum up to match).
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then
@@ -502,6 +532,171 @@ function BTV:SetBarSpacing(bar, spacing)
 	bar.config.spacing = spacing
 
 	self:ApplyBarShape(bar)
+end
+
+-------------------------------------------------------------------------
+-- Global border/spacing style sweep (General tab checkbox,
+-- BTVanillaDB.modernBorderStyle / useDefaultLayout's forced-vanilla lock)
+--
+-- Re-styles every bar's buttons for the CURRENT global style
+-- (BTV:IsVanillaBorderStyle()) via Button.lua's BTVButtonMixin:ApplyBorderStyle,
+-- unconditionally on every call. Separately, exactly once per REAL style
+-- transition (tracked via BTVanillaDB.lastAppliedVanillaStyle, not on
+-- every call - this function also runs unconditionally at every login),
+-- shifts every bar's buttonSize by BTV.MODERN_BUTTON_SIZE_DELTA (modern
+-- buttons need to be this many pixels bigger than vanilla to look the
+-- same size - empirically measured), nudges its position to compensate
+-- (bars are anchored, not centered, so growing/shrinking shifts them),
+-- and shifts its REAL spacing by the same amount in the OPPOSITE
+-- direction so buttonSize + spacing stays visually constant - the
+-- DISPLAYED spacing number in Settings.lua never changes across a switch
+-- because GetSpacingDisplayOffset's vanilla-only offset exactly cancels
+-- this real-value shift. Not a live lock - the per-bar Settings.lua
+-- spacing/size sliders remain freely adjustable afterward. Called from:
+-- the style checkbox's OnClick, useDefaultLayoutCheckbox's OnClick, and
+-- once at login after every bar (default + extra) exists.
+-------------------------------------------------------------------------
+
+function BTV:ApplyGlobalButtonStyle()
+	if not self.bars then
+		return
+	end
+
+	local vanilla = self:IsVanillaBorderStyle()
+
+	if BTVanillaDB.lastAppliedVanillaStyle == nil then
+		BTVanillaDB.lastAppliedVanillaStyle = vanilla
+	elseif BTVanillaDB.lastAppliedVanillaStyle ~= vanilla then
+		local delta = vanilla and -self.MODERN_BUTTON_SIZE_DELTA or self.MODERN_BUTTON_SIZE_DELTA
+
+		-- Compensates for the size delta above being anchored, not
+		-- centered - growing to modern shifts the bar up-left, shrinking
+		-- back to vanilla shifts it back down-right.
+		local posShift = self.MODERN_BUTTON_SIZE_POSITION_SHIFT
+		local dx = vanilla and posShift or -posShift
+		local dy = vanilla and -posShift or posShift
+
+		-- Opposite sign to the buttonSize delta above: buttonSize +
+		-- spacing must stay visually constant across a switch (going to
+		-- modern, buttons grow +delta so the real gap between them
+		-- shrinks by the same amount, and vice versa going to vanilla).
+		-- The DISPLAYED spacing number never changes because
+		-- GetSpacingDisplayOffset (Settings.lua) is conditional on style
+		-- and exactly cancels this real-value shift when computing the
+		-- shown number.
+		local spacingDelta = vanilla and self.VANILLA_SPACING_FLOOR or -self.VANILLA_SPACING_FLOOR
+
+		-- useDefaultLayout turning ON forces vanilla=true here regardless
+		-- of modernBorderStyle, and its own OnClick already reset bars
+		-- 1-5's buttonSize/position to their true native values via the
+		-- reset cascade BEFORE calling this function - applying the delta
+		-- on top of that would double-shift them away from native. Skip
+		-- bars 1-5 in that specific case; extra bars 6-9 (never touched
+		-- by that cascade) still need the delta. Every OTHER transition
+		-- (useDefaultLayout turning off, or the style checkbox toggling
+		-- while it's already off) has no such reset to conflict with, so
+		-- bars 1-5 get the delta normally there.
+		local skipDefaultBars = BTVanillaDB.useDefaultLayout ~= false
+
+		local barId
+		local bar
+
+		for barId, bar in pairs(self.bars) do
+			if bar and bar.config and bar.config.buttonSize and
+				not (skipDefaultBars and barId >= 1 and barId <= 5) then
+				self:SetBarButtonSize(bar, bar.config.buttonSize + delta)
+				self:SetBarPosition(bar, (bar.config.x or 0) + dx, (bar.config.y or 0) + dy)
+				self:SetBarSpacing(bar, (bar.config.spacing or 0) + spacingDelta)
+			end
+		end
+
+		-- The global buttonSize override (if enabled) needs the same
+		-- shift applied to its own stored value, then re-applied so it
+		-- stays authoritative over whatever the per-bar loop above just
+		-- wrote.
+		if BTVanillaDB.globalButtonSizeEnabled and BTVanillaDB.globalButtonSizeValue then
+			BTVanillaDB.globalButtonSizeValue = BTVanillaDB.globalButtonSizeValue + delta
+			self:ApplyGlobalButtonSize()
+		end
+
+		BTVanillaDB.lastAppliedVanillaStyle = vanilla
+	end
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			local i
+
+			for i = 1, table.getn(bar.buttons) do
+				local btn = bar.buttons[i]
+
+				if btn and btn.ApplyBorderStyle then
+					btn:ApplyBorderStyle()
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------
+-- Global spacing/button-size overrides (General tab checkboxes,
+-- BTVanillaDB.globalSpacingEnabled/globalButtonSizeEnabled)
+--
+-- Unlike ApplyGlobalButtonStyle's one-time sweep, these are a live lock:
+-- while enabled, the corresponding General-tab slider is the single
+-- source of truth for every true action bar (default 1-5 + extra 6-9,
+-- i.e. everything in self.bars - simple bars like Bag Bar/Micro Menu are
+-- never in self.bars, so they're naturally excluded), and each bar's own
+-- per-bar slider locks (Settings.lua's RefreshBarPageGlobalOverrideGating).
+-- No-ops entirely while disabled - turning a toggle off leaves every
+-- bar's last-applied value in place rather than reverting anything.
+-- Also no-ops while useDefaultLayout is on (its own reset-to-native
+-- cascade already owns bars 1-5's spacing/size in that state, and the
+-- General-tab sliders themselves are locked then too - see
+-- RefreshGeneralPanel).
+-------------------------------------------------------------------------
+
+function BTV:ApplyGlobalSpacing()
+	if not (self.bars and BTVanillaDB.globalSpacingEnabled) or
+		BTVanillaDB.useDefaultLayout ~= false then
+		return
+	end
+
+	-- Vanilla-only floor - see SetBarSpacing's own comment. The global
+	-- slider's own displayed number is the raw stored value, never
+	-- itself offset, so this asymmetry is what makes the SAME displayed
+	-- global spacing number apply the correct real spacing per style.
+	local floor = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+	local real = (BTVanillaDB.globalSpacingValue or 0) + floor
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			self:SetBarSpacing(bar, real)
+		end
+	end
+end
+
+function BTV:ApplyGlobalButtonSize()
+	if not (self.bars and BTVanillaDB.globalButtonSizeEnabled) or
+		BTVanillaDB.useDefaultLayout ~= false then
+		return
+	end
+
+	local size = BTVanillaDB.globalButtonSizeValue or self.BUTTON_SIZE
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(self.bars) do
+		if bar and bar.config then
+			self:SetBarButtonSize(bar, size)
+		end
+	end
 end
 
 -------------------------------------------------------------------------
