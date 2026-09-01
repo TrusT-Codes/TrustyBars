@@ -3543,6 +3543,97 @@ function BTV:DiagCheckboxTextColor()
 	self:Print("--- diag15 end ---")
 end
 
+-- "diag16" (UI redesign branch): live state dump for the Main Bar
+-- (bar 1) Stance/Page Bar assignment dropdowns - reported "visually
+-- broken and doesn't apply the clicked value". Dumps: whether bar 1's
+-- settings page/assignmentContainer/assignmentRows exist at all, each
+-- row's dropdown name/shown/selected/dimensions vs. the underlying
+-- BTVanillaDB value it should reflect, and the live stance-swap/
+-- pagination toggle + GetNumShapeshiftForms() state that decides how many
+-- rows should exist. Run with the Settings window's bar 1 page OPEN.
+function BTV:DiagMainBarAssignmentRows()
+	self:Print("--- diag16: main bar assignment rows ---")
+	self:Print("(open Settings > Bars > Main Bar first, then run this)")
+
+	local page
+
+	-- settingsFrame is a Settings.lua-local upvalue, not exposed on BTV -
+	-- reach it via the frame's own known global name instead.
+	local f = getglobal("BTVanillaSettingsFrame")
+
+	self:Print("settingsFrame frame found=" .. tostring(f ~= nil))
+
+	if not f then
+		self:Print("--- diag16 end ---")
+		return
+	end
+
+	self:Print(
+		"mainBarStanceSwapEnabled=" .. tostring(BTVanillaDB.mainBarStanceSwapEnabled) ..
+		" mainBarPaginationEnabled=" .. tostring(BTVanillaDB.mainBarPaginationEnabled) ..
+		" GetNumShapeshiftForms=" .. tostring(GetNumShapeshiftForms and GetNumShapeshiftForms())
+	)
+
+	if not f.pages or not f.pages[1] then
+		self:Print("f.pages[1] (bar 1 page) not built yet - open its Settings page first")
+		self:Print("--- diag16 end ---")
+		return
+	end
+
+	page = f.pages[1]
+
+	self:Print(
+		"page.assignmentContainer=" .. tostring(page.assignmentContainer ~= nil) ..
+		" page:IsShown()=" .. tostring(page.IsShown and page:IsShown())
+	)
+
+	if not page.assignmentRows then
+		self:Print("page.assignmentRows is nil")
+		self:Print("--- diag16 end ---")
+		return
+	end
+
+	self:Print("assignmentRows count=" .. tostring(table.getn(page.assignmentRows)))
+
+	local i
+
+	for i = 1, table.getn(page.assignmentRows) do
+		local row = page.assignmentRows[i]
+		local dropdown = row and row.dropdown
+
+		if not dropdown then
+			self:Print("row " .. i .. ": no .dropdown field")
+		else
+			self:Print(
+				"row " .. i .. " dropdown=" .. tostring(dropdown:GetName()) ..
+				" shown=" .. tostring(dropdown:IsShown()) ..
+				" w=" .. tostring(dropdown:GetWidth()) .. " h=" .. tostring(dropdown:GetHeight()) ..
+				" selected=" .. tostring(dropdown:GetSelected()) ..
+				" hasOnSelect=" .. tostring(dropdown.onSelect ~= nil) ..
+				" optionsCount=" .. tostring(dropdown.options and table.getn(dropdown.options))
+			)
+		end
+	end
+
+	self:Print(
+		"BTVanillaDB.mainBarStanceBarAssignment=" ..
+		tostring(BTVanillaDB.mainBarStanceBarAssignment and "table" or "nil") ..
+		" mainBarPageBarAssignment=" .. tostring(BTVanillaDB.mainBarPageBarAssignment)
+	)
+
+	if BTVanillaDB.mainBarStanceBarAssignment then
+		local s
+
+		for s = 1, 4 do
+			if BTVanillaDB.mainBarStanceBarAssignment[s] ~= nil then
+				self:Print("  stance " .. s .. " assignment=" .. tostring(BTVanillaDB.mainBarStanceBarAssignment[s]))
+			end
+		end
+	end
+
+	self:Print("--- diag16 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3594,6 +3685,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagMouseFocus()
 	elseif msg == "diag15" then
 		BTV:DiagCheckboxTextColor()
+	elseif msg == "diag16" then
+		BTV:DiagMainBarAssignmentRows()
 	else
 		BTV:ToggleMainMenu()
 	end

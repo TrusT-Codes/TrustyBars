@@ -785,6 +785,25 @@ local function CreateSettingsFrame()
 	)
 
 	-------------------------------------------------------------------------
+	-- Divider between the tab row and the content below it - the tab
+	-- buttons' own bottom edge (y=-34-20=-54) and the content panels'
+	-- previous top edge (y=-52) used to OVERLAP by 2px with no visual
+	-- separation at all. Two-point SetPoint (TOPLEFT+TOPRIGHT, no fixed
+	-- width) so it stretches to match the window's own width regardless
+	-- of which view resized it, matching the bars/extra-bars divider's own
+	-- WHITE8X8 technique further down this file.
+	-------------------------------------------------------------------------
+
+	local tabContentDivider = f:CreateTexture(nil, "ARTWORK")
+
+	tabContentDivider:SetTexture("Interface\\Buttons\\WHITE8X8")
+	tabContentDivider:SetVertexColor(0.5, 0.5, 0.5, 0.6)
+	tabContentDivider:SetHeight(1)
+
+	tabContentDivider:SetPoint("TOPLEFT", f, "TOPLEFT", 18, -59)
+	tabContentDivider:SetPoint("TOPRIGHT", f, "TOPRIGHT", -18, -59)
+
+	-------------------------------------------------------------------------
 	-- Left bar list
 	-------------------------------------------------------------------------
 
@@ -802,7 +821,7 @@ local function CreateSettingsFrame()
 		f,
 		"TOPLEFT",
 		18,
-		-52
+		-64
 	)
 
 	f.barButtons = {}
@@ -852,7 +871,7 @@ local function CreateSettingsFrame()
 		f,
 		"TOPRIGHT",
 		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
-		-52
+		-64
 	)
 
 	f.contentScrollFrame:SetBackdrop({
@@ -922,7 +941,7 @@ function BTV:CreateWideContentScrollFrame(name)
 		settingsFrame,
 		"TOPRIGHT",
 		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
-		-52
+		-64
 	)
 
 	scrollFrame:SetBackdrop({
@@ -4260,12 +4279,12 @@ end
 -------------------------------------------------------------------------
 
 -- Distance from the settings window's own top edge down to
--- contentPanel/listPanel's top (matches their "-52" TOPRIGHT/TOPLEFT
--- anchor offset in CreateSettingsFrame) and from their bottom edge down
--- to the window's own bottom edge (matches CreateSettingsFrame's original
--- tuned 680/610 sizes: 680 - 52 - 610 = 18) - the fixed "chrome" every
--- view's content sits inside, regardless of which view/page is showing.
-local SETTINGS_CHROME_TOP = 52
+-- contentPanel/listPanel's top (matches their "-64" TOPRIGHT/TOPLEFT
+-- anchor offset in CreateSettingsFrame, raised from the original "-52" to
+-- make room for the tab/content divider line) and from their bottom edge
+-- down to the window's own bottom edge - the fixed "chrome" every view's
+-- content sits inside, regardless of which view/page is showing.
+local SETTINGS_CHROME_TOP = 64
 local SETTINGS_CHROME_BOTTOM = 18
 
 -- Never shrinks below whatever the current view's own frame naturally
@@ -4705,6 +4724,11 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn, drop
 	end
 
 	dropdown.onSelect = function(value)
+		-- Temporary diag print (UI redesign branch, stance/page dropdown
+		-- investigation - /btv diag16) - remove once the bug is confirmed
+		-- fixed live.
+		BTV:Print("diag16: onSelect fired for " .. tostring(dropdownName) .. " value=" .. tostring(value))
+
 		setFn(value ~= 0 and value or nil)
 		RefreshValue()
 	end
@@ -4739,6 +4763,14 @@ end
 -- handler.
 function BTV:RebuildMainBarAssignmentRows()
 	local page = settingsFrame and settingsFrame.pages[1]
+
+	-- Temporary diag print (UI redesign branch, stance/page dropdown
+	-- investigation - /btv diag16) - remove once the bug is confirmed
+	-- fixed live.
+	BTV:Print(
+		"diag16: RebuildMainBarAssignmentRows called, page=" .. tostring(page ~= nil) ..
+		" assignmentContainer=" .. tostring(page and page.assignmentContainer ~= nil)
+	)
 
 	if not page or not page.assignmentContainer then
 		return
