@@ -3346,13 +3346,13 @@ end
 -- dependency-driven disable, matching diag11's button-visibility
 -- finding) or something else entirely once actually inspected live.
 function BTV:DiagActionBarCheckboxes()
-	self:Print("--- diag12: scanning _G for ActionBar-related CheckButtons ---")
+	self:Print("--- diag12: scanning _G for CheckButtons (open Options -> Action Bars first) ---")
 
 	local key, value
 	local found = 0
 
 	for key, value in pairs(_G) do
-		if type(key) == "string" and string.find(key, "ActionBar") and type(value) == "table" then
+		if type(key) == "string" and type(value) == "table" then
 			local okType, objType = pcall(function() return value.GetObjectType and value:GetObjectType() end)
 
 			if okType and objType == "CheckButton" then
