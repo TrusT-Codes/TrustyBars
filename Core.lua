@@ -3447,6 +3447,44 @@ function BTV:DiagActionBarsPanelTree()
 	self:Print("--- diag13 end ---")
 end
 
+-- "diag14": panel isn't stock vanilla (custom Options UI, no matching
+-- name found via _G scans) - name-guessing is dead. Hover the mouse
+-- directly over "Show Right ActionBar 2" and run this instead:
+-- GetMouseFocus() returns whatever frame is under the cursor right now,
+-- no name needed. Prints it and its parent chain.
+function BTV:DiagMouseFocus()
+	self:Print("--- diag14: GetMouseFocus() ---")
+
+	local frame = GetMouseFocus and GetMouseFocus()
+
+	if not frame then
+		self:Print("GetMouseFocus() returned nothing - make sure the mouse is over the checkbox when you run this.")
+		self:Print("--- diag14 end ---")
+		return
+	end
+
+	local depth = 0
+
+	while frame and depth < 6 do
+		local name = (frame.GetName and frame:GetName()) or "(anonymous)"
+		local okType, objType = pcall(function() return frame.GetObjectType and frame:GetObjectType() end)
+		local okEnabled, enabled = pcall(function() return frame.IsEnabled and frame:IsEnabled() end)
+		local okChecked, checked = pcall(function() return frame.GetChecked and frame:GetChecked() end)
+
+		self:Print(
+			string.rep("  ", depth) .. name ..
+			" type=" .. tostring(okType and objType) ..
+			" IsEnabled=" .. tostring(okEnabled and enabled) ..
+			" GetChecked=" .. tostring(okChecked and checked)
+		)
+
+		frame = frame.GetParent and frame:GetParent()
+		depth = depth + 1
+	end
+
+	self:Print("--- diag14 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3494,6 +3532,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagActionBarCheckboxes()
 	elseif msg == "diag13" then
 		BTV:DiagActionBarsPanelTree()
+	elseif msg == "diag14" then
+		BTV:DiagMouseFocus()
 	else
 		BTV:ToggleMainMenu()
 	end
