@@ -200,6 +200,52 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
+-- Defers `fn` to the next frame via C_Timer.After(0, ...) - DLL-native,
+-- confirmed real (docs/01-Environment-Capability-Analysis.md), never a
+-- hand-rolled OnUpdate poll. Falls back to calling fn immediately if
+-- C_Timer somehow isn't available, same defensive tolerance this
+-- codebase already uses everywhere else it touches C_Timer.
+--
+-- Used specifically to wrap every Fit*View call below: a panel just
+-- Show()'n/populated this same tick can have candidates whose
+-- GetBottom() hasn't resolved to real values yet - live-tested, this
+-- produced a completely wrong (either far too small or far too tall)
+-- viewport on EVERY switch to General/Profiles, self-correcting only on
+-- a second, separate visit (i.e. once the engine had an actual render
+-- frame to settle the newly-shown layout in before anything measured
+-- it). Waiting one frame before measuring fixes this at the source
+-- instead of guessing at which specific read was stale.
+local function DeferFit(fn)
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, fn)
+	else
+		fn()
+	end
+end
+
+-- Width reserved for each content viewport's scrollbar
+-- (UIPanelScrollFrameTemplate anchors it just outside the scrollframe's
+-- own right edge) - reserved unconditionally, whether or not the current
+-- view's content actually needs to scroll, so nothing has to reflow when
+-- it toggles. Shared by CreateSettingsFrame and
+-- BTV:CreateWideContentScrollFrame (both below).
+local SETTINGS_SCROLLBAR_RESERVED_WIDTH = 28
+
+-- Fixed vertical band reserved for the Default-profile-lock warning
+-- banner (CreateProfileLockWarning below), anchored right under each
+-- page's title and right above its first content control. Reserved
+-- unconditionally (whether or not the banner is currently shown) so
+-- nothing needs to reflow when it toggles.
+local PROFILE_LOCK_BANNER_TOP = -34
+
+-- Generous reserve for the LONGER of the two possible lock messages
+-- (BTV:CreateProfileLockWarning) wrapped at the narrowest page width this
+-- banner ever appears at - the banner's own real height is still
+-- recomputed dynamically from its actual wrapped text
+-- (BTV:ApplyProfileLockGating), so this is a safety margin against
+-- overlapping the control below it, not a hard cap.
+local PROFILE_LOCK_BANNER_HEIGHT = 56
+
 local SWATCH_SIZE = 46
 local SWATCH_GAP  = 8
 local SWATCH_PAD  = 4
@@ -441,6 +487,112 @@ local function RefreshGridSwatchSelection(page, cols, rows)
 end
 
 -------------------------------------------------------------------------
+-- Reusable scrollable content area
+--
+-- One generic ScrollFrame + wiring helper, used to back every settings
+-- page/tab (bar pages via contentPanel, the General tab, the Profiles
+-- tab) - so the up/down scrollbar buttons, mouse-wheel scrolling, and
+-- draggable thumb only need to be built and wired once, and any page
+-- that grows past its available height automatically gets scrolling
+-- with zero page-specific code.
+-------------------------------------------------------------------------
+
+-- How far one mouse-wheel notch moves the scrollbar, in pixels.
+local SETTINGS_SCROLL_WHEEL_STEP = 30
+
+-- Creates a native ScrollFrame (UIPanelScrollFrameTemplate already
+-- supplies the up/down arrow buttons and the draggable thumb) parented
+-- to `parent`, with mouse-wheel scrolling wired in. The caller positions/
+-- sizes the returned scrollFrame exactly like it would a plain content
+-- Frame; actual content should be parented into whatever scrollchild
+-- BTV:UpdateScrollFrame below is later given for it (via
+-- scrollFrame:SetScrollChild), not into scrollFrame itself.
+function BTV:CreateScrollFrame(parent, name)
+	local scrollFrame = CreateFrame("ScrollFrame", name, parent, "UIPanelScrollFrameTemplate")
+
+	local scrollBar = getglobal(name .. "ScrollBar")
+
+	scrollFrame.scrollBar = scrollBar
+
+	scrollFrame:EnableMouseWheel(true)
+
+	scrollFrame:SetScript("OnMouseWheel", function()
+		if not scrollBar then
+			return
+		end
+
+		local minVal, maxVal = scrollBar:GetMinMaxValues()
+		local newValue = scrollBar:GetValue() - (arg1 * SETTINGS_SCROLL_WHEEL_STEP)
+
+		if newValue < minVal then
+			newValue = minVal
+		elseif newValue > maxVal then
+			newValue = maxVal
+		end
+
+		scrollBar:SetValue(newValue)
+	end)
+
+	if scrollBar then
+		-- UIPanelScrollBarTemplate's own up/down buttons and thumb-drag
+		-- both work purely by changing the slider's value - this is the
+		-- one place that actually moves the scroll view in response.
+		scrollBar:SetScript("OnValueChanged", function()
+			scrollFrame:SetVerticalScroll(this:GetValue())
+		end)
+	end
+
+	return scrollFrame
+end
+
+-- Points `scrollFrame` at `scrollChild` (a plain Frame the caller already
+-- parents its real page content into - e.g. settingsFrame.contentPanel/
+-- generalPanel/profilesPanel), sizes the scrollchild to
+-- `requiredContentHeight` (the page's real, possibly-taller-than-visible
+-- content height, as already measured by ApplySettingsHeightFromCandidates
+-- below), sizes the scrollFrame itself to the clamped `viewportHeight`,
+-- resets scroll to the top, and shows/hides the scrollbar depending on
+-- whether there's actually anything to scroll. Called every time a page's
+-- content changes, so scrolling turns on/off automatically as content
+-- grows/shrinks - no per-page special-casing needed.
+function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, viewportHeight)
+	scrollChild:SetWidth(scrollFrame:GetWidth())
+	scrollChild:SetHeight(requiredContentHeight)
+
+	scrollFrame:SetScrollChild(scrollChild)
+	scrollFrame:SetHeight(viewportHeight)
+	scrollFrame:SetVerticalScroll(0)
+
+	local scrollBar = scrollFrame.scrollBar
+
+	if scrollBar then
+		local maxScroll = requiredContentHeight - viewportHeight
+
+		if maxScroll < 0 then
+			maxScroll = 0
+		end
+
+		scrollBar:SetMinMaxValues(0, maxScroll)
+		scrollBar:SetValue(0)
+
+		if maxScroll > 0 then
+			scrollBar:Show()
+		else
+			scrollBar:Hide()
+		end
+	end
+end
+
+-- Lets other files (DefaultBars.lua's native-checkbox reconciliation)
+-- check whether the settings window has ever been built this session
+-- WITHOUT forcing it into existence as a side effect - unlike calling any
+-- of the BTV:GetOrCreate*/RefreshBarList-style functions directly, which
+-- all create it lazily if it doesn't exist yet.
+function BTV:IsSettingsFrameCreated()
+	return settingsFrame ~= nil
+end
+
+-------------------------------------------------------------------------
 -- Create main settings frame
 -------------------------------------------------------------------------
 
@@ -608,6 +760,33 @@ local function CreateSettingsFrame()
 		end
 	)
 
+	local tabProfilesButton = CreateFrame(
+		"Button",
+		nil,
+		f,
+		"UIPanelButtonTemplate"
+	)
+
+	tabProfilesButton:SetWidth(90)
+	tabProfilesButton:SetHeight(20)
+
+	tabProfilesButton:SetPoint(
+		"LEFT",
+		tabGeneralButton,
+		"RIGHT",
+		6,
+		0
+	)
+
+	tabProfilesButton:SetText("Profiles")
+
+	tabProfilesButton:SetScript(
+		"OnClick",
+		function()
+			BTV:ShowProfilesView()
+		end
+	)
+
 	-------------------------------------------------------------------------
 	-- Left bar list
 	-------------------------------------------------------------------------
@@ -649,26 +828,37 @@ local function CreateSettingsFrame()
 
 	-------------------------------------------------------------------------
 	-- Right content panel
+	--
+	-- contentScrollFrame is the fixed VIEWPORT (visible bounds + border +
+	-- scrollbar) for the Bars view specifically - contentPanel is its
+	-- permanent scroll child (BTV:UpdateScrollFrame resizes it to fit
+	-- whichever bar page is showing, which can exceed the viewport -
+	-- that's exactly what makes the scrollbar appear). General/Profiles
+	-- each get their OWN scrollframe+scrollchild pair the same shape
+	-- (BTV:CreateWideContentScrollFrame below, called from
+	-- GetOrCreateGeneralPanel/GetOrCreateProfilesPanel) rather than
+	-- sharing this one - re-targeting a single shared scrollframe's
+	-- scroll child at a DIFFERENT frame after creation (tried first) left
+	-- that frame with no resolvable position/size at all the first time
+	-- it was ever attached, rendering completely empty; every scrollframe
+	-- here is instead permanently paired with its one scrollchild from
+	-- the moment both are created, never re-targeted.
 	-------------------------------------------------------------------------
 
-	f.contentPanel = CreateFrame(
-		"Frame",
-		nil,
-		f
-	)
+	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
-	f.contentPanel:SetWidth(580)
-	f.contentPanel:SetHeight(610)
+	f.contentScrollFrame:SetHeight(610)
+	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
 
-	f.contentPanel:SetPoint(
+	f.contentScrollFrame:SetPoint(
 		"TOPRIGHT",
 		f,
 		"TOPRIGHT",
-		-18,
+		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
 		-52
 	)
 
-	f.contentPanel:SetBackdrop({
+	f.contentScrollFrame:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		tile = true,
@@ -682,18 +872,81 @@ local function CreateSettingsFrame()
 		},
 	})
 
-	f.contentPanel:SetBackdropColor(
+	f.contentScrollFrame:SetBackdropColor(
 		0,
 		0,
 		0,
 		0.3
 	)
 
+	f.contentPanel = CreateFrame(
+		"Frame",
+		nil,
+		f.contentScrollFrame
+	)
+
+	f.contentPanel:SetWidth(f.contentScrollFrame:GetWidth())
+	f.contentPanel:SetHeight(610)
+
+	f.contentScrollFrame:SetScrollChild(f.contentPanel)
+
 	f.pages = {}
 
 	settingsFrame = f
 
 	return f
+end
+
+-- Creates one scrollframe+scrollchild pair spanning the FULL content
+-- width (the space the bar list would otherwise occupy, since it's
+-- hidden in General/Profiles) - shared shape for GetOrCreateGeneralPanel/
+-- GetOrCreateProfilesPanel below, each calling this once to build their
+-- own independent pair (see CreateSettingsFrame's own comment on why each
+-- view gets its own rather than sharing one). Returns scrollFrame,
+-- scrollChild - caller stores both (e.g. settingsFrame.generalScrollFrame/
+-- generalPanel) and builds its real content into scrollChild.
+function BTV:CreateWideContentScrollFrame(name)
+	local scrollFrame = BTV:CreateScrollFrame(settingsFrame, name)
+
+	scrollFrame:SetHeight(610)
+
+	-- settingsFrame:GetWidth() is a fixed literal (SetWidth(780) once, in
+	-- CreateSettingsFrame, never anchor-derived) so it's always
+	-- immediately correct to read - unlike the two-opposing-anchor
+	-- implied width this used to be computed from (TOPLEFT to listPanel +
+	-- TOPRIGHT here), which was not guaranteed resolved yet the moment
+	-- code right after this reads it back via GetWidth().
+	scrollFrame:SetWidth(
+		settingsFrame:GetWidth() - 18 - 18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH
+	)
+
+	scrollFrame:SetPoint(
+		"TOPRIGHT",
+		settingsFrame,
+		"TOPRIGHT",
+		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
+		-52
+	)
+
+	scrollFrame:SetBackdrop({
+		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 8,
+		edgeSize = 8,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+
+	scrollFrame:SetBackdropColor(0, 0, 0, 0.3)
+
+	local scrollChild = CreateFrame("Frame", nil, scrollFrame)
+
+	scrollChild:SetWidth(scrollFrame:GetWidth())
+	scrollChild:SetHeight(610)
+
+	scrollFrame:SetScrollChild(scrollChild)
+
+	return scrollFrame, scrollChild
 end
 
 -------------------------------------------------------------------------
@@ -738,6 +991,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.barId = barId
 	page.isDefault = isDefault
+
+	page.profileLockWarning = self:CreateProfileLockWarning(page)
 
 	-------------------------------------------------------------------------
 	-- Title
@@ -785,12 +1040,17 @@ function BTV:GetOrCreateBarPage(barId)
 	-- spacing instead of hunting through every control's SetPoint.
 	-------------------------------------------------------------------------
 
-	local checkboxY = -44
+	-- Both roots are pushed down by the profile-lock warning banner's
+	-- reserved band (PROFILE_LOCK_BANNER_HEIGHT), which sits between the
+	-- title and here regardless of whether it's currently shown.
+	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+
+	local checkboxY = -44 + contentTopOffset
 
 	-- Position section starts right under the title, or - on bars 2-5 -
 	-- right under the enable checkbox block (checkbox height + the gap
 	-- reserved before Position begins).
-	local positionStartY = -46
+	local positionStartY = -46 + contentTopOffset
 
 	if hasEnableCheckbox then
 		positionStartY = checkboxY - 24 - 14
@@ -843,6 +1103,8 @@ function BTV:GetOrCreateBarPage(barId)
 				else
 					BTV:SetExtraBarEnabled(this.barId, checked)
 				end
+
+				BTV:RefreshBarList()
 			end
 		)
 
@@ -1772,12 +2034,22 @@ function BTV:GetOrCreateBarPage(barId)
 
 		local assignmentContainer = CreateFrame("Frame", nil, page)
 
+		-- Anchored straight to `page`'s own left margin, NOT to
+		-- pageIndicatorValueText - that FontString only has a single
+		-- "TOP" anchor point (centered under the 290px-wide slider above
+		-- it, not left-aligned), so its BOTTOMLEFT sits ~215px in from
+		-- the page's real left edge. Anchoring off it pushed every
+		-- assignment row (and its dropdown) that same ~215px to the
+		-- right, overflowing past the page's visible width entirely -
+		-- the Y offset below approximates where that BOTTOMLEFT used to
+		-- land (slider height 17 + value text's own -2 gap/height + the
+		-- original -14 gap), just measured from `page` at the correct X.
 		assignmentContainer:SetPoint(
 			"TOPLEFT",
-			pageIndicatorValueText,
-			"BOTTOMLEFT",
-			-4,
-			-14
+			page,
+			"TOPLEFT",
+			INDENT_SECTION,
+			pageIndicatorSliderY - 44
 		)
 
 		assignmentContainer:SetWidth(500)
@@ -1828,6 +2100,210 @@ function BTV:ApplyLiveBarPosition(page)
 end
 
 -------------------------------------------------------------------------
+-- Default-PROFILE lock (Profiles feature follow-up)
+--
+-- Not to be confused with ApplyDefaultLayoutGating below, which gates a
+-- different, unrelated feature (the General tab's "Use Default Blizzard
+-- Layout" checkbox) that happens to share the word "Default" - both gates
+-- are independent and can apply to the same controls simultaneously. The
+-- Default PROFILE is a fixed, always-available baseline and must never be
+-- edited: every bar/simple-bar settings page shows a red warning banner
+-- and has all of its interactive controls locked while it's active.
+-------------------------------------------------------------------------
+
+-- Text shown while the Default PROFILE is active - takes priority over
+-- the layout-lock text below if both conditions happen to be true at
+-- once (the Default profile's own restriction is the broader one).
+local PROFILE_LOCK_MESSAGE_PROFILE =
+	"Editing Settings is prohibited while in default profile mode. " ..
+	"Go to Profile Settings and set up a profile if you wish to " ..
+	"change Settings or access Layout Edit Mode."
+
+-- Text shown while "Use Default Blizzard Layout" (General tab) is on, on
+-- pages that gate ONLY applies to (bar 1 and the simple/native-backed
+-- pages - see ApplyDefaultLayoutGating's own header comment).
+local PROFILE_LOCK_MESSAGE_LAYOUT =
+	"Editing Settings is prohibited while using the Default Blizzard " ..
+	"Layout. Disable Default Blizzard Layout under General Settings " ..
+	"if you wish to change Settings or access Layout Edit Mode."
+
+-- One reusable warning banner per page - a solid strip anchored right
+-- below the page's title and right above its first content control
+-- (PROFILE_LOCK_BANNER_TOP/PROFILE_LOCK_BANNER_HEIGHT reserve that band
+-- unconditionally, so nothing needs to reflow when this toggles). Hidden
+-- by default; toggled (and its exact height/text) set by
+-- ApplyProfileLockGating below - text isn't fixed at creation time since
+-- which of the two messages above applies can change live.
+function BTV:CreateProfileLockWarning(page)
+	local banner = CreateFrame("Frame", nil, page)
+
+	banner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, PROFILE_LOCK_BANNER_TOP)
+	banner:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, PROFILE_LOCK_BANNER_TOP)
+	banner:SetHeight(PROFILE_LOCK_BANNER_HEIGHT)
+	banner:SetFrameLevel(page:GetFrameLevel() + 5)
+
+	banner:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 12,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+
+	banner:SetBackdropColor(0.35, 0, 0, 0.9)
+
+	local text = banner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	text:SetPoint("TOPLEFT", banner, "TOPLEFT", INDENT_SECTION, -6)
+	text:SetPoint("TOPRIGHT", banner, "TOPRIGHT", -INDENT_SECTION, -6)
+	text:SetJustifyH("LEFT")
+	text:SetJustifyV("TOP")
+	text:SetTextColor(1, 0.15, 0.15)
+
+	banner.text = text
+
+	banner:Hide()
+
+	return banner
+end
+
+-- Sets the banner's message and resizes the banner to fit however many
+-- lines that message actually wraps to at the page's CURRENT width
+-- (text:GetHeight() reflects real wrapped height once SetText runs, same
+-- content-aware-sizing technique UIWidgets.lua's dialog uses) - so a
+-- longer message, a narrower window, or a translation never gets cut off
+-- rather than just being clamped to PROFILE_LOCK_BANNER_HEIGHT's own
+-- (generous, but not guaranteed-sufficient) reserved space.
+local function SetProfileLockBannerMessage(banner, message)
+	-- Explicit SetWidth on BOTH banner and text, computed from `page`'s
+	-- own (reliable, always-explicitly-set) current width - banner/text
+	-- previously relied purely on their TOPLEFT+TOPRIGHT anchor pairs to
+	-- imply their width, which live-tested as NOT reliably wrapping text
+	-- at all (rendered as one long line, clipped by the ancestor
+	-- scrollframe rather than wrapping) - explicit SetWidth is the one
+	-- thing that's proven reliable for width in this environment
+	-- throughout this whole settings-window rework.
+	local page = banner:GetParent()
+	local width = page:GetWidth()
+
+	if width and width > 0 then
+		banner:SetWidth(width)
+		banner.text:SetWidth(width - (2 * INDENT_SECTION))
+	end
+
+	banner.text:SetText(message)
+	banner:SetHeight((banner.text:GetHeight() or 0) + 12)
+end
+
+local function LockControl(control, locked)
+	control:EnableMouse(not locked)
+	control:SetAlpha(locked and 0.5 or 1)
+
+	-- Templated Buttons additionally need :Disable()/:Enable() -
+	-- EnableMouse alone doesn't grey them out or block their OnClick the
+	-- way it does for sliders/template-less swatch buttons.
+	if control.Disable and control.Enable then
+		if locked then
+			control:Disable()
+		else
+			control:Enable()
+		end
+	end
+end
+
+-- Every optional widget name either a full bar page (GetOrCreateBarPage)
+-- or a simple bar page (CreateSimpleBarPage, including its Experience
+-- Bar-only extras) can have on itself. Checked by presence so the same
+-- list works for both page shapes. enableCheckbox IS locked like
+-- everything else here by default - it's only exempted, inline below,
+-- for the numbered default bars (1-5), where the user wants
+-- enable/disable to stay the one available option even while everything
+-- else on the page is locked.
+local PROFILE_LOCK_CONTROL_NAMES = {
+	"xSlider", "ySlider", "buttonSizeSlider", "spacingSlider",
+	"scaleSlider", "resetPositionButton", "enableCheckbox",
+	"buttonCountMinus", "buttonCountPlus", "pageIndicatorSlider",
+	"orientationCheckbox", "keyRingCheckbox", "keyRingScaleSlider",
+	"betterExpBarCheckbox", "expBarShowLevelCheckbox",
+	"expBarShowCurrentOverMaxCheckbox", "expBarShowPercentCheckbox",
+	"expBarShowRestedPercentCheckbox", "expBarShowRestedTotalCheckbox",
+	"expBarFontSizeSlider", "earnedColorSwatch", "restedColorSwatch",
+	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
+}
+
+-- alsoCheckLayoutLock: true on the pages the Default-layout lock also
+-- applies to (bar 1's page, every simple/native-backed page) - the
+-- banner shows for THAT lock too there, with its own message, and the
+-- SAME combined lock now drives control-locking below too (user
+-- decision: while EITHER lock is active, enable/disable is the only
+-- thing that should stay available on a numbered default bar - every
+-- other control locks the same way under either reason).
+function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
+	local profileLocked = self:IsDefaultProfileActive()
+	local layoutLocked = alsoCheckLayoutLock and (BTVanillaDB.useDefaultLayout == true)
+	local locked = profileLocked or layoutLocked
+
+	if page.profileLockWarning then
+		page.profileLockWarning:SetShown(locked)
+
+		if locked then
+			SetProfileLockBannerMessage(
+				page.profileLockWarning,
+				profileLocked and PROFILE_LOCK_MESSAGE_PROFILE or PROFILE_LOCK_MESSAGE_LAYOUT
+			)
+		end
+	end
+
+	-- Numbered default bars (1-5) keep enable/disable available even
+	-- while everything else locks - every other page (extra bars 6-9,
+	-- simple/native-backed pages) has NO exemption, its enable checkbox
+	-- locks exactly like every other control.
+	local barId = page.barId
+	local isNumberedDefaultBar = type(barId) == "number" and barId >= 1 and barId <= 5
+
+	local i
+
+	for i = 1, table.getn(PROFILE_LOCK_CONTROL_NAMES) do
+		local name = PROFILE_LOCK_CONTROL_NAMES[i]
+		local control = page[name]
+
+		if control then
+			local exempt = isNumberedDefaultBar and name == "enableCheckbox"
+
+			LockControl(control, locked and not exempt)
+		end
+	end
+
+	if page.gridSwatches then
+		for i = 1, table.getn(page.gridSwatches) do
+			LockControl(page.gridSwatches[i], locked)
+		end
+	end
+
+	if page.assignmentRows then
+		for i = 1, table.getn(page.assignmentRows) do
+			local row = page.assignmentRows[i]
+
+			if row.dropdown then
+				-- EnableMouse(false) on the dropdown frame itself doesn't
+				-- block its click handling - UIDropDownMenuTemplate's own
+				-- clickable region is a separate child Button
+				-- ("<name>Button", native FrameXML naming convention),
+				-- which needs :Disable()/:Enable() directly.
+				local dropdownButton = getglobal(row.dropdown:GetName() .. "Button")
+
+				if dropdownButton then
+					LockControl(dropdownButton, locked)
+				else
+					LockControl(row.dropdown, locked)
+				end
+			end
+		end
+	end
+end
+
+-------------------------------------------------------------------------
 -- Default-layout gating (General tab's "Use Default Blizzard Layout")
 --
 -- EnableMouse(false) is used rather than Slider/Button-specific
@@ -1836,9 +2312,13 @@ end
 -- template-less grid swatch buttons), whereas Disable() only reliably
 -- changes appearance/behavior on templated Button widgets. Controls stay
 -- visible and keep showing their current value either way (point 3 of
--- the spec) - only interactivity is gated. Only default bars (1-5) ever
--- call this; custom bars' pages never have it applied, so they're always
--- fully interactive regardless of BTVanillaDB.useDefaultLayout.
+-- the spec) - only interactivity is gated. Only simple/native-backed
+-- pages (Stance/Bag/Micro/Latency/Exp Bar) call this now - numbered
+-- default bars (1-5) get the SAME layout-lock effect through
+-- BTV:ApplyProfileLockGating's own combined lock instead (its
+-- alsoCheckLayoutLock parameter), which also exempts their enable
+-- checkbox; custom bars' pages never have either applied, so they're
+-- always fully interactive regardless of BTVanillaDB.useDefaultLayout.
 -------------------------------------------------------------------------
 
 local function ApplyDefaultLayoutGating(page, interactive)
@@ -2133,6 +2613,8 @@ local function CreateSimpleBarPage(key)
 	page.barId = key
 	page.isDefault = true
 
+	page.profileLockWarning = BTV:CreateProfileLockWarning(page)
+
 	local title = page:CreateFontString(
 		nil,
 		"OVERLAY",
@@ -2149,7 +2631,12 @@ local function CreateSimpleBarPage(key)
 
 	title:SetText(config.title .. " Settings (Default)")
 
-	local topY = -46
+	-- Pushed down by the profile-lock warning banner's reserved band, same
+	-- as GetOrCreateBarPage's contentTopOffset above.
+	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+	local enableCheckboxY = -44 + contentTopOffset
+
+	local topY = -46 + contentTopOffset
 
 	if config.hasEnable then
 		local enableCheckbox = CreateFrame(
@@ -2167,7 +2654,7 @@ local function CreateSimpleBarPage(key)
 			page,
 			"TOPLEFT",
 			INDENT_SECTION,
-			-44
+			enableCheckboxY
 		)
 
 		enableCheckbox:SetScript(
@@ -2176,6 +2663,8 @@ local function CreateSimpleBarPage(key)
 				local checked = this:GetChecked() and true or false
 
 				config.setEnabled(checked)
+
+				BTV:RefreshBarList()
 			end
 		)
 
@@ -2187,7 +2676,7 @@ local function CreateSimpleBarPage(key)
 
 		page.enableCheckbox = enableCheckbox
 
-		topY = -44 - 24 - 14
+		topY = enableCheckboxY - 24 - 14
 	end
 
 	local minX, maxX, minY, maxY = GetScreenCoordinateRange()
@@ -3279,6 +3768,12 @@ function BTV:RefreshSimpleBarPage(key)
 	-- rule for bar 1 (they stay fully functional regardless of
 	-- useDefaultLayout).
 	ApplyDefaultLayoutGating(page, BTVanillaDB.useDefaultLayout ~= true)
+
+	-- Default-profile lock (independent of the useDefaultLayout gate
+	-- above) - every simple page is also subject to that layout lock
+	-- (the ApplyDefaultLayoutGating call just above), so the banner
+	-- should reflect it here too.
+	self:ApplyProfileLockGating(page, true)
 end
 
 -- Config table for each simple page - populated here (rather than at
@@ -3636,31 +4131,40 @@ function BTV:RefreshBarSettingsPage(barId)
 	end
 
 	-------------------------------------------------------------------------
-	-- Default-layout gating (bar 1 ONLY - major architecture migration,
-	-- Phase 1 of 2: bars 2-5 are now real Bar.lua bar objects, always
-	-- fully editable exactly like a custom bar id 6+, never gated by
-	-- useDefaultLayout at all - that toggle now only has meaning for bar
-	-- 1's position/size/spacing controls. Bar 1 itself is ALSO a real
-	-- Bar.lua bar object as of the Main Bar migration (Phase 2), but its
-	-- settings page keeps this same gating - useDefaultLayout locking bar
-	-- 1's drag/resize is a deliberately preserved behavior, per that
-	-- migration's Part 4). The enable checkbox and Reset to Blizzard
-	-- Default button are deliberately excluded even for bar 1, per the
-	-- spec - they stay fully functional regardless of useDefaultLayout.
+	-- Default-layout lock, numbered default bars (1-5) - user decision:
+	-- while "Use Default Blizzard Layout" is on, every one of these
+	-- bars' controls locks EXCEPT enable/disable, exactly like the
+	-- Default-profile lock - both reasons share the same combined lock
+	-- and control list now (BTV:ApplyProfileLockGating below), rather
+	-- than this being a separate, narrower, bar-1-only gate.
 	-------------------------------------------------------------------------
 
-	if barId == 1 then
-		ApplyDefaultLayoutGating(
-			page,
-			BTVanillaDB.useDefaultLayout ~= true
-		)
-	end
+	-- Default-profile lock (independent of the useDefaultLayout gate
+	-- above) - applies to every bar page, not just numbered default bars.
+	-- Only numbered default bars (1-5) are also subject to the layout
+	-- lock, so only their banner/controls should reflect that lock too.
+	self:ApplyProfileLockGating(page, page.isDefault)
 
 	-- Locks this page's own spacing/buttonSize sliders whenever the
 	-- corresponding global override (General tab) is on, so a bar page
 	-- opened after the global toggle was already enabled still starts
 	-- locked.
 	BTV:RefreshBarPageGlobalOverrideGating(page)
+
+	-- Bar 5 can only be enabled while bar 4 is (matches native's own
+	-- dependency, DefaultBars.lua's SetDefaultBarEnabled) unless the
+	-- General tab's bypass option is on. Runs AFTER ApplyProfileLockGating
+	-- (not alongside the SetChecked block above) - that call unconditionally
+	-- UNLOCKS enableCheckbox whenever the Default-profile/layout lock
+	-- itself isn't active (its own exemption for numbered default bars),
+	-- which was clobbering this lock when placed earlier in the function.
+	if page.enableCheckbox and barId == 5 then
+		local bar4Cfg = BTVanillaDB.defaultBars[4]
+		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
+			or (bar4Cfg and bar4Cfg.enabled == true)
+
+		LockControl(page.enableCheckbox, not allowed)
+	end
 end
 
 -- Locks (dims, EnableMouse(false)) a full bar page's own spacing/
@@ -3674,15 +4178,24 @@ function BTV:RefreshBarPageGlobalOverrideGating(page)
 		return
 	end
 
+	-- Must also respect the Default-profile/Default-layout lock
+	-- (BTV:ApplyProfileLockGating, called just before this in
+	-- RefreshBarSettingsPage/RefreshSimpleBarPage) - without this, this
+	-- function unconditionally RE-ENABLES the slider whenever the global
+	-- override checkbox happens to be off, blindly overwriting whatever
+	-- that other lock had just set.
+	local alsoLocked = self:IsDefaultProfileActive()
+		or (page.isDefault and BTVanillaDB.useDefaultLayout == true)
+
 	if page.spacingSlider then
-		local locked = BTVanillaDB.globalSpacingEnabled == true
+		local locked = alsoLocked or (BTVanillaDB.globalSpacingEnabled == true)
 
 		page.spacingSlider:EnableMouse(not locked)
 		page.spacingSlider:SetAlpha(locked and 0.5 or 1)
 	end
 
 	if page.buttonSizeSlider then
-		local locked = BTVanillaDB.globalButtonSizeEnabled == true
+		local locked = alsoLocked or (BTVanillaDB.globalButtonSizeEnabled == true)
 
 		page.buttonSizeSlider:EnableMouse(not locked)
 		page.buttonSizeSlider:SetAlpha(locked and 0.5 or 1)
@@ -3768,6 +4281,12 @@ local SETTINGS_CHROME_BOTTOM = 18
 -- happens to measure shorter than this.
 local SETTINGS_CONTENT_MIN_HEIGHT = 260
 
+-- The settings window can never grow taller than this fraction of the
+-- player's actual screen height - see ApplySettingsHeightFromCandidates'
+-- own comment on why capping height alone (the window is CENTER-anchored)
+-- is enough to guarantee top/bottom screen padding too.
+local SETTINGS_MAX_HEIGHT_RATIO = 0.9
+
 -- Appends frame to list only if non-nil, at the next free index (n+1).
 -- table.getn/# have undefined behavior on tables with nil "holes" (Lua
 -- 5.0 manual) - since several of the candidate controls below are nil
@@ -3806,26 +4325,44 @@ local function ConsiderFrameBottom(frame, lowestBottom)
 	return lowestBottom
 end
 
--- Resizes contentPanel/listPanel/the outer window to fit the lowest
--- bottom edge found across every frame in candidateList, floored at
--- SETTINGS_CONTENT_MIN_HEIGHT.
-local function ApplySettingsHeightFromCandidates(candidateList)
-	if not settingsFrame then
+-- Resizes `scrollChildPanel` (settingsFrame.contentPanel/generalPanel/
+-- profilesPanel - whichever view is currently being fitted)/listPanel/the
+-- outer window to fit the lowest bottom edge found across every frame in
+-- candidateList, floored at SETTINGS_CONTENT_MIN_HEIGHT and CEILED at the
+-- screen-relative max (BTV:UpdateScrollFrame turns scrolling on for
+-- whatever doesn't fit within that ceiling).
+local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel)
+	if not settingsFrame or not scrollFrame or not scrollChildPanel then
 		return
 	end
 
-	-- Computed from the window's own top edge rather than
-	-- contentPanel:GetTop() directly - contentPanel is Hide()'n while the
-	-- General view is showing (ShowGeneralView), and GetTop()/GetBottom()
-	-- only return real values for currently-shown frames, so relying on
-	-- it here would silently break height-fitting for that view.
-	local frameTop = settingsFrame:GetTop()
+	-- settingsFrame is CENTER-anchored to UIParent, so its own top edge is
+	-- always (screen height / 2) + (its own current height / 2) - computed
+	-- this way rather than settingsFrame:GetTop() (an anchor-derived read)
+	-- because GetHeight() reflects an explicit SetHeight() call
+	-- immediately (a direct property), while GetTop() live-tested as NOT
+	-- reliably resolved yet the instant this function re-runs right after
+	-- a DIFFERENT view's own SetHeight call just changed it (switching
+	-- straight from a short view to a tall one produced a viewport taller
+	-- than the window around it, self-correcting the next time the same
+	-- view was shown - this sidesteps that class of bug entirely).
+	local frameHeight = settingsFrame:GetHeight()
 
-	if not frameTop then
+	if not frameHeight then
 		return
 	end
 
-	local top = frameTop - SETTINGS_CHROME_TOP
+	local top = (GetScreenHeight() / 2) + (frameHeight / 2) - SETTINGS_CHROME_TOP
+
+	-- Every candidate below is a descendant of scrollChildPanel, which is
+	-- PERMANENTLY the given scrollFrame's scroll child (set once, at
+	-- creation - see CreateSettingsFrame/BTV:CreateWideContentScrollFrame's
+	-- own comments on why nothing here ever re-targets SetScrollChild at
+	-- a different frame) - its GetBottom() reads as a real SCREEN
+	-- position that shifts with the current scroll offset, so scroll has
+	-- to be reset to the top BEFORE measuring or a previously-scrolled
+	-- view would measure as shorter than it really is.
+	scrollFrame:SetVerticalScroll(0)
 
 	local lowestBottom = nil
 	local i
@@ -3845,11 +4382,32 @@ local function ApplySettingsHeightFromCandidates(candidateList)
 		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
 	end
 
-	settingsFrame.contentPanel:SetHeight(contentHeight)
-	settingsFrame.listPanel:SetHeight(contentHeight)
+	-- Hard screen-relative ceiling on the VISIBLE viewport (never on the
+	-- real content height above, which BTV:UpdateScrollFrame needs
+	-- unclamped to size the scrollchild correctly) - the window is
+	-- CENTER-anchored to UIParent, so capping height alone guarantees at
+	-- least (1 - SETTINGS_MAX_HEIGHT_RATIO) / 2 of screen height as
+	-- padding above AND below it.
+	local maxViewportHeight = (GetScreenHeight() * SETTINGS_MAX_HEIGHT_RATIO)
+		- SETTINGS_CHROME_TOP - SETTINGS_CHROME_BOTTOM
+
+	local viewportHeight = contentHeight
+
+	if viewportHeight > maxViewportHeight then
+		viewportHeight = maxViewportHeight
+	end
+
+	BTV:UpdateScrollFrame(
+		scrollFrame,
+		scrollChildPanel,
+		contentHeight,
+		viewportHeight
+	)
+
+	settingsFrame.listPanel:SetHeight(viewportHeight)
 
 	settingsFrame:SetHeight(
-		contentHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
+		viewportHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
 	)
 end
 
@@ -3952,7 +4510,11 @@ function BTV:FitSettingsWindowToBarPage(barId)
 		end
 	end
 
-	ApplySettingsHeightFromCandidates(candidates)
+	-- The scrollchild is settingsFrame.contentPanel itself, NOT `page` -
+	-- every bar page uses page:SetAllPoints(settingsFrame.contentPanel)
+	-- (GetOrCreateBarPage), so `page` always just mirrors contentPanel's
+	-- own rect rather than having independently meaningful dimensions.
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentScrollFrame, settingsFrame.contentPanel)
 end
 
 -- General view: no bar list is shown here, just the checkbox and its
@@ -3992,12 +4554,13 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeCheckbox)
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeSlider)
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeValueText)
+	n = AppendCandidate(candidates, n, panel.bypassBar2DepCheckbox)
 
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
 
-	ApplySettingsHeightFromCandidates(candidates)
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
 end
 
 -------------------------------------------------------------------------
@@ -4017,10 +4580,23 @@ function BTV:ShowBarPage(barId)
 	-- every caller remembering to do it.
 	settingsFrame.currentView = "bars"
 	settingsFrame.listPanel:Show()
+	settingsFrame.contentScrollFrame:Show()
 	settingsFrame.contentPanel:Show()
+
+	if settingsFrame.generalScrollFrame then
+		settingsFrame.generalScrollFrame:Hide()
+	end
 
 	if settingsFrame.generalPanel then
 		settingsFrame.generalPanel:Hide()
+	end
+
+	if settingsFrame.profilesScrollFrame then
+		settingsFrame.profilesScrollFrame:Hide()
+	end
+
+	if settingsFrame.profilesPanel then
+		settingsFrame.profilesPanel:Hide()
 	end
 
 	local id
@@ -4042,8 +4618,9 @@ function BTV:ShowBarPage(barId)
 	-- that it (and the always-visible bar list) are both on-screen and
 	-- positioned - GetTop()/GetBottom() only return real values for
 	-- currently-shown frames, so this has to run after target:Show()
-	-- above, not before it.
-	self:FitSettingsWindowToBarPage(barId)
+	-- above, not before it. Deferred one frame (DeferFit) so its own
+	-- candidates' positions have settled before anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToBarPage(barId) end)
 end
 
 -------------------------------------------------------------------------
@@ -4078,41 +4655,44 @@ local function ExtraBarAssignmentLabel(assignedId)
 	return "Extra Bar " .. tostring(assignedId - BTV.EXTRA_BAR_ID_START + 1)
 end
 
-local function CycleExtraBarAssignment(current, delta)
-	current = current or 0
-
-	local idx = 1
+-- Same 5 choices (Unassigned + Extra Bar 1-4) for every assignment row, so
+-- the option list itself only ever needs building once. { value = 0 }
+-- represents EXTRA_BAR_ASSIGNMENT_CYCLE's own "Unassigned" sentinel -
+-- translated to/from a real nil only at RefreshValue/onSelect's own
+-- BTVanillaDB read/write boundary below.
+local function BuildExtraBarAssignmentDropdownOptions()
+	local options = {}
 	local i
 
 	for i = 1, table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) do
-		if EXTRA_BAR_ASSIGNMENT_CYCLE[i] == current then
-			idx = i
-			break
-		end
+		local rawValue = EXTRA_BAR_ASSIGNMENT_CYCLE[i]
+
+		options[i] = {
+			text = ExtraBarAssignmentLabel(rawValue ~= 0 and rawValue or nil),
+			value = rawValue,
+		}
 	end
 
-	idx = idx + delta
-
-	if idx < 1 then
-		idx = table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE)
-	elseif idx > table.getn(EXTRA_BAR_ASSIGNMENT_CYCLE) then
-		idx = 1
-	end
-
-	return EXTRA_BAR_ASSIGNMENT_CYCLE[idx]
+	return options
 end
 
--- Builds one "< Extra Bar N >" cyclic-assignment row - see
--- EXTRA_BAR_ASSIGNMENT_CYCLE's own comment on why this fallback widget
--- kind was chosen over a true dropdown. getFn must return a raw
--- BTVanillaDB value (a real Extra Bar id 6-9, or nil/false for
--- unassigned) - never the 0 sentinel, which is purely an internal cycling
--- detail of this function.
-local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
+local EXTRA_BAR_ASSIGNMENT_DROPDOWN_OPTIONS = BuildExtraBarAssignmentDropdownOptions()
+
+-- Builds one Extra Bar assignment row, styled to match the real native
+-- dropdown the Profiles tab uses (BTV:CreateInlineDropdown) rather than
+-- the old hand-built "< Extra Bar N >" cycle-button pair. dropdownName
+-- must be a unique, stable global frame name (UIDropDownMenuTemplate's own
+-- requirement - see BTV:CreateInlineDropdown's header comment); callers
+-- pass one keyed off the row's stable identity (stance index / "page bar")
+-- so repeated rebuilds re-use the same underlying frame. getFn must return
+-- a raw BTVanillaDB value (a real Extra Bar id 6-9, or nil/false for
+-- unassigned) - never the 0 sentinel, which is purely an internal
+-- EXTRA_BAR_ASSIGNMENT_CYCLE/dropdown-options detail of this function.
+local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn, dropdownName)
 	local row = CreateFrame("Frame", nil, parent)
 
 	row:SetWidth(500)
-	row:SetHeight(22)
+	row:SetHeight(32)
 
 	local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -4121,45 +4701,26 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn)
 	label:SetJustifyH("LEFT")
 	label:SetText(labelText)
 
-	local leftButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
+	local dropdown = BTV:CreateInlineDropdown(row, 140, dropdownName)
 
-	leftButton:SetWidth(24)
-	leftButton:SetHeight(22)
-	leftButton:SetPoint("LEFT", label, "RIGHT", 8, 0)
-	leftButton:SetText("<")
-
-	local valueText = row:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	valueText:SetPoint("LEFT", leftButton, "RIGHT", 8, 0)
-	valueText:SetWidth(90)
-	valueText:SetJustifyH("CENTER")
-
-	local rightButton = CreateFrame("Button", nil, row, "UIPanelButtonTemplate")
-
-	rightButton:SetWidth(24)
-	rightButton:SetHeight(22)
-	rightButton:SetPoint("LEFT", valueText, "RIGHT", 8, 0)
-	rightButton:SetText(">")
+	dropdown:SetPoint("LEFT", label, "RIGHT", -8, -2)
+	dropdown:SetOptions(EXTRA_BAR_ASSIGNMENT_DROPDOWN_OPTIONS)
 
 	local function RefreshValue()
-		valueText:SetText(ExtraBarAssignmentLabel(getFn()))
+		local current = getFn() or 0
+
+		dropdown:SetSelected(current, ExtraBarAssignmentLabel(current ~= 0 and current or nil))
 	end
 
-	leftButton:SetScript("OnClick", function()
-		local nextValue = CycleExtraBarAssignment(getFn() or 0, -1)
-
-		setFn(nextValue ~= 0 and nextValue or nil)
+	dropdown.onSelect = function(value)
+		setFn(value ~= 0 and value or nil)
 		RefreshValue()
-	end)
-
-	rightButton:SetScript("OnClick", function()
-		local nextValue = CycleExtraBarAssignment(getFn() or 0, 1)
-
-		setFn(nextValue ~= 0 and nextValue or nil)
-		RefreshValue()
-	end)
+	end
 
 	RefreshValue()
+
+	-- Exposed so ApplyProfileLockGating can lock this dropdown too.
+	row.dropdown = dropdown
 
 	return row
 end
@@ -4233,7 +4794,11 @@ function BTV:RebuildMainBarAssignmentRows()
 					BTVanillaDB.mainBarStanceBarAssignment[s] = value
 
 					BTV:RefreshMainBarSlots()
-				end
+				end,
+				-- Named by stance index (stable across rebuilds within the
+				-- same class/session) - required, not optional, per
+				-- CreateExtraBarAssignmentRow's own dropdownName comment.
+				"BTVanillaMainBarStanceAssignmentDropdown" .. tostring(s)
 			)
 
 			row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
@@ -4241,7 +4806,7 @@ function BTV:RebuildMainBarAssignmentRows()
 			rowIndex = rowIndex + 1
 			page.assignmentRows[rowIndex] = row
 
-			y = y - 26
+			y = y - 34
 		end
 	end
 
@@ -4256,7 +4821,8 @@ function BTV:RebuildMainBarAssignmentRows()
 				BTVanillaDB.mainBarPageBarAssignment = value
 
 				BTV:RefreshMainBarSlots()
-			end
+			end,
+			"BTVanillaMainBarPageBarAssignmentDropdown"
 		)
 
 		row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
@@ -4264,7 +4830,7 @@ function BTV:RebuildMainBarAssignmentRows()
 		rowIndex = rowIndex + 1
 		page.assignmentRows[rowIndex] = row
 
-		y = y - 26
+		y = y - 34
 	end
 
 	-- Never 0 - a zero-height frame is a harmless but needless edge case
@@ -4289,27 +4855,13 @@ function BTV:GetOrCreateGeneralPanel()
 		return settingsFrame.generalPanel
 	end
 
-	local panel = CreateFrame(
-		"Frame",
-		nil,
-		settingsFrame
-	)
+	-- Own dedicated scrollframe+scrollchild pair (BTV:CreateWideContentScrollFrame)
+	-- - see CreateSettingsFrame's own comment on why this doesn't share
+	-- the Bars view's contentScrollFrame.
+	local scrollFrame, panel = BTV:CreateWideContentScrollFrame("BTVanillaSettingsGeneralScrollFrame")
 
-	panel:SetPoint(
-		"TOPLEFT",
-		settingsFrame.listPanel,
-		"TOPLEFT",
-		0,
-		0
-	)
-
-	panel:SetPoint(
-		"BOTTOMRIGHT",
-		settingsFrame.contentPanel,
-		"BOTTOMRIGHT",
-		0,
-		0
-	)
+	settingsFrame.generalScrollFrame = scrollFrame
+	scrollFrame:Hide()
 
 	local title = panel:CreateFontString(
 		nil,
@@ -5512,6 +6064,52 @@ function BTV:GetOrCreateGeneralPanel()
 	panel.globalButtonSizeSlider = globalButtonSizeSlider
 	panel.globalButtonSizeValueText = globalButtonSizeValueText
 
+	-- Right ActionBar 2 dependency bypass (DefaultBars.lua's
+	-- SetDefaultBarEnabled/FixRightActionBar2Checkbox) - lets bar 5 be
+	-- toggled independent of bar 4, in both the addon and the native
+	-- Options checkbox.
+	local bypassBar2DepCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralBypassBar2DepCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	bypassBar2DepCheckbox:SetWidth(24)
+	bypassBar2DepCheckbox:SetHeight(24)
+
+	-- Anchored off globalButtonSizeSlider itself (a reliable left edge),
+	-- NOT globalButtonSizeValueText - same left-alignment bug as before
+	-- (value-text FontStrings only have a bare "TOP" anchor, so they
+	-- auto-center under their slider and their BOTTOMLEFT sits near the
+	-- slider's horizontal CENTER, not its left edge). Always anchor new
+	-- General-tab controls off a slider/checkbox's own edge, never off a
+	-- *ValueText FontString.
+	bypassBar2DepCheckbox:SetPoint(
+		"TOPLEFT",
+		globalButtonSizeSlider,
+		"BOTTOMLEFT",
+		-20,
+		-28
+	)
+
+	bypassBar2DepCheckbox:SetScript(
+		"OnClick",
+		function()
+			BTVanillaDB.bypassRightActionBar2Dependency = this:GetChecked() and true or false
+
+			BTV:FixRightActionBar2Checkbox()
+		end
+	)
+
+	local bypassBar2DepLabel = getglobal(bypassBar2DepCheckbox:GetName() .. "Text")
+
+	if bypassBar2DepLabel then
+		bypassBar2DepLabel:SetText("Allow Right ActionBar 2 independent of Right ActionBar 1")
+	end
+
+	panel.bypassBar2DepCheckbox = bypassBar2DepCheckbox
+
 	-- "Enable Better Experience Bar" (round 16 part 2, Part B) - RELOCATED
 	-- to the Experience Bar's own settings page (round 17 item 5,
 	-- CreateSimpleBarPage's own "if key == 'expbar'" block) alongside its
@@ -5523,6 +6121,192 @@ function BTV:GetOrCreateGeneralPanel()
 	settingsFrame.generalPanel = panel
 
 	return panel
+end
+
+-------------------------------------------------------------------------
+-- Profiles tab panel
+--
+-- Built lazily on first use, exactly like GetOrCreateGeneralPanel -
+-- anchored the same way, spanning the combined listPanel+contentPanel
+-- area since the bar list has no meaning here either.
+-------------------------------------------------------------------------
+
+-- Sentinel dropdown entry - not a real profile name, so a normal profile
+-- can never collide with it. Chosen when the user wants to open the
+-- create-new-profile dialog straight from the profile dropdown.
+local CREATE_NEW_PROFILE_SENTINEL = "+ Create new profile"
+
+function BTV:GetOrCreateProfilesPanel()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	if settingsFrame.profilesPanel then
+		return settingsFrame.profilesPanel
+	end
+
+	-- Own dedicated scrollframe+scrollchild pair (BTV:CreateWideContentScrollFrame)
+	-- - see CreateSettingsFrame's own comment on why this doesn't share
+	-- the Bars view's contentScrollFrame.
+	local scrollFrame, panel = BTV:CreateWideContentScrollFrame("BTVanillaSettingsProfilesScrollFrame")
+
+	settingsFrame.profilesScrollFrame = scrollFrame
+	scrollFrame:Hide()
+
+	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", panel, "TOPLEFT", INDENT_SECTION, -14)
+	title:SetText("Profiles")
+	panel.title = title
+
+	local label = panel:CreateFontString(nil, "OVERLAY", "GameFontNormal")
+	label:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -20)
+	label:SetText("Active Profile:")
+	panel.label = label
+
+	local dropdown = BTV:CreateInlineDropdown(panel, 220, "BTVanillaProfilesDropdown")
+	dropdown:ClearAllPoints()
+	dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -6)
+	panel.profileDropdown = dropdown
+
+	dropdown.onSelect = function(value)
+		if value == CREATE_NEW_PROFILE_SENTINEL then
+			BTV:ShowCreateProfileDialog(function()
+				-- On validation failure the dialog already stayed on the
+				-- old profile (CreateProfile/SwitchProfile only reload on
+				-- success) - re-sync the dropdown text either way so it
+				-- never shows the sentinel as if it were a real selection.
+				BTV:RefreshProfilesPanel()
+			end)
+
+			return
+		end
+
+		if value and value ~= BTVanillaCharDB.activeProfile then
+			BTV:SwitchProfile(value)
+		end
+	end
+
+	local copyButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	copyButton:SetWidth(200)
+	copyButton:SetHeight(22)
+	copyButton:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -14)
+	copyButton:SetText("Copy from other profile")
+	panel.copyButton = copyButton
+
+	copyButton:SetScript("OnClick", function()
+		local otherProfiles = {}
+		local names = BTV:GetProfileNames()
+		local i
+
+		for i = 1, table.getn(names) do
+			if names[i] ~= BTVanillaCharDB.activeProfile then
+				table.insert(otherProfiles, names[i])
+			end
+		end
+
+		BTV:ShowDialog({
+			title = "Copy From Other Profile",
+			message = "Choose another profile to copy all settings from. ATTENTION: " ..
+				"This action will override all settings present on the current " ..
+				"profile and is not reversible.",
+			mode = "dropdown",
+			options = otherProfiles,
+			buttons = {
+				{
+					text = "Accept",
+					isDefault = false,
+					onClick = function(value)
+						if value then
+							BTV:CopyProfileInto(value, BTVanillaCharDB.activeProfile)
+							BTV:SaveActiveProfileData()
+							ReloadUI()
+						end
+					end,
+				},
+				{ text = "Cancel", onClick = function() end },
+			},
+		})
+	end)
+
+	local deleteButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+	deleteButton:SetWidth(200)
+	deleteButton:SetHeight(22)
+	deleteButton:SetPoint("TOPLEFT", copyButton, "BOTTOMLEFT", 0, -8)
+	deleteButton:SetText("Delete profile")
+	panel.deleteButton = deleteButton
+
+	deleteButton:SetScript("OnClick", function()
+		BTV:ShowDialog({
+			title = "Delete Profile",
+			message = "ATTENTION: This action will delete all settings present " ..
+				"on the current profile and is not reversible.",
+			mode = "confirm",
+			buttons = {
+				{
+					text = "Accept",
+					onClick = function()
+						BTV:DeleteProfile(BTVanillaCharDB.activeProfile)
+						ReloadUI()
+					end,
+				},
+				{ text = "Cancel", onClick = function() end },
+			},
+		})
+	end)
+
+	panel:Hide()
+
+	settingsFrame.profilesPanel = panel
+
+	return panel
+end
+
+-- Refreshes the dropdown's option list/current selection and the Copy/
+-- Delete buttons' visibility (only shown while a non-Default profile is
+-- active, per spec) - called whenever the Profiles view is (re)shown and
+-- after any profile CRUD action that doesn't already trigger a ReloadUI.
+function BTV:RefreshProfilesPanel()
+	local panel = self:GetOrCreateProfilesPanel()
+
+	BTVanillaCharDB = BTVanillaCharDB or { activeProfile = self.DEFAULT_PROFILE_NAME }
+
+	local names = self:GetProfileNames()
+	local dropdownOptions = {}
+	local i
+
+	for i = 1, table.getn(names) do
+		dropdownOptions[i] = names[i]
+	end
+
+	table.insert(dropdownOptions, CREATE_NEW_PROFILE_SENTINEL)
+
+	panel.profileDropdown:SetOptions(dropdownOptions)
+	panel.profileDropdown:SetSelected(BTVanillaCharDB.activeProfile)
+
+	if BTVanillaCharDB.activeProfile ~= self.DEFAULT_PROFILE_NAME then
+		panel.copyButton:Show()
+		panel.deleteButton:Show()
+	else
+		panel.copyButton:Hide()
+		panel.deleteButton:Hide()
+	end
+end
+
+function BTV:FitSettingsWindowToProfilesView()
+	if not settingsFrame or not settingsFrame.profilesPanel then
+		return
+	end
+
+	local panel = settingsFrame.profilesPanel
+
+	local candidates = {}
+	local n = 0
+
+	n = AppendCandidate(candidates, n, panel.profileDropdown)
+	n = AppendCandidate(candidates, n, panel.copyButton)
+	n = AppendCandidate(candidates, n, panel.deleteButton)
+
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.profilesScrollFrame, panel)
 end
 
 function BTV:RefreshGeneralPanel()
@@ -5597,6 +6381,8 @@ function BTV:RefreshGeneralPanel()
 	panel.globalButtonSizeValueText:SetShown(buttonSizeDisplayed)
 	panel.globalButtonSizeSlider:EnableMouse(not vanillaBorderStyleLocked)
 	panel.globalButtonSizeSlider:SetAlpha(vanillaBorderStyleLocked and 0.5 or 1)
+
+	panel.bypassBar2DepCheckbox:SetChecked(BTVanillaDB.bypassRightActionBar2Dependency == true)
 
 	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
 	-- unchecks this.
@@ -5684,15 +6470,73 @@ function BTV:ShowGeneralView()
 	end
 
 	settingsFrame.listPanel:Hide()
+	settingsFrame.contentScrollFrame:Hide()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "general"
+
+	-- Ensure the General panel (and its own dedicated scrollframe) exist
+	-- before trying to Show() the scrollframe below.
+	self:GetOrCreateGeneralPanel()
+
+	if settingsFrame.profilesScrollFrame then
+		settingsFrame.profilesScrollFrame:Hide()
+	end
+
+	if settingsFrame.profilesPanel then
+		settingsFrame.profilesPanel:Hide()
+	end
+
+	settingsFrame.generalScrollFrame:Show()
 
 	self:RefreshGeneralPanel()
 	self:GetOrCreateGeneralPanel():Show()
 
 	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
-	-- :Show() so GetBottom() reads real values.
-	self:FitSettingsWindowToGeneralView()
+	-- :Show() so GetBottom() reads real values. Deferred one frame
+	-- (DeferFit) so its own candidates' positions have settled before
+	-- anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
+end
+
+function BTV:ShowProfilesView()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	local id
+	local page
+
+	for id, page in pairs(settingsFrame.pages) do
+		page:Hide()
+	end
+
+	settingsFrame.listPanel:Hide()
+	settingsFrame.contentScrollFrame:Hide()
+	settingsFrame.contentPanel:Hide()
+	settingsFrame.currentView = "profiles"
+
+	-- Ensure the Profiles panel (and its own dedicated scrollframe) exist
+	-- before trying to Show() the scrollframe below.
+	self:GetOrCreateProfilesPanel()
+
+	if settingsFrame.generalScrollFrame then
+		settingsFrame.generalScrollFrame:Hide()
+	end
+
+	if settingsFrame.generalPanel then
+		settingsFrame.generalPanel:Hide()
+	end
+
+	settingsFrame.profilesScrollFrame:Show()
+
+	self:RefreshProfilesPanel()
+	self:GetOrCreateProfilesPanel():Show()
+
+	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
+	-- :Show() so GetBottom() reads real values. Deferred one frame
+	-- (DeferFit) so its own candidates' positions have settled before
+	-- anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
 end
 
 -------------------------------------------------------------------------
@@ -5799,6 +6643,43 @@ local function CreateBarListRow(barId, isDefault, cfg)
 		)
 
 		row.checkbox = checkbox
+
+		-- Only exempt for numbered default bars (2-5 - bar 1 never gets a
+		-- sidebar checkbox at all) from BOTH the Default-profile AND
+		-- Default-layout locks, matching page.enableCheckbox's own
+		-- exemption on those pages (BTV:ApplyProfileLockGating). Bag Bar/
+		-- Micro Menu and Extra Bars (6-9) get NO exemption - their
+		-- checkbox locks exactly like every other control on their page,
+		-- under the Default-profile lock only (layout lock never applies
+		-- to them).
+		local isNumberedDefaultBar = isDefault and type(barId) == "number" and barId ~= 1
+
+		if not isNumberedDefaultBar then
+			LockControl(checkbox, BTV:IsDefaultProfileActive())
+		end
+
+		-- Bar 5's sidebar checkbox mirrors its page's own enableCheckbox
+		-- lock (see RefreshBarSettingsPage) - only enabled while bar 4 is,
+		-- unless the bypass option is on.
+		if isNumberedDefaultBar and barId == 5 then
+			local bar4Cfg = BTVanillaDB.defaultBars[4]
+			local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
+				or (bar4Cfg and bar4Cfg.enabled == true)
+
+			LockControl(checkbox, not allowed)
+		end
+	end
+
+	-- Dim (not disable - navigating to bar 5's own page is still how you
+	-- reach the bypass-aware enableCheckbox there) the row button itself
+	-- too, so its locked state is visible at a glance in the list, not
+	-- just on the small checkbox beside it.
+	if isDefault and barId == 5 then
+		local bar4Cfg = BTVanillaDB.defaultBars[4]
+		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
+			or (bar4Cfg and bar4Cfg.enabled == true)
+
+		row:SetAlpha(allowed and 1 or 0.5)
 	end
 
 	return row
@@ -6022,13 +6903,15 @@ function BTV:ShowSettingsFrame()
 	if not settingsFrame.activeBarId then
 		self:ShowBarPage(1)
 	elseif settingsFrame.currentView == "general" then
-		self:FitSettingsWindowToGeneralView()
+		DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
+	elseif settingsFrame.currentView == "profiles" then
+		DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
 	else
 		-- RefreshBarList (above) just rebuilt the bar-list rows from
 		-- scratch (e.g. a bar added/removed while the window was closed),
 		-- so even though the active page itself isn't changing here, the
 		-- window still needs to refit against the new row count.
-		self:FitSettingsWindowToBarPage(settingsFrame.activeBarId)
+		DeferFit(function() BTV:FitSettingsWindowToBarPage(settingsFrame.activeBarId) end)
 	end
 end
 

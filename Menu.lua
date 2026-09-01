@@ -22,6 +22,15 @@ local function InitializeMenu()
 	info.checked = BTV:IsEditMode()
 	info.func = function() BTV:ToggleEditMode() end
 	info.keepShownOnClick = true
+
+	if BTV:IsDefaultProfileActive() then
+		info.disabled = 1
+		info.tooltipWhileDisabled = 1
+		info.tooltipOnButton = 1
+		info.tooltipTitle = "Configure Layout"
+		info.tooltipText = "A profile other than the Default profile needs to be active to use Edit Layout mode."
+	end
+
 	UIDropDownMenu_AddButton(info)
 
 	info = {}

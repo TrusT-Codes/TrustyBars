@@ -2,7 +2,8 @@
 ## Title: BTVanilla
 ## Notes: Bartender2-style action bar addon for Vanilla 1.12.1 (SuperWoW + nampower + ClassicAPI + UnitXP_SP3). Multi-bar grid engine, minimap button, and settings shell.
 ## Author: BTVanilla Project
-## SavedVariables: BTVanillaDB
+## SavedVariables: BTVanillaDB, BTVanillaProfilesDB
+## SavedVariablesPerCharacter: BTVanillaCharDB
 
 Core.lua
 DefaultBars.lua
@@ -11,5 +12,6 @@ Button.lua
 HoverBind.lua
 Minimap.lua
 Menu.lua
+UIWidgets.lua
 Settings.lua
 bindings.xml

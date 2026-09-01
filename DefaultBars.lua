@@ -824,6 +824,218 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	if id == 2 and enabled ~= wasEnabled and BTVanillaDB.useDefaultLayout ~= false then
 		self:ReflowStanceBarForBar2Toggle(enabled)
 	end
+
+	-- Matches native's own dependency (bar 5 requires bar 4 - see
+	-- FixRightActionBar2Checkbox) - user can opt out via the General tab.
+	if id == 4 then
+		if enabled ~= wasEnabled and not enabled and not BTVanillaDB.bypassRightActionBar2Dependency then
+			self:SetDefaultBarEnabled(5, false)
+		end
+
+		-- Refresh bar 5's own Settings UI (sidebar + page enableCheckbox)
+		-- every time bar 4's state changes, in EITHER direction - it
+		-- locks/unlocks based on bar 4 (RefreshBarSettingsPage/
+		-- CreateBarListRow), and SetDefaultBarEnabled alone doesn't
+		-- refresh any UI on its own (only
+		-- ReconcileDefaultBarEnabledFromNative does, for whichever id
+		-- IT'S reconciling - id 4 here, never 5).
+		if enabled ~= wasEnabled and BTV:IsSettingsFrameCreated() then
+			BTV:RefreshBarList()
+			BTV:RefreshBarSettingsPage(5)
+		end
+	end
+
+	-- Mirror our own state into the native "Show ... ActionBar" global
+	-- (Interface Options -> Action Bars) purely so that checkbox doesn't
+	-- look stuck/wrong to the player - our own cfg.enabled above stays
+	-- the sole VISUAL authority, since bars 2-5's real native buttons are
+	-- permanently Show()-no-op'd regardless (CreateFixedSlotDefaultBars),
+	-- so calling MultiActionBar_Update() here can never actually make a
+	-- real native button reappear.
+	local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
+
+	if nativeGlobal then
+		-- STRING "1", not the number 1 - matches this project's own
+		-- confirmed-working convention for this exact class of native
+		-- global (LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS, both live-
+		-- confirmed stored/compared as the string "1"/"0", not a
+		-- boolean or number - see docs/01-Environment-Capability-
+		-- Analysis.md §5i and Button.lua's own IsAlwaysShowMultibars).
+		--
+		-- Deliberately does NOT call MultiActionBar_Update() here (it
+		-- did, until a live-tested regression: "Right ActionBar 2"
+		-- (bar 5) became stuck unable to re-enable via the real Options
+		-- checkbox after "Right ActionBar 1" (bar 4) had been toggled
+		-- off once, even after turning bar 4 back on) - real vanilla's
+		-- own MultiActionBar_Update almost certainly enforces a
+		-- dependency (bar 5 requires bar 4) by auto-clearing bar 5's
+		-- global whenever bar 4's turns off, and this write-back path
+		-- calling it (on top of the ReconcileDefaultBarEnabledFromNative
+		-- hook below re-entering this same function, which used to also
+		-- call it) ran that native logic far more often than a normal
+		-- single native click ever would, wedging bar 5's global at nil
+		-- in a way real player interaction doesn't reproduce. Just
+		-- setting the global is enough for the real Options panel's own
+		-- checkbox display to read correctly next time it's shown/
+		-- refreshed - it doesn't need MultiActionBar_Update()'s other
+		-- side effects for that.
+		setglobal(nativeGlobal, enabled and "1" or nil)
+
+		-- Same live-update gap as FixRightActionBar2Checkbox: this
+		-- custom Options framework only reads the global into the
+		-- checkbox's own checked-display at panel-show time, not
+		-- reactively - so if the panel's already open when WE write the
+		-- global, its own checkbox stays visually stale until closed/
+		-- reopened unless set directly too.
+		local control = getglobal("OptionsFrameCheckButton" .. tostring(id) .. "Control")
+
+		if control and control.SetChecked then
+			control:SetChecked(enabled)
+		end
+	end
+
+	self:FixRightActionBar2Checkbox()
+end
+
+-- Same-session reactive sync: reconciles our OWN cfg.enabled (bars 2-5)
+-- FROM the native SHOW_MULTI_ACTIONBAR_1-4 globals whenever
+-- MultiActionBar_Update runs (fires on the real Interface Options
+-- checkbox's own OnClick, among other native triggers). Live-confirmed
+-- via /btv diag11 that toggling the real checkbox correctly flips both
+-- the global AND the real MultiBarLeft/Right frame's shown state on this
+-- fork, so this is safe to trust reactively WITHIN the current session -
+-- never at login (see BTV.SHOW_MULTI_ACTIONBAR_GLOBAL's own comment on
+-- why not: these globals don't survive a real logout on this fork).
+function BTV:ReconcileDefaultBarEnabledFromNative()
+	if not (BTVanillaDB and BTVanillaDB.defaultBars) then
+		return
+	end
+
+	local id
+
+	for id = 2, 5 do
+		local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
+		local cfg = BTVanillaDB.defaultBars[id]
+
+		if nativeGlobal and cfg then
+			local nativeEnabled = getglobal(nativeGlobal) and true or false
+			local currentEnabled = cfg.enabled and true or false
+
+			if nativeEnabled ~= currentEnabled then
+				-- Re-enters SetDefaultBarEnabled, which writes the same
+				-- (already-matching) value back to nativeGlobal and calls
+				-- MultiActionBar_Update() again - re-fires this same
+				-- hook once more, but by then nativeEnabled ==
+				-- currentEnabled already, so it's a harmless one-level
+				-- no-op re-entry, not a loop.
+				self:SetDefaultBarEnabled(id, nativeEnabled)
+
+				-- Keep the Settings window's own displayed checkboxes
+				-- (sidebar + that bar's own page, if currently open) in
+				-- sync too - only if the window has actually been built
+				-- this session, so toggling a native checkbox never
+				-- silently forces our settings UI into existence as a
+				-- side effect.
+				if BTV:IsSettingsFrameCreated() then
+					BTV:RefreshBarList()
+					BTV:RefreshBarSettingsPage(id)
+				end
+			end
+		end
+	end
+
+	self:FixRightActionBar2Checkbox()
+end
+
+-- Live-confirmed (/btv diag14, user's own manual :Enable() test): this
+-- fork's Options -> Action Bars panel is a custom framework (not stock
+-- FrameXML), and its "Show Right ActionBar 2" checkbox
+-- (OptionsFrameCheckButton5Control) gets stuck permanently disabled
+-- rather than reactively toggling with "Show Right ActionBar"
+-- (bar id 4) the way the panel's own nesting/indentation implies it
+-- should. Manually re-enabling it sticks (not a recurring re-disable),
+-- so this just mirrors bar 4's real enabled state onto it directly,
+-- every time we already have a reason to touch bar 4/5's state anyway.
+-- Only fixes the ENABLED state, not the label's own grey text color
+-- (that display, separately, doesn't seem to be tied to :IsEnabled()) -
+-- flagged as a known remaining cosmetic gap, not chased further without
+-- knowing that label's real color values on this framework.
+-- Live-tested: this custom framework does NOT call native
+-- MultiActionBar_Update() on its own checkbox clicks (our hook on it
+-- never re-fires bar 5's fix after a live native bar-4 click while the
+-- panel stays open) - so bar 4's own checkbox click is hooked directly,
+-- once, the first time this function finds it.
+local hookedBar4Checkbox = false
+
+-- Live-confirmed (/btv diag15) label colors: enabled/normal (1, 0.82, 0),
+-- native's own grey-disabled default is whatever it already renders -
+-- only force the ENABLED color here, never force grey (native handles
+-- that fine on its own; it just never re-applies the enabled color once
+-- we programmatically :Enable() the checkbox).
+local RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR = { 1, 0.82, 0 }
+
+local function SetCheckbox5LabelEnabledColor()
+	local outer = getglobal("OptionsFrameCheckButton5")
+
+	if not outer then
+		return
+	end
+
+	local regions = { outer:GetRegions() }
+	local i
+
+	for i = 1, table.getn(regions) do
+		local r = regions[i]
+		local okType, objType = pcall(function() return r.GetObjectType and r:GetObjectType() end)
+
+		if okType and objType == "FontString" then
+			r:SetTextColor(
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[1],
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[2],
+				RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR[3]
+			)
+		end
+	end
+end
+
+function BTV:FixRightActionBar2Checkbox()
+	local control5 = getglobal("OptionsFrameCheckButton5Control")
+
+	if control5 and control5.Enable and control5.Disable then
+		local bar4Cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[4]
+		local shouldEnable = (BTVanillaDB and BTVanillaDB.bypassRightActionBar2Dependency)
+			or (bar4Cfg and bar4Cfg.enabled)
+
+		if shouldEnable then
+			control5:Enable()
+			SetCheckbox5LabelEnabledColor()
+		else
+			control5:Disable()
+		end
+	end
+
+	if not hookedBar4Checkbox then
+		local control4 = getglobal("OptionsFrameCheckButton4Control")
+
+		if control4 and control4.HookScript then
+			control4:HookScript("OnClick", function()
+				BTV:FixRightActionBar2Checkbox()
+			end)
+
+			hookedBar4Checkbox = true
+		end
+	end
+end
+
+-- hooksecurefunc runs AFTER the real MultiActionBar_Update has already
+-- applied whatever the native checkbox/globals currently say, so the
+-- reconcile above always reads the new value, never the stale one. Same
+-- top-level "register once at file load" convention as
+-- ChangeActionBarPage's own hook elsewhere in this file.
+if hooksecurefunc and MultiActionBar_Update then
+	hooksecurefunc("MultiActionBar_Update", function()
+		BTV:ReconcileDefaultBarEnabledFromNative()
+	end)
 end
 
 -- Every default bar (1-5) delegates to Bar.lua's own SetBarLayout (which

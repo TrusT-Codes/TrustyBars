@@ -564,6 +564,29 @@ BTV.DEFAULT_BAR_GRID = {
 	[5] = { cols = 1,  rows = 12, enabled = false },     -- Right 2.
 }
 
+-- Native vanilla FrameXML global backing each default bar's own built-in
+-- Interface Options -> Action Bars checkbox ("Show Bottom Left
+-- ActionBar", etc. - MULTIACTIONBAR1-4, same mapping HoverBind.lua's own
+-- MULTIACTIONBAR_PREFIXES table uses: default bar id -> MULTIACTIONBAR(id-1)).
+-- Bars 2-5's real native buttons are permanently hidden regardless (see
+-- DefaultBars.lua's CreateFixedSlotDefaultBars) - our own cfg.enabled
+-- stays the sole VISUAL authority. SAME-SESSION COSMETIC USE ONLY -
+-- docs/01-Environment-Capability-Analysis.md (§5m) already live-confirmed
+-- these globals do NOT persist to this fork's WTF SavedVariables at all
+-- (unlike LOCK_ACTIONBAR), reliably reading nil/reset on every fresh
+-- login regardless of what was true last session - never treat this as
+-- authoritative for anything that needs to survive a login boundary
+-- (seedDefaultBars deliberately does NOT read it, for exactly this
+-- reason). DefaultBars.lua's SetDefaultBarEnabled still mirrors our
+-- state into it (so the real Options checkbox doesn't look stuck/wrong
+-- within the current session), purely cosmetic.
+BTV.SHOW_MULTI_ACTIONBAR_GLOBAL = {
+	[2] = "SHOW_MULTI_ACTIONBAR_1",
+	[3] = "SHOW_MULTI_ACTIONBAR_2",
+	[4] = "SHOW_MULTI_ACTIONBAR_3",
+	[5] = "SHOW_MULTI_ACTIONBAR_4",
+}
+
 -- Friendly display names for the 5 fixed default bars (1-5) - round 36
 -- (Item 2) promotes this out of Settings.lua's own file-local copy into a
 -- single BTV-level source of truth, since Bar.lua's EnsureBarOverlay now
@@ -653,6 +676,18 @@ local function seedDefaultBars(self)
 			)
 		end
 
+		-- NOT read from BTV.SHOW_MULTI_ACTIONBAR_GLOBAL here (deliberately) -
+		-- this project's own docs/01-Environment-Capability-Analysis.md
+		-- (§5m) already live-confirmed SHOW_MULTI_ACTIONBAR_1-4 do NOT
+		-- persist to this fork's WTF SavedVariables at all, unlike
+		-- LOCK_ACTIONBAR - they reliably read nil/reset on every fresh
+		-- login regardless of what was true last session. Seeding from
+		-- them here would silently discard the player's real saved
+		-- cfg.enabled (from BTVanillaProfilesDB) on every schema-version
+		-- reseed, and can never actually recover a "prior preference"
+		-- either, since the global itself never survived to be read.
+		local enabled = grid.enabled
+
 		result[id] = {
 			-- Bar.lua/Button.lua/HoverBind.lua all key off bar.config.id
 			-- (frame naming, BTV.DEFAULT_BAR_BINDING_PREFIXES lookups) -
@@ -661,7 +696,7 @@ local function seedDefaultBars(self)
 			-- own real Blizzard frames directly, out of scope this pass).
 			id = id,
 
-			enabled = grid.enabled,
+			enabled = enabled,
 			point = anchor.point,
 			relativePoint = anchor.relativePoint,
 			x = anchor.x,
@@ -947,6 +982,347 @@ function BTV:EnsureExtraBars()
 	end
 end
 
+-------------------------------------------------------------------------
+-- Profiles
+--
+-- BTVanillaDB stays exactly what every other read/write site in this
+-- addon already assumes it is: the live, active profile's data - the
+-- 200+ existing `BTVanillaDB.field` call sites across every file need
+-- zero changes. What's new: BTVanillaDB's CONTENTS can now be swapped out
+-- wholesale at well-defined moments (login, and right before a
+-- ReloadUI() this feature triggers), copied to/from BTVanillaProfilesDB
+-- (a new account-wide SavedVariable, a plain table keyed by profile
+-- name) via BTV:ResolveActiveProfile()/BTV:SaveActiveProfileData() below.
+--
+-- WoW's SavedVariables system requires every persisted global to be
+-- statically declared in the .toc at load time - a literal, separately-
+-- declared SavedVariable per arbitrary user-typed profile name is not
+-- possible. BTVanillaProfilesDB (one declared SavedVariable, a table
+-- keyed by name inside it) is the closest achievable equivalent: each
+-- profile still gets fully independent settings storage, just not as a
+-- literally-separate global variable name.
+--
+-- BTVanillaCharDB (new SavedVariablesPerCharacter) stores only which
+-- profile name THIS character/realm currently uses - naturally scoped by
+-- vanilla's own per-character SavedVariables file layout, no manual
+-- realm-key namespacing needed inside it.
+-------------------------------------------------------------------------
+
+BTV.DEFAULT_PROFILE_NAME = "Default"
+
+-- Small hand-written recursive deep copy rather than ClassicAPI's
+-- TableUtil.CopyTable/CopyTableSafe (present on this client per
+-- docs/01-Environment-Capability-Analysis.md, but their exact deep-copy
+-- semantics haven't been independently live-confirmed for a table shape
+-- as deeply nested as BTVanillaDB's own bars/defaultBars arrays) - profile
+-- data integrity is exactly the kind of thing this addon's own convention
+-- says not to guess on. BTVanillaDB only ever holds plain data (strings/
+-- numbers/booleans/nested plain tables, no functions/frames/metatables),
+-- so a plain recursive copy is correct and sufficient.
+function BTV:DeepCopyTable(t)
+	if type(t) ~= "table" then
+		return t
+	end
+
+	local copy = {}
+	local k, v
+
+	for k, v in pairs(t) do
+		copy[k] = self:DeepCopyTable(v)
+	end
+
+	return copy
+end
+
+-- Sorted list of every saved profile name, BTV.DEFAULT_PROFILE_NAME always
+-- first regardless of alphabetical order - used to populate every profile
+-- dropdown in Settings.lua's Profiles tab and the first-login dialog.
+function BTV:GetProfileNames()
+	local names = {}
+	local n = 0
+	local name
+
+	for name in pairs(BTVanillaProfilesDB or {}) do
+		if name ~= self.DEFAULT_PROFILE_NAME then
+			n = n + 1
+			names[n] = name
+		end
+	end
+
+	table.sort(names)
+
+	local result = { self.DEFAULT_PROFILE_NAME }
+	local i
+
+	for i = 1, n do
+		table.insert(result, names[i])
+	end
+
+	return result
+end
+
+-- Runs as the very first line of RunLoginSequence, strictly before
+-- BTV:EnsureDB() - resolves which profile this character uses, migrates
+-- any pre-existing account data into the Default profile exactly once,
+-- and loads the resolved profile's data into BTVanillaDB (or leaves it
+-- nil for a brand new profile with no snapshot yet, letting EnsureDB's own
+-- `if not BTVanillaDB then BTVanillaDB = {} end` do the from-scratch seed,
+-- which then gets captured into BTVanillaProfilesDB on the next save).
+function BTV:ResolveActiveProfile()
+	if not BTVanillaCharDB then
+		BTVanillaCharDB = {
+			activeProfile = self.DEFAULT_PROFILE_NAME,
+			hasSelectedProfileBefore = false,
+		}
+	end
+
+	if not BTVanillaProfilesDB then
+		BTVanillaProfilesDB = {}
+	end
+
+	-- One-time migration: an account that already had BTVanillaDB data
+	-- before this feature existed gets it copied into the Default profile
+	-- exactly once. A fresh install (no BTVanillaDB at all yet) leaves
+	-- this branch untaken - EnsureDB's own from-scratch seed handles that
+	-- case below, same as it always has.
+	if not BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME] and BTVanillaDB then
+		BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME] = self:DeepCopyTable(BTVanillaDB)
+	end
+
+	if not BTVanillaCharDB.hasSelectedProfileBefore then
+		self.pendingFirstLoginDialog = true
+	end
+
+	local activeProfile = BTVanillaCharDB.activeProfile or self.DEFAULT_PROFILE_NAME
+
+	self.activeProfileName = activeProfile
+
+	local snapshot = BTVanillaProfilesDB[activeProfile]
+
+	if snapshot then
+		BTVanillaDB = self:DeepCopyTable(snapshot)
+	else
+		BTVanillaDB = nil
+	end
+end
+
+-- Writes the live BTVanillaDB back into BTVanillaProfilesDB[activeProfileName].
+-- Called from the PLAYER_LOGOUT handler below (the reliable "flush on
+-- session end" point - BTVanillaProfilesDB is an independent SavedVariable
+-- from BTVanillaDB, so mutations to the live table never implicitly
+-- propagate into it) and immediately before every ReloadUI() call this
+-- feature triggers (belt-and-suspenders; ReloadUI() does trigger
+-- PLAYER_LOGOUT in real vanilla, but this removes any doubt about ordering
+-- on this modded client at zero cost). Deliberately NOT called from
+-- EnsureDB() itself, which runs constantly all session long.
+function BTV:SaveActiveProfileData()
+	if not self.activeProfileName or not BTVanillaDB then
+		return
+	end
+
+	BTVanillaProfilesDB = BTVanillaProfilesDB or {}
+	BTVanillaProfilesDB[self.activeProfileName] = self:DeepCopyTable(BTVanillaDB)
+end
+
+-- Creates a new profile, seeded from the Default profile's current data
+-- (not whichever profile happens to be active) so a brand new profile
+-- always starts from a known-good baseline. Returns true on success, or
+-- false plus a reason string the UI can display directly.
+function BTV:CreateProfile(name)
+	if not name or name == "" then
+		return false, "Profile name cannot be empty."
+	end
+
+	BTVanillaProfilesDB = BTVanillaProfilesDB or {}
+
+	if BTVanillaProfilesDB[name] then
+		return false, "A profile named \"" .. name .. "\" already exists."
+	end
+
+	local defaultData = BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME]
+
+	BTVanillaProfilesDB[name] = defaultData and self:DeepCopyTable(defaultData) or {}
+
+	return true
+end
+
+-- Deletes a profile outright. Refuses the Default profile (never
+-- deletable, per spec). Since "Delete profile" only ever appears in the
+-- UI while the profile being deleted IS the currently active one, this
+-- also falls back the character to Default so there's always a valid
+-- active profile afterward - the caller (Settings.lua) still triggers the
+-- ReloadUI() that actually applies this.
+function BTV:DeleteProfile(name)
+	if not name or name == self.DEFAULT_PROFILE_NAME then
+		return false, "The Default profile cannot be deleted."
+	end
+
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[name] then
+		return false, "Profile \"" .. tostring(name) .. "\" does not exist."
+	end
+
+	BTVanillaProfilesDB[name] = nil
+
+	if BTVanillaCharDB and BTVanillaCharDB.activeProfile == name then
+		BTVanillaCharDB.activeProfile = self.DEFAULT_PROFILE_NAME
+	end
+
+	return true
+end
+
+-- Overwrites targetName's saved data with a copy of sourceName's - used by
+-- "Copy from other profile." If targetName is the currently active
+-- profile, the caller still needs to ReloadUI() afterward for the copied
+-- data to actually take effect (the next login's BTV:ResolveActiveProfile
+-- picks it up from BTVanillaProfilesDB normally - no special-casing of the
+-- live BTVanillaDB table is needed here).
+function BTV:CopyProfileInto(sourceName, targetName)
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[sourceName] then
+		return false, "Source profile \"" .. tostring(sourceName) .. "\" does not exist."
+	end
+
+	if not targetName or targetName == "" then
+		return false, "Invalid target profile."
+	end
+
+	BTVanillaProfilesDB[targetName] = self:DeepCopyTable(BTVanillaProfilesDB[sourceName])
+
+	return true
+end
+
+-- Switches this character to a different (already-existing) profile:
+-- flushes the current profile's live data, records the new choice, then
+-- reloads the UI so the next login cleanly picks up the new profile's
+-- data via the normal BTV:ResolveActiveProfile/EnsureDB path - this addon
+-- has no live rebuild-everything-in-place mechanism, so a reload is the
+-- safe way to apply a profile switch.
+function BTV:SwitchProfile(name)
+	if not BTVanillaProfilesDB or not BTVanillaProfilesDB[name] then
+		return false, "Profile \"" .. tostring(name) .. "\" does not exist."
+	end
+
+	self:SaveActiveProfileData()
+
+	BTVanillaCharDB = BTVanillaCharDB or {}
+	BTVanillaCharDB.activeProfile = name
+	BTVanillaCharDB.hasSelectedProfileBefore = true
+
+	ReloadUI()
+
+	return true
+end
+
+-- Shared "Enter the name for the new profile" dialog - used both by the
+-- Profiles settings tab's "Create new profile" dropdown entry and by the
+-- first-login dialog's "Create a named profile" button, so the two flows
+-- can never drift apart. onCreated(name), if given, is called after a
+-- successful create+switch - SwitchProfile already reloads the UI, so
+-- onCreated only ever matters for validation-failure feedback today (see
+-- Settings.lua's call site).
+function BTV:ShowCreateProfileDialog(onCreated)
+	self:ShowDialog({
+		title = "New Profile",
+		message = "Enter the name for the new profile",
+		mode = "textinput",
+		buttons = {
+			{
+				text = "Accept",
+				isDefault = true,
+				onClick = function(value)
+					local ok, reason = BTV:CreateProfile(value)
+
+					if ok then
+						BTV:SwitchProfile(value)
+					elseif reason then
+						BTV:Print(reason)
+					end
+
+					if onCreated then
+						onCreated(ok, value)
+					end
+				end,
+			},
+			{ text = "Cancel", onClick = function() end },
+		},
+	})
+end
+
+-- First-ever-login-with-profiles dialog for this character - see
+-- BTV:ResolveActiveProfile (sets BTV.pendingFirstLoginDialog) and
+-- RunLoginSequence's own tail call for when this fires.
+function BTV:ShowFirstLoginDialog()
+	local buttons = {
+		{
+			text = "I know what im doing, use default profile",
+			isDefault = true,
+			onClick = function()
+				BTVanillaCharDB = BTVanillaCharDB or {}
+				BTVanillaCharDB.hasSelectedProfileBefore = true
+			end,
+		},
+		{
+			text = "Create a named profile",
+			onClick = function()
+				BTV:ShowCreateProfileDialog()
+			end,
+		},
+		{
+			text = "Create a profile for this character",
+			onClick = function()
+				local charName = UnitName("player") or "Unknown"
+				local realmName = GetRealmName() or "Unknown"
+				local charProfileName = charName .. " - " .. realmName
+
+				local ok, reason = BTV:CreateProfile(charProfileName)
+
+				if ok then
+					BTV:SwitchProfile(charProfileName)
+				elseif reason then
+					BTV:Print(reason)
+				end
+			end,
+		},
+	}
+
+	-- 4th button only when this character has never chosen a profile
+	-- before (always true here - this dialog only ever fires in that
+	-- state) AND more than just Default already exists to choose from.
+	if table.getn(self:GetProfileNames()) > 1 then
+		table.insert(buttons, {
+			text = "use existing profile",
+			onClick = function()
+				BTV:ShowDialog({
+					title = "Use Existing Profile",
+					message = "Choose a profile to use for this character.",
+					mode = "dropdown",
+					options = BTV:GetProfileNames(),
+					buttons = {
+						{
+							text = "Accept",
+							isDefault = true,
+							onClick = function(value)
+								if value then
+									BTV:SwitchProfile(value)
+								end
+							end,
+						},
+						{ text = "Cancel", onClick = function() end },
+					},
+				})
+			end,
+		})
+	end
+
+	self:ShowDialog({
+		title = "Welcome to TrustyBars",
+		message = "Thank you for choosing TrustyBars, you are currently using the Profile \"Default\". " ..
+			"The Default profile is locked and cannot be edited - Edit Layout mode and Settings changes are unavailable while it is active.\n\n" ..
+			"Do you wish to create a new custom profile or a profile for this character?",
+		mode = "confirm",
+		buttons = buttons,
+	})
+end
+
 function BTV:EnsureDB()
 	if not BTVanillaDB then
 		BTVanillaDB = {}
@@ -976,6 +1352,15 @@ function BTV:EnsureDB()
 	-- preserve both groups' current-but-mismatched looks at once.
 	if BTVanillaDB.modernBorderStyle == nil then
 		BTVanillaDB.modernBorderStyle = false
+	end
+
+	-- User option: skips DefaultBars.lua's bar4->bar5 disable cascade
+	-- (BTV:SetDefaultBarEnabled/FixRightActionBar2Checkbox), matching
+	-- native's own "Right ActionBar 2" dependency on "Right ActionBar 1"
+	-- - off by default so behavior matches native unless the player
+	-- opts out.
+	if BTVanillaDB.bypassRightActionBar2Dependency == nil then
+		BTVanillaDB.bypassRightActionBar2Dependency = false
 	end
 
 	-- Tracks which style every bar's CURRENTLY STORED buttonSize was last
@@ -1871,9 +2256,21 @@ function BTV:IsEditMode()
 	return BTVanillaDB and BTVanillaDB.editMode == true
 end
 
+-- The Default profile is a fixed, always-available baseline and must
+-- never be edited - treats a nil activeProfile (not yet resolved) as
+-- Default too, matching ResolveActiveProfile's own fallback.
+function BTV:IsDefaultProfileActive()
+	return not BTVanillaCharDB or BTVanillaCharDB.activeProfile == self.DEFAULT_PROFILE_NAME
+end
+
 function BTV:SetEditMode(enabled)
 	self:EnsureDB()
 	enabled = enabled and true or false
+
+	if enabled and self:IsDefaultProfileActive() then
+		self:Print("Edit Layout mode is disabled while the Default profile is active. Switch to another profile (Settings > Profiles) to edit your bar layout.")
+		return
+	end
 
 	-- Edit mode always wins over hoverbind mode - force hoverbind off
 	-- first rather than letting both run at once (their button-tint/
@@ -2110,6 +2507,11 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 		))
 	end
 
+	-- Profiles: resolves which profile this character uses and loads its
+	-- data into BTVanillaDB BEFORE EnsureDB's own seeding/migration logic
+	-- ever touches the table - see BTV:ResolveActiveProfile's own comment.
+	BTV:ResolveActiveProfile()
+
 	BTV:EnsureDB()
 	BTV:CreateAllBars()
 
@@ -2316,6 +2718,15 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	-- reason (dead code, per the migration plan).
 
 	BTV:Print("Loaded. Click the minimap button for options.")
+
+	-- Profiles: shown after everything above has finished building, so it
+	-- doesn't visually collide with bar-creation flicker. Set by
+	-- BTV:ResolveActiveProfile (called at the very top of this function)
+	-- when this character has never explicitly chosen a profile before.
+	if BTV.pendingFirstLoginDialog then
+		BTV.pendingFirstLoginDialog = nil
+		BTV:ShowFirstLoginDialog()
+	end
 end
 
 -- Round 9 root-cause fix: this used to register PLAYER_LOGIN. Live-confirmed
@@ -2348,7 +2759,20 @@ end
 -- once-per-load semantics.
 local loadFrame = CreateFrame("Frame")
 loadFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+
+-- Profiles: flush the active profile's live data back into
+-- BTVanillaProfilesDB on session end - see BTV:SaveActiveProfileData's own
+-- comment for why this can't be left implicit (BTVanillaProfilesDB is an
+-- independent SavedVariable from BTVanillaDB, so edits to the live table
+-- never automatically propagate into it).
+loadFrame:RegisterEvent("PLAYER_LOGOUT")
+
 loadFrame:SetScript("OnEvent", function()
+	if event == "PLAYER_LOGOUT" then
+		BTV:SaveActiveProfileData()
+		return
+	end
+
 	loadFrame:UnregisterEvent("PLAYER_ENTERING_WORLD")
 	WaitForNativeBarSettle(RunLoginSequence)
 end)
@@ -2765,6 +3189,360 @@ function BTV:DiagBarGap(id1, id2)
 	end
 end
 
+-- "diag10": the Profiles dialog (UIWidgets.lua's BTVDialogMixin) reported
+-- live-tested as showing only its backdrop/border - fully draggable, no
+-- Lua error, but title/message/buttons all invisible. Forces open a known
+-- test dialog and dumps every child's IsShown/GetText/size/strata/level/
+-- alpha so the actual runtime state is visible instead of guessed at from
+-- source alone.
+function BTV:DiagDialog()
+	BTV:ShowDialog({
+		title = "Diag10 Test Title",
+		message = "Diag10 test message body.",
+		mode = "confirm",
+		buttons = {
+			{ text = "Diag Button One", isDefault = true, onClick = function() end },
+			{ text = "Diag Button Two", onClick = function() end },
+		},
+	})
+
+	local dialog = BTV.activeDialog
+
+	if not dialog then
+		self:Print("DiagDialog: BTV.activeDialog is nil after ShowDialog - Mixin/OnLoad never completed.")
+		return
+	end
+
+	self:Print("DiagDialog: dialog shown=" .. tostring(dialog:IsShown()) ..
+		" w=" .. tostring(dialog:GetWidth()) ..
+		" h=" .. tostring(dialog:GetHeight()) ..
+		" strata=" .. tostring(dialog:GetFrameStrata()) ..
+		" level=" .. tostring(dialog:GetFrameLevel()) ..
+		" alpha=" .. tostring(dialog:GetAlpha()))
+
+	if dialog.titleText then
+		self:Print("DiagDialog: titleText shown=" .. tostring(dialog.titleText:IsShown()) ..
+			" text='" .. tostring(dialog.titleText:GetText()) .. "'" ..
+			" alpha=" .. tostring(dialog.titleText:GetAlpha()) ..
+			" w=" .. tostring(dialog.titleText:GetWidth()) ..
+			" fontObj=" .. tostring(dialog.titleText:GetFontObject()))
+	else
+		self:Print("DiagDialog: dialog.titleText is nil!")
+	end
+
+	if dialog.messageText then
+		self:Print("DiagDialog: messageText shown=" .. tostring(dialog.messageText:IsShown()) ..
+			" text='" .. tostring(dialog.messageText:GetText()) .. "'" ..
+			" alpha=" .. tostring(dialog.messageText:GetAlpha()) ..
+			" w=" .. tostring(dialog.messageText:GetWidth()))
+	else
+		self:Print("DiagDialog: dialog.messageText is nil!")
+	end
+
+	if dialog.buttons then
+		local i
+
+		for i = 1, 4 do
+			local btn = dialog.buttons[i]
+
+			if btn then
+				self:Print("DiagDialog: button" .. tostring(i) ..
+					" shown=" .. tostring(btn:IsShown()) ..
+					" text='" .. tostring(btn:GetText()) .. "'" ..
+					" strata=" .. tostring(btn:GetFrameStrata()) ..
+					" level=" .. tostring(btn:GetFrameLevel()) ..
+					" w=" .. tostring(btn:GetWidth()) ..
+					" h=" .. tostring(btn:GetHeight()) ..
+					" alpha=" .. tostring(btn:GetAlpha()))
+			else
+				self:Print("DiagDialog: button" .. tostring(i) .. " is nil!")
+			end
+		end
+	else
+		self:Print("DiagDialog: dialog.buttons is nil!")
+	end
+end
+
+-- "diag11": live-investigating why BTV:SetDefaultBarEnabled's mirroring
+-- of cfg.enabled into SHOW_MULTI_ACTIONBAR_1-4 doesn't visibly affect the
+-- real Interface Options -> Action Bars checkboxes, unlike the confirmed-
+-- working LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS globals (same plain-
+-- global mechanism, per docs/01-Environment-Capability-Analysis.md §5i
+-- and Button.lua's own IsAlwaysShowMultibars). Dumps every candidate's
+-- CURRENT live value so a before/after comparison (toggle the real
+-- checkbox, or our own Settings checkbox, then run this again) shows
+-- exactly what does and doesn't change - no guessing.
+function BTV:DiagMultiActionBar()
+	self:Print("--- diag11: Multi-ActionBar state ---")
+
+	self:Print("LOCK_ACTIONBAR = " .. tostring(LOCK_ACTIONBAR) .. " (type " .. type(LOCK_ACTIONBAR) .. ")")
+	self:Print("ALWAYS_SHOW_MULTIBARS = " .. tostring(ALWAYS_SHOW_MULTIBARS) .. " (type " .. type(ALWAYS_SHOW_MULTIBARS) .. ")")
+
+	local i
+
+	for i = 1, 4 do
+		local name = "SHOW_MULTI_ACTIONBAR_" .. tostring(i)
+		local value = getglobal(name)
+
+		self:Print(name .. " = " .. tostring(value) .. " (type " .. type(value) .. ")")
+	end
+
+	local frameNames = { "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight" }
+
+	for i = 1, table.getn(frameNames) do
+		local f = getglobal(frameNames[i])
+
+		if f then
+			self:Print(frameNames[i] .. ": IsShown=" .. tostring(f:IsShown()))
+		else
+			self:Print(frameNames[i] .. ": frame not found")
+		end
+	end
+
+	-- Testing the user's own hypothesis: bars 2-5's real BUTTONS
+	-- (MultiBar*Button1-12) have their :Show() permanently overridden to
+	-- a no-op by CreateFixedSlotDefaultBars, so they can never actually
+	-- become IsShown()=1 again regardless of the bar FRAME's or the
+	-- SavedVariable's own state - if the real Options panel's "Right
+	-- ActionBar 2 requires Right ActionBar 1" dependency check reads
+	-- BUTTON-level visibility (not the frame's) to decide whether Bar 1
+	-- currently "counts" as shown, that would explain Bar 2 staying
+	-- greyed out no matter what the frame/global say.
+	local id
+
+	for id = 2, 5 do
+		local buttonName = self.DEFAULT_BAR_FRAME_PREFIXES[id] .. "1"
+		local button = getglobal(buttonName)
+
+		if button then
+			self:Print(buttonName .. ": IsShown=" .. tostring(button:IsShown()) ..
+				" IsVisible=" .. tostring(button:IsVisible()))
+		else
+			self:Print(buttonName .. ": frame not found")
+		end
+	end
+
+	self:Print("MultiActionBar_Update exists: " .. tostring(MultiActionBar_Update ~= nil))
+	self:Print("SetActionBarToggles exists: " .. tostring(SetActionBarToggles ~= nil))
+	self:Print("ShowMultiCastActionBar exists: " .. tostring(ShowMultiCastActionBar ~= nil))
+
+	-- GetCVar throws a hard Lua error on an unrecognized CVar name on
+	-- this client (§5i) - pcall-guarded so one bad guess doesn't abort
+	-- the rest of this dump.
+	local cvarCandidates = {
+		"multiBarBottomLeft", "multiBarBottomRight", "multiBarLeft", "multiBarRight",
+		"multibarBottomLeft", "multibarBottomRight", "multibarLeft", "multibarRight",
+		"ShowMultiActionBar1", "showMultiActionBar1",
+	}
+
+	for i = 1, table.getn(cvarCandidates) do
+		local ok, value = pcall(GetCVar, cvarCandidates[i])
+
+		if ok and value ~= nil then
+			self:Print("CVar " .. cvarCandidates[i] .. " = " .. tostring(value))
+		end
+	end
+
+	self:Print("--- diag11 end ---")
+end
+
+-- "diag12": rather than guessing the real Interface Options -> Action
+-- Bars panel's exact checkbox frame names (unconfirmed on this fork),
+-- scans _G directly for anything CheckButton-shaped whose global name
+-- mentions "ActionBar", and dumps each one's real IsEnabled()/
+-- GetChecked() state - specifically to see whether "Right ActionBar 2"'s
+-- checkbox genuinely reports IsEnabled()=false (confirming a real
+-- dependency-driven disable, matching diag11's button-visibility
+-- finding) or something else entirely once actually inspected live.
+function BTV:DiagActionBarCheckboxes()
+	self:Print("--- diag12: scanning _G for CheckButtons (open Options -> Action Bars first) ---")
+
+	local key, value
+	local found = 0
+
+	for key, value in pairs(_G) do
+		if type(key) == "string" and type(value) == "table" then
+			local okType, objType = pcall(function() return value.GetObjectType and value:GetObjectType() end)
+
+			if okType and objType == "CheckButton" then
+				found = found + 1
+
+				local okEnabled, enabled = pcall(function() return value:IsEnabled() end)
+				local okChecked, checked = pcall(function() return value:GetChecked() end)
+
+				self:Print(
+					key ..
+					": IsEnabled=" .. tostring(okEnabled and enabled) ..
+					" GetChecked=" .. tostring(okChecked and checked)
+				)
+			end
+		end
+	end
+
+	self:Print("Found " .. tostring(found) .. " matching CheckButtons.")
+	self:Print("--- diag12 end ---")
+end
+
+-- "diag13": diag12 found zero named "ActionBar" checkboxes - the real
+-- panel's checkboxes are anonymous (no global name), so walk the panel's
+-- frame tree directly instead (anonymous children are still reachable
+-- via GetChildren()). Open Options -> Action Bars first.
+function BTV:DiagActionBarsPanelTree()
+	self:Print("--- diag13: walking InterfaceOptionsFramePanelContainer tree ---")
+
+	local container = getglobal("InterfaceOptionsFramePanelContainer") or getglobal("InterfaceOptionsFrame")
+
+	if not container then
+		-- Neither guessed name exists - scan _G for anything Frame-shaped
+		-- whose name mentions "Interface" and "Option", so the real name
+		-- can be found instead of guessing again.
+		local key, value
+
+		for key, value in pairs(_G) do
+			if type(key) == "string" and type(value) == "table" and
+				string.find(key, "Interface") and string.find(key, "Option") then
+				self:Print("candidate: " .. key)
+			end
+		end
+	end
+
+	if not container then
+		self:Print("Neither InterfaceOptionsFramePanelContainer nor InterfaceOptionsFrame found in _G.")
+		self:Print("--- diag13 end ---")
+		return
+	end
+
+	self:Print("Using container: " .. (container.GetName and container:GetName() or "?"))
+
+	local children = { container:GetChildren() }
+	local i
+
+	for i = 1, table.getn(children) do
+		local child = children[i]
+		local name = (child.GetName and child:GetName()) or "(anonymous)"
+		local okShown, shown = pcall(function() return child:IsShown() end)
+
+		self:Print(name .. ": IsShown=" .. tostring(okShown and shown))
+
+		-- Only recurse into the currently-SHOWN panel (the Action Bars
+		-- one, if that's the tab open) - printing every panel's full
+		-- child tree would be a huge, mostly-irrelevant dump.
+		if okShown and shown then
+			local grandchildren = { child:GetChildren() }
+			local j
+
+			for j = 1, table.getn(grandchildren) do
+				local gc = grandchildren[j]
+				local gcName = (gc.GetName and gc:GetName()) or "(anonymous)"
+				local okType, objType = pcall(function() return gc.GetObjectType and gc:GetObjectType() end)
+
+				if okType and objType == "CheckButton" then
+					local okEnabled, enabled = pcall(function() return gc:IsEnabled() end)
+					local okChecked, checked = pcall(function() return gc:GetChecked() end)
+
+					self:Print(
+						"  " .. gcName ..
+						": CheckButton IsEnabled=" .. tostring(okEnabled and enabled) ..
+						" GetChecked=" .. tostring(okChecked and checked)
+					)
+				else
+					self:Print("  " .. gcName .. ": type=" .. tostring(okType and objType))
+				end
+			end
+		end
+	end
+
+	self:Print("Child count: " .. tostring(table.getn(children)))
+	self:Print("--- diag13 end ---")
+end
+
+-- "diag14": panel isn't stock vanilla (custom Options UI, no matching
+-- name found via _G scans) - name-guessing is dead. Hover the mouse
+-- directly over "Show Right ActionBar 2" and run this instead:
+-- GetMouseFocus() returns whatever frame is under the cursor right now,
+-- no name needed. Prints it and its parent chain.
+function BTV:DiagMouseFocus()
+	self:Print("--- diag14: GetMouseFocus() ---")
+
+	local frame = GetMouseFocus and GetMouseFocus()
+
+	if not frame then
+		self:Print("GetMouseFocus() returned nothing - make sure the mouse is over the checkbox when you run this.")
+		self:Print("--- diag14 end ---")
+		return
+	end
+
+	local depth = 0
+
+	while frame and depth < 6 do
+		local name = (frame.GetName and frame:GetName()) or "(anonymous)"
+		local okType, objType = pcall(function() return frame.GetObjectType and frame:GetObjectType() end)
+		local okEnabled, enabled = pcall(function() return frame.IsEnabled and frame:IsEnabled() end)
+		local okChecked, checked = pcall(function() return frame.GetChecked and frame:GetChecked() end)
+
+		self:Print(
+			string.rep("  ", depth) .. name ..
+			" type=" .. tostring(okType and objType) ..
+			" IsEnabled=" .. tostring(okEnabled and enabled) ..
+			" GetChecked=" .. tostring(okChecked and checked)
+		)
+
+		frame = frame.GetParent and frame:GetParent()
+		depth = depth + 1
+	end
+
+	self:Print("--- diag14 end ---")
+end
+
+-- "diag15": finds the greyed-out text region on checkbox 5 (Right
+-- ActionBar 2, still grey even when enabled/checked) and dumps its
+-- current color, plus checkbox 4's (normal, for comparison) - so the
+-- exact RGB to force can be read directly instead of guessed.
+function BTV:DiagCheckboxTextColor()
+	self:Print("--- diag15: checkbox text colors ---")
+
+	local names = {
+		"OptionsFrameCheckButton4", "OptionsFrameCheckButton5",
+		"OptionsFrameCheckButton4Control", "OptionsFrameCheckButton5Control",
+		"OptionsFrameCheckButton4Text", "OptionsFrameCheckButton5Text",
+	}
+	local i
+
+	for i = 1, table.getn(names) do
+		local btn = getglobal(names[i])
+
+		if not btn then
+			self:Print(names[i] .. ": not found")
+		elseif btn.GetObjectType and btn:GetObjectType() == "FontString" then
+			local okColor, cr, cg, cb = pcall(function() return btn:GetTextColor() end)
+
+			self:Print(
+				names[i] .. " (itself a FontString) text='" .. tostring(btn:GetText()) .. "'" ..
+				" color=" .. tostring(okColor and cr) .. "," .. tostring(okColor and cg) .. "," .. tostring(okColor and cb)
+			)
+		else
+			local regions = { btn:GetRegions() }
+			local j
+
+			for j = 1, table.getn(regions) do
+				local r = regions[j]
+				local okType, objType = pcall(function() return r.GetObjectType and r:GetObjectType() end)
+
+				if okType and objType == "FontString" then
+					local okColor, cr, cg, cb, ca = pcall(function() return r:GetTextColor() end)
+
+					self:Print(
+						names[i] .. " region" .. tostring(j) .. " text='" .. tostring(r:GetText()) .. "'" ..
+						" color=" .. tostring(okColor and cr) .. "," .. tostring(okColor and cg) .. "," .. tostring(okColor and cb)
+					)
+				end
+			end
+		end
+	end
+
+	self:Print("--- diag15 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -2804,6 +3582,18 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		local id2 = spacePos and string.sub(rest, spacePos + 1) or nil
 
 		BTV:DiagBarGap(id1, id2)
+	elseif msg == "diag10" then
+		BTV:DiagDialog()
+	elseif msg == "diag11" then
+		BTV:DiagMultiActionBar()
+	elseif msg == "diag12" then
+		BTV:DiagActionBarCheckboxes()
+	elseif msg == "diag13" then
+		BTV:DiagActionBarsPanelTree()
+	elseif msg == "diag14" then
+		BTV:DiagMouseFocus()
+	elseif msg == "diag15" then
+		BTV:DiagCheckboxTextColor()
 	else
 		BTV:ToggleMainMenu()
 	end
