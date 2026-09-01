@@ -543,14 +543,18 @@ end
 -- unconditionally on every call. Separately, exactly once per REAL style
 -- transition (tracked via BTVanillaDB.lastAppliedVanillaStyle, not on
 -- every call - this function also runs unconditionally at every login),
--- shifts every bar's buttonSize by BTV.MODERN_BUTTON_SIZE_DELTA so the
--- SAME spacing number keeps looking visually aligned across styles
--- (empirically measured: vanilla 36px/spacing 2 looks the same as modern
--- 40px/spacing 2) - spacing itself is deliberately never touched here.
--- Not a live lock - the per-bar Settings.lua spacing/size sliders remain
--- freely adjustable afterward. Called from: the new checkbox's OnClick,
--- useDefaultLayoutCheckbox's OnClick, and once at login after every bar
--- (default + extra) exists.
+-- shifts every bar's buttonSize by BTV.MODERN_BUTTON_SIZE_DELTA (modern
+-- buttons need to be this many pixels bigger than vanilla to look the
+-- same size - empirically measured), nudges its position to compensate
+-- (bars are anchored, not centered, so growing/shrinking shifts them),
+-- and shifts its REAL spacing by the same amount in the OPPOSITE
+-- direction so buttonSize + spacing stays visually constant - the
+-- DISPLAYED spacing number in Settings.lua never changes across a switch
+-- because GetSpacingDisplayOffset's vanilla-only offset exactly cancels
+-- this real-value shift. Not a live lock - the per-bar Settings.lua
+-- spacing/size sliders remain freely adjustable afterward. Called from:
+-- the style checkbox's OnClick, useDefaultLayoutCheckbox's OnClick, and
+-- once at login after every bar (default + extra) exists.
 -------------------------------------------------------------------------
 
 function BTV:ApplyGlobalButtonStyle()

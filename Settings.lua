@@ -4462,16 +4462,15 @@ function BTV:GetOrCreateGeneralPanel()
 				BTV:RefreshDefaultLayoutGatingOnAllPages()
 			end
 
-			-- Runs LAST, after any reset cascade above, so its canonical
-			-- vanilla spacing (BTVanillaDB.defaultBars[1].spacing) reads
-			-- bar 1's just-reset nativeSpacing rather than a stale
-			-- pre-reset value - re-evaluates and applies
-			-- BTV:IsVanillaBorderStyle() live: turning this ON forces
-			-- every bar back to vanilla styling AND syncs extra bars'
-			-- size/spacing to the now-reset default bars; turning it OFF
-			-- re-applies whatever modernBorderStyle is currently stored
-			-- instead of leaving bars showing the forced-vanilla look
-			-- until next login.
+			-- Runs LAST, after any reset cascade above, so bars 1-5 are
+			-- already at their true native values by the time this reads
+			-- them - re-evaluates BTV:IsVanillaBorderStyle() live: turning
+			-- this ON forces every bar back to vanilla styling (skipping
+			-- bars 1-5, already handled by the reset cascade above -
+			-- see ApplyGlobalButtonStyle's own skipDefaultBars comment);
+			-- turning it OFF re-applies whatever modernBorderStyle is
+			-- currently stored instead of leaving bars showing the
+			-- forced-vanilla look until next login.
 			BTV:ApplyGlobalButtonStyle()
 
 			-- The global spacing/buttonSize overrides both no-op while
@@ -5186,8 +5185,9 @@ function BTV:GetOrCreateGeneralPanel()
 	-- One global checkbox choosing the button border style used by ALL
 	-- bars (default 1-5 AND extra 6-9): "modern" (today's Extra Bar look
 	-- - backdrop border) or "vanilla" (today's default bar look - native
-	-- Blizzard border). Also resets every bar's button size/spacing to a
-	-- shared canonical value so the two bar kinds visually align - see
+	-- Blizzard border). Also shifts every bar's button size (and real
+	-- spacing, in the opposite direction, keeping the two visually in
+	-- sync) so default and extra bars stay aligned - see
 	-- BTV:ApplyGlobalButtonStyle (Bar.lua). Locked to vanilla while "Use
 	-- Default Blizzard Layout" is on (BTV:IsVanillaBorderStyle, Core.lua).
 	-------------------------------------------------------------------------
@@ -5275,8 +5275,9 @@ function BTV:GetOrCreateGeneralPanel()
 		"Choose the button border style used by ALL bars, default and " ..
 		"extra: modern (backdrop border, today's Extra Bar look) or " ..
 		"vanilla (native Blizzard border, today's default bar look). " ..
-		"Also resets every bar's button size and spacing to match. " ..
-		"Locked to vanilla while \"Use Default Blizzard Layout\" is enabled."
+		"Also adjusts every bar's button size to match, keeping visual " ..
+		"spacing consistent. Locked to vanilla while \"Use Default " ..
+		"Blizzard Layout\" is enabled."
 	)
 
 	panel.modernBorderStyleDescription = modernBorderStyleDescription

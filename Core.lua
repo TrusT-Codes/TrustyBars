@@ -41,8 +41,11 @@ BTV.VANILLA_SPACING_FLOOR = 4
 -- LOOK the same size, since modern's border is bounded to its own frame
 -- (a plain SetBackdrop edge) while vanilla's overhangs via a larger
 -- texture. A fixed additive delta, not a ratio - confirmed: vanilla
--- 36px/spacing 2 looks the same as modern 40px/spacing 2, spacing itself
--- never needs to change. See BTV:ApplyGlobalButtonStyle (Bar.lua).
+-- 36px/spacing 2 looks the same as modern 40px/spacing 2. The DISPLAYED
+-- spacing number never changes across a switch, but the REAL spacing
+-- value does, by this same amount in the opposite direction (buttonSize
+-- + spacing stays visually constant) - see BTV:ApplyGlobalButtonStyle
+-- (Bar.lua).
 BTV.MODERN_BUTTON_SIZE_DELTA = 4
 
 -- Since every element/button is anchored from a fixed point (not its
@@ -2151,7 +2154,7 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 
 	-- Global spacing/button-size overrides (General tab): applied AFTER
 	-- the border-style sweep above, so an active global override always
-	-- wins over that sweep's own canonical value.
+	-- wins over whatever that sweep's own per-bar delta just wrote.
 	BTV:ApplyGlobalSpacing()
 	BTV:ApplyGlobalButtonSize()
 
