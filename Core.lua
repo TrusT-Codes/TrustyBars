@@ -3337,6 +3337,43 @@ function BTV:DiagMultiActionBar()
 	self:Print("--- diag11 end ---")
 end
 
+-- "diag12": rather than guessing the real Interface Options -> Action
+-- Bars panel's exact checkbox frame names (unconfirmed on this fork),
+-- scans _G directly for anything CheckButton-shaped whose global name
+-- mentions "ActionBar", and dumps each one's real IsEnabled()/
+-- GetChecked() state - specifically to see whether "Right ActionBar 2"'s
+-- checkbox genuinely reports IsEnabled()=false (confirming a real
+-- dependency-driven disable, matching diag11's button-visibility
+-- finding) or something else entirely once actually inspected live.
+function BTV:DiagActionBarCheckboxes()
+	self:Print("--- diag12: scanning _G for ActionBar-related CheckButtons ---")
+
+	local key, value
+	local found = 0
+
+	for key, value in pairs(_G) do
+		if type(key) == "string" and string.find(key, "ActionBar") and type(value) == "table" then
+			local okType, objType = pcall(function() return value.GetObjectType and value:GetObjectType() end)
+
+			if okType and objType == "CheckButton" then
+				found = found + 1
+
+				local okEnabled, enabled = pcall(function() return value:IsEnabled() end)
+				local okChecked, checked = pcall(function() return value:GetChecked() end)
+
+				self:Print(
+					key ..
+					": IsEnabled=" .. tostring(okEnabled and enabled) ..
+					" GetChecked=" .. tostring(okChecked and checked)
+				)
+			end
+		end
+	end
+
+	self:Print("Found " .. tostring(found) .. " matching CheckButtons.")
+	self:Print("--- diag12 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3380,6 +3417,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagDialog()
 	elseif msg == "diag11" then
 		BTV:DiagMultiActionBar()
+	elseif msg == "diag12" then
+		BTV:DiagActionBarCheckboxes()
 	else
 		BTV:ToggleMainMenu()
 	end
