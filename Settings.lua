@@ -130,19 +130,22 @@ local SPACING_STEP = 1
 
 -- Real-to-displayed spacing offset for the default/custom bar (1-9)
 -- Spacing slider AND the global Spacing slider (General tab) - NOT the
--- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope for
--- the vanilla floor. Vanilla border style's texture overhang causes
--- adjacent buttons to visually overlap below a real spacing of
--- BTV.VANILLA_SPACING_FLOOR - rather than showing that floor directly
--- (a confusing non-zero minimum), every display touchpoint subtracts
--- this offset so the UI always reads a plain 0-based range regardless of
--- style: e.g. today's captured native default (commonly real 6) shows as
--- "2" in vanilla mode, not "6". Real values are only ever written at the
--- OnValueChanged/refresh boundary - the slider's own on-screen value is
--- always in DISPLAYED space. (Border-size-parity fallback: modern style
--- no longer overhangs at all - back to gating on vanilla style only.)
+-- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope.
+-- Unconditional, same for both border styles - now that modern/vanilla
+-- have the same visual footprint (buttonSize correction), the real
+-- minimum spacing (BTV.VANILLA_SPACING_FLOOR) is a single shared value
+-- both styles use, not a vanilla-only concern. Rather than showing that
+-- floor directly (a confusing non-zero minimum), every display
+-- touchpoint subtracts this offset so the UI always reads a plain
+-- 0-based range - and since the offset is now the SAME constant in both
+-- styles, the same real spacing value always shows the same number
+-- regardless of style; switching styles never changes what's displayed
+-- (or the real value itself - ApplyGlobalButtonStyle never touches
+-- spacing). Real values are only ever written at the OnValueChanged/
+-- refresh boundary - the slider's own on-screen value is always in
+-- DISPLAYED space.
 local function GetSpacingDisplayOffset()
-	return BTV:IsVanillaBorderStyle() and BTV.VANILLA_SPACING_FLOOR or 0
+	return BTV.VANILLA_SPACING_FLOOR
 end
 
 -- Friendly names for the 5 fixed default bars (1-5) now live on
