@@ -35,10 +35,17 @@ local BTV = BTVanilla
 
 BTVInlineDropdownMixin = {}
 
--- parent: frame to anchor into. Returns the created dropdown frame with
--- this mixin applied.
-function BTV:CreateInlineDropdown(parent, widthPixels)
-	local dropdown = CreateFrame("Frame", nil, parent, "UIDropDownMenuTemplate")
+-- parent: frame to anchor into. name: REQUIRED, not optional - unlike
+-- every other frame in this addon, UIDropDownMenuTemplate's own native
+-- FrameXML machinery (Interface\FrameXML\UIDropDownMenu.lua) builds
+-- internal sub-widget references by string-concatenating this frame's
+-- own GetName() throughout (UIDropDownMenu_Initialize/SetWidth/etc.) -
+-- a nameless dropdown makes that native code fail with "attempt to
+-- concatenate a nil value" the moment UIDropDownMenu_Initialize runs
+-- below, live-tested and confirmed (Interface\FrameXML\UIDropDownMenu.lua:714).
+-- Returns the created dropdown frame with this mixin applied.
+function BTV:CreateInlineDropdown(parent, widthPixels, name)
+	local dropdown = CreateFrame("Frame", name, parent, "UIDropDownMenuTemplate")
 
 	Mixin(dropdown, BTVInlineDropdownMixin)
 	dropdown:OnLoad(widthPixels)
@@ -185,7 +192,7 @@ function BTVDialogMixin:OnLoad()
 	end)
 	self.editBox:Hide()
 
-	self.dropdown = BTV:CreateInlineDropdown(self, DIALOG_WIDTH - 80)
+	self.dropdown = BTV:CreateInlineDropdown(self, DIALOG_WIDTH - 80, "BTVanillaDialogDropdown")
 	self.dropdown:Hide()
 
 	-- 4, not 3 - the first-login dialog (Core.lua's BTV:ShowFirstLoginDialog)

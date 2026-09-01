@@ -5751,7 +5751,7 @@ function BTV:GetOrCreateProfilesPanel()
 	label:SetText("Active Profile:")
 	panel.label = label
 
-	local dropdown = BTV:CreateInlineDropdown(panel, 220)
+	local dropdown = BTV:CreateInlineDropdown(panel, 220, "BTVanillaProfilesDropdown")
 	dropdown:ClearAllPoints()
 	dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -6)
 	panel.profileDropdown = dropdown
