@@ -841,11 +841,25 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		-- confirmed stored/compared as the string "1"/"0", not a
 		-- boolean or number - see docs/01-Environment-Capability-
 		-- Analysis.md §5i and Button.lua's own IsAlwaysShowMultibars).
+		--
+		-- Deliberately does NOT call MultiActionBar_Update() here (it
+		-- did, until a live-tested regression: "Right ActionBar 2"
+		-- (bar 5) became stuck unable to re-enable via the real Options
+		-- checkbox after "Right ActionBar 1" (bar 4) had been toggled
+		-- off once, even after turning bar 4 back on) - real vanilla's
+		-- own MultiActionBar_Update almost certainly enforces a
+		-- dependency (bar 5 requires bar 4) by auto-clearing bar 5's
+		-- global whenever bar 4's turns off, and this write-back path
+		-- calling it (on top of the ReconcileDefaultBarEnabledFromNative
+		-- hook below re-entering this same function, which used to also
+		-- call it) ran that native logic far more often than a normal
+		-- single native click ever would, wedging bar 5's global at nil
+		-- in a way real player interaction doesn't reproduce. Just
+		-- setting the global is enough for the real Options panel's own
+		-- checkbox display to read correctly next time it's shown/
+		-- refreshed - it doesn't need MultiActionBar_Update()'s other
+		-- side effects for that.
 		setglobal(nativeGlobal, enabled and "1" or nil)
-
-		if MultiActionBar_Update then
-			MultiActionBar_Update()
-		end
 	end
 end
 
