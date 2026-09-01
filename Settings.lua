@@ -4103,18 +4103,6 @@ function BTV:RefreshBarSettingsPage(barId)
 		)
 	end
 
-	-- Bar 5 can only be enabled while bar 4 is (matches native's own
-	-- dependency, DefaultBars.lua's SetDefaultBarEnabled) unless the
-	-- General tab's bypass option is on - independent of the Default-
-	-- profile/layout lock exemption enableCheckbox otherwise has.
-	if page.enableCheckbox and barId == 5 then
-		local bar4Cfg = BTVanillaDB.defaultBars[4]
-		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
-			or (bar4Cfg and bar4Cfg.enabled == true)
-
-		LockControl(page.enableCheckbox, not allowed)
-	end
-
 	-------------------------------------------------------------------------
 	-- Page Indicator Scale (Main Bar only - Part 4)
 	-------------------------------------------------------------------------
@@ -4158,6 +4146,21 @@ function BTV:RefreshBarSettingsPage(barId)
 	-- opened after the global toggle was already enabled still starts
 	-- locked.
 	BTV:RefreshBarPageGlobalOverrideGating(page)
+
+	-- Bar 5 can only be enabled while bar 4 is (matches native's own
+	-- dependency, DefaultBars.lua's SetDefaultBarEnabled) unless the
+	-- General tab's bypass option is on. Runs AFTER ApplyProfileLockGating
+	-- (not alongside the SetChecked block above) - that call unconditionally
+	-- UNLOCKS enableCheckbox whenever the Default-profile/layout lock
+	-- itself isn't active (its own exemption for numbered default bars),
+	-- which was clobbering this lock when placed earlier in the function.
+	if page.enableCheckbox and barId == 5 then
+		local bar4Cfg = BTVanillaDB.defaultBars[4]
+		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
+			or (bar4Cfg and bar4Cfg.enabled == true)
+
+		LockControl(page.enableCheckbox, not allowed)
+	end
 end
 
 -- Locks (dims, EnableMouse(false)) a full bar page's own spacing/
@@ -6661,6 +6664,18 @@ local function CreateBarListRow(barId, isDefault, cfg)
 
 			LockControl(checkbox, not allowed)
 		end
+	end
+
+	-- Dim (not disable - navigating to bar 5's own page is still how you
+	-- reach the bypass-aware enableCheckbox there) the row button itself
+	-- too, so its locked state is visible at a glance in the list, not
+	-- just on the small checkbox beside it.
+	if isDefault and barId == 5 then
+		local bar4Cfg = BTVanillaDB.defaultBars[4]
+		local allowed = BTVanillaDB.bypassRightActionBar2Dependency == true
+			or (bar4Cfg and bar4Cfg.enabled == true)
+
+		row:SetAlpha(allowed and 1 or 0.5)
 	end
 
 	return row
