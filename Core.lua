@@ -3374,6 +3374,47 @@ function BTV:DiagActionBarCheckboxes()
 	self:Print("--- diag12 end ---")
 end
 
+-- "diag13": diag12 found zero named "ActionBar" checkboxes - the real
+-- panel's checkboxes are anonymous (no global name), so walk the panel's
+-- frame tree directly instead (anonymous children are still reachable
+-- via GetChildren()). Open Options -> Action Bars first.
+function BTV:DiagActionBarsPanelTree()
+	self:Print("--- diag13: walking InterfaceOptionsActionBarsPanel tree ---")
+
+	local panel = getglobal("InterfaceOptionsActionBarsPanel")
+
+	if not panel then
+		self:Print("InterfaceOptionsActionBarsPanel not found in _G.")
+		self:Print("--- diag13 end ---")
+		return
+	end
+
+	local children = { panel:GetChildren() }
+	local i
+
+	for i = 1, table.getn(children) do
+		local child = children[i]
+		local okType, objType = pcall(function() return child.GetObjectType and child:GetObjectType() end)
+		local name = (child.GetName and child:GetName()) or "(anonymous)"
+
+		if okType and objType == "CheckButton" then
+			local okEnabled, enabled = pcall(function() return child:IsEnabled() end)
+			local okChecked, checked = pcall(function() return child:GetChecked() end)
+
+			self:Print(
+				name ..
+				": IsEnabled=" .. tostring(okEnabled and enabled) ..
+				" GetChecked=" .. tostring(okChecked and checked)
+			)
+		else
+			self:Print(name .. ": type=" .. tostring(okType and objType))
+		end
+	end
+
+	self:Print("Child count: " .. tostring(table.getn(children)))
+	self:Print("--- diag13 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3419,6 +3460,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagMultiActionBar()
 	elseif msg == "diag12" then
 		BTV:DiagActionBarCheckboxes()
+	elseif msg == "diag13" then
+		BTV:DiagActionBarsPanelTree()
 	else
 		BTV:ToggleMainMenu()
 	end
