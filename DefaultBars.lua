@@ -860,6 +860,18 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		-- refreshed - it doesn't need MultiActionBar_Update()'s other
 		-- side effects for that.
 		setglobal(nativeGlobal, enabled and "1" or nil)
+
+		-- Same live-update gap as FixRightActionBar2Checkbox: this
+		-- custom Options framework only reads the global into the
+		-- checkbox's own checked-display at panel-show time, not
+		-- reactively - so if the panel's already open when WE write the
+		-- global, its own checkbox stays visually stale until closed/
+		-- reopened unless set directly too.
+		local control = getglobal("OptionsFrameCheckButton" .. tostring(id) .. "Control")
+
+		if control and control.SetChecked then
+			control:SetChecked(enabled)
+		end
 	end
 
 	self:FixRightActionBar2Checkbox()
@@ -928,19 +940,36 @@ end
 -- (that display, separately, doesn't seem to be tied to :IsEnabled()) -
 -- flagged as a known remaining cosmetic gap, not chased further without
 -- knowing that label's real color values on this framework.
-function BTV:FixRightActionBar2Checkbox()
-	local control = getglobal("OptionsFrameCheckButton5Control")
+-- Live-tested: this custom framework does NOT call native
+-- MultiActionBar_Update() on its own checkbox clicks (our hook on it
+-- never re-fires bar 5's fix after a live native bar-4 click while the
+-- panel stays open) - so bar 4's own checkbox click is hooked directly,
+-- once, the first time this function finds it.
+local hookedBar4Checkbox = false
 
-	if not (control and control.Enable and control.Disable) then
-		return
+function BTV:FixRightActionBar2Checkbox()
+	local control5 = getglobal("OptionsFrameCheckButton5Control")
+
+	if control5 and control5.Enable and control5.Disable then
+		local bar4Cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[4]
+
+		if bar4Cfg and bar4Cfg.enabled then
+			control5:Enable()
+		else
+			control5:Disable()
+		end
 	end
 
-	local bar4Cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[4]
+	if not hookedBar4Checkbox then
+		local control4 = getglobal("OptionsFrameCheckButton4Control")
 
-	if bar4Cfg and bar4Cfg.enabled then
-		control:Enable()
-	else
-		control:Disable()
+		if control4 and control4.HookScript then
+			control4:HookScript("OnClick", function()
+				BTV:FixRightActionBar2Checkbox()
+			end)
+
+			hookedBar4Checkbox = true
+		end
 	end
 end
 
