@@ -3254,6 +3254,66 @@ function BTV:DiagDialog()
 	end
 end
 
+-- "diag11": live-investigating why BTV:SetDefaultBarEnabled's mirroring
+-- of cfg.enabled into SHOW_MULTI_ACTIONBAR_1-4 doesn't visibly affect the
+-- real Interface Options -> Action Bars checkboxes, unlike the confirmed-
+-- working LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS globals (same plain-
+-- global mechanism, per docs/01-Environment-Capability-Analysis.md §5i
+-- and Button.lua's own IsAlwaysShowMultibars). Dumps every candidate's
+-- CURRENT live value so a before/after comparison (toggle the real
+-- checkbox, or our own Settings checkbox, then run this again) shows
+-- exactly what does and doesn't change - no guessing.
+function BTV:DiagMultiActionBar()
+	self:Print("--- diag11: Multi-ActionBar state ---")
+
+	self:Print("LOCK_ACTIONBAR = " .. tostring(LOCK_ACTIONBAR) .. " (type " .. type(LOCK_ACTIONBAR) .. ")")
+	self:Print("ALWAYS_SHOW_MULTIBARS = " .. tostring(ALWAYS_SHOW_MULTIBARS) .. " (type " .. type(ALWAYS_SHOW_MULTIBARS) .. ")")
+
+	local i
+
+	for i = 1, 4 do
+		local name = "SHOW_MULTI_ACTIONBAR_" .. tostring(i)
+		local value = getglobal(name)
+
+		self:Print(name .. " = " .. tostring(value) .. " (type " .. type(value) .. ")")
+	end
+
+	local frameNames = { "MultiBarBottomLeft", "MultiBarBottomRight", "MultiBarLeft", "MultiBarRight" }
+
+	for i = 1, table.getn(frameNames) do
+		local f = getglobal(frameNames[i])
+
+		if f then
+			self:Print(frameNames[i] .. ": IsShown=" .. tostring(f:IsShown()))
+		else
+			self:Print(frameNames[i] .. ": frame not found")
+		end
+	end
+
+	self:Print("MultiActionBar_Update exists: " .. tostring(MultiActionBar_Update ~= nil))
+	self:Print("SetActionBarToggles exists: " .. tostring(SetActionBarToggles ~= nil))
+	self:Print("ShowMultiCastActionBar exists: " .. tostring(ShowMultiCastActionBar ~= nil))
+
+	-- GetCVar throws a hard Lua error on an unrecognized CVar name on
+	-- this client (§5i) - pcall-guarded so one bad guess doesn't abort
+	-- the rest of this dump.
+	local cvarCandidates = {
+		"multiBarBottomLeft", "multiBarBottomRight", "multiBarLeft", "multiBarRight",
+		"multibarBottomLeft", "multibarBottomRight", "multibarLeft", "multibarRight",
+		"ShowMultiActionBar1", "showMultiActionBar1",
+	}
+
+	for i = 1, table.getn(cvarCandidates) do
+		local ok, value = pcall(GetCVar, cvarCandidates[i])
+
+		if ok and value ~= nil then
+			self:Print("CVar " .. cvarCandidates[i] .. " = " .. tostring(value))
+		end
+	end
+
+	self:Print("--- diag11 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3295,6 +3355,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagBarGap(id1, id2)
 	elseif msg == "diag10" then
 		BTV:DiagDialog()
+	elseif msg == "diag11" then
+		BTV:DiagMultiActionBar()
 	else
 		BTV:ToggleMainMenu()
 	end

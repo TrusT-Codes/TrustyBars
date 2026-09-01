@@ -835,7 +835,13 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
 
 	if nativeGlobal then
-		setglobal(nativeGlobal, enabled and 1 or nil)
+		-- STRING "1", not the number 1 - matches this project's own
+		-- confirmed-working convention for this exact class of native
+		-- global (LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS, both live-
+		-- confirmed stored/compared as the string "1"/"0", not a
+		-- boolean or number - see docs/01-Environment-Capability-
+		-- Analysis.md §5i and Button.lua's own IsAlwaysShowMultibars).
+		setglobal(nativeGlobal, enabled and "1" or nil)
 
 		if MultiActionBar_Update then
 			MultiActionBar_Update()

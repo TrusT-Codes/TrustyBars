@@ -200,6 +200,29 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
+-- Defers `fn` to the next frame via C_Timer.After(0, ...) - DLL-native,
+-- confirmed real (docs/01-Environment-Capability-Analysis.md), never a
+-- hand-rolled OnUpdate poll. Falls back to calling fn immediately if
+-- C_Timer somehow isn't available, same defensive tolerance this
+-- codebase already uses everywhere else it touches C_Timer.
+--
+-- Used specifically to wrap every Fit*View call below: a panel just
+-- Show()'n/populated this same tick can have candidates whose
+-- GetBottom() hasn't resolved to real values yet - live-tested, this
+-- produced a completely wrong (either far too small or far too tall)
+-- viewport on EVERY switch to General/Profiles, self-correcting only on
+-- a second, separate visit (i.e. once the engine had an actual render
+-- frame to settle the newly-shown layout in before anything measured
+-- it). Waiting one frame before measuring fixes this at the source
+-- instead of guessing at which specific read was stale.
+local function DeferFit(fn)
+	if C_Timer and C_Timer.After then
+		C_Timer.After(0, fn)
+	else
+		fn()
+	end
+end
+
 -- Width reserved for each content viewport's scrollbar
 -- (UIPanelScrollFrameTemplate anchors it just outside the scrollframe's
 -- own right edge) - reserved unconditionally, whether or not the current
@@ -4566,8 +4589,9 @@ function BTV:ShowBarPage(barId)
 	-- that it (and the always-visible bar list) are both on-screen and
 	-- positioned - GetTop()/GetBottom() only return real values for
 	-- currently-shown frames, so this has to run after target:Show()
-	-- above, not before it.
-	self:FitSettingsWindowToBarPage(barId)
+	-- above, not before it. Deferred one frame (DeferFit) so its own
+	-- candidates' positions have settled before anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToBarPage(barId) end)
 end
 
 -------------------------------------------------------------------------
@@ -6391,8 +6415,10 @@ function BTV:ShowGeneralView()
 	self:GetOrCreateGeneralPanel():Show()
 
 	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
-	-- :Show() so GetBottom() reads real values.
-	self:FitSettingsWindowToGeneralView()
+	-- :Show() so GetBottom() reads real values. Deferred one frame
+	-- (DeferFit) so its own candidates' positions have settled before
+	-- anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
 end
 
 function BTV:ShowProfilesView()
@@ -6430,8 +6456,10 @@ function BTV:ShowProfilesView()
 	self:GetOrCreateProfilesPanel():Show()
 
 	-- Fix 3: same reasoning as ShowBarPage's call - has to run after
-	-- :Show() so GetBottom() reads real values.
-	self:FitSettingsWindowToProfilesView()
+	-- :Show() so GetBottom() reads real values. Deferred one frame
+	-- (DeferFit) so its own candidates' positions have settled before
+	-- anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
 end
 
 -------------------------------------------------------------------------
@@ -6775,15 +6803,15 @@ function BTV:ShowSettingsFrame()
 	if not settingsFrame.activeBarId then
 		self:ShowBarPage(1)
 	elseif settingsFrame.currentView == "general" then
-		self:FitSettingsWindowToGeneralView()
+		DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
 	elseif settingsFrame.currentView == "profiles" then
-		self:FitSettingsWindowToProfilesView()
+		DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
 	else
 		-- RefreshBarList (above) just rebuilt the bar-list rows from
 		-- scratch (e.g. a bar added/removed while the window was closed),
 		-- so even though the active page itself isn't changing here, the
 		-- window still needs to refit against the new row count.
-		self:FitSettingsWindowToBarPage(settingsFrame.activeBarId)
+		DeferFit(function() BTV:FitSettingsWindowToBarPage(settingsFrame.activeBarId) end)
 	end
 end
 
