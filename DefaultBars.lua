@@ -861,6 +861,8 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		-- side effects for that.
 		setglobal(nativeGlobal, enabled and "1" or nil)
 	end
+
+	self:FixRightActionBar2Checkbox()
 end
 
 -- Same-session reactive sync: reconciles our OWN cfg.enabled (bars 2-5)
@@ -908,6 +910,37 @@ function BTV:ReconcileDefaultBarEnabledFromNative()
 				end
 			end
 		end
+	end
+
+	self:FixRightActionBar2Checkbox()
+end
+
+-- Live-confirmed (/btv diag14, user's own manual :Enable() test): this
+-- fork's Options -> Action Bars panel is a custom framework (not stock
+-- FrameXML), and its "Show Right ActionBar 2" checkbox
+-- (OptionsFrameCheckButton5Control) gets stuck permanently disabled
+-- rather than reactively toggling with "Show Right ActionBar"
+-- (bar id 4) the way the panel's own nesting/indentation implies it
+-- should. Manually re-enabling it sticks (not a recurring re-disable),
+-- so this just mirrors bar 4's real enabled state onto it directly,
+-- every time we already have a reason to touch bar 4/5's state anyway.
+-- Only fixes the ENABLED state, not the label's own grey text color
+-- (that display, separately, doesn't seem to be tied to :IsEnabled()) -
+-- flagged as a known remaining cosmetic gap, not chased further without
+-- knowing that label's real color values on this framework.
+function BTV:FixRightActionBar2Checkbox()
+	local control = getglobal("OptionsFrameCheckButton5Control")
+
+	if not (control and control.Enable and control.Disable) then
+		return
+	end
+
+	local bar4Cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[4]
+
+	if bar4Cfg and bar4Cfg.enabled then
+		control:Enable()
+	else
+		control:Disable()
 	end
 end
 
