@@ -827,15 +827,19 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 
 	-- Matches native's own dependency (bar 5 requires bar 4 - see
 	-- FixRightActionBar2Checkbox) - user can opt out via the General tab.
-	if id == 4 and not enabled and not BTVanillaDB.bypassRightActionBar2Dependency then
-		self:SetDefaultBarEnabled(5, false)
+	if id == 4 then
+		if enabled ~= wasEnabled and not enabled and not BTVanillaDB.bypassRightActionBar2Dependency then
+			self:SetDefaultBarEnabled(5, false)
+		end
 
-		-- SetDefaultBarEnabled(5, ...) alone doesn't refresh OUR settings
-		-- UI's own bar5 checkbox (only ReconcileDefaultBarEnabledFromNative
-		-- does that, for whichever id it's reconciling - id 4 here, not
-		-- 5) - without this, the bar visually Hide()s but its Settings
-		-- checkbox stays stuck checked until manually re-toggled.
-		if BTV:IsSettingsFrameCreated() then
+		-- Refresh bar 5's own Settings UI (sidebar + page enableCheckbox)
+		-- every time bar 4's state changes, in EITHER direction - it
+		-- locks/unlocks based on bar 4 (RefreshBarSettingsPage/
+		-- CreateBarListRow), and SetDefaultBarEnabled alone doesn't
+		-- refresh any UI on its own (only
+		-- ReconcileDefaultBarEnabledFromNative does, for whichever id
+		-- IT'S reconciling - id 4 here, never 5).
+		if enabled ~= wasEnabled and BTV:IsSettingsFrameCreated() then
 			BTV:RefreshBarList()
 			BTV:RefreshBarSettingsPage(5)
 		end
