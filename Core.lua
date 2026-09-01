@@ -3290,6 +3290,29 @@ function BTV:DiagMultiActionBar()
 		end
 	end
 
+	-- Testing the user's own hypothesis: bars 2-5's real BUTTONS
+	-- (MultiBar*Button1-12) have their :Show() permanently overridden to
+	-- a no-op by CreateFixedSlotDefaultBars, so they can never actually
+	-- become IsShown()=1 again regardless of the bar FRAME's or the
+	-- SavedVariable's own state - if the real Options panel's "Right
+	-- ActionBar 2 requires Right ActionBar 1" dependency check reads
+	-- BUTTON-level visibility (not the frame's) to decide whether Bar 1
+	-- currently "counts" as shown, that would explain Bar 2 staying
+	-- greyed out no matter what the frame/global say.
+	local id
+
+	for id = 2, 5 do
+		local buttonName = self.DEFAULT_BAR_FRAME_PREFIXES[id] .. "1"
+		local button = getglobal(buttonName)
+
+		if button then
+			self:Print(buttonName .. ": IsShown=" .. tostring(button:IsShown()) ..
+				" IsVisible=" .. tostring(button:IsVisible()))
+		else
+			self:Print(buttonName .. ": frame not found")
+		end
+	end
+
 	self:Print("MultiActionBar_Update exists: " .. tostring(MultiActionBar_Update ~= nil))
 	self:Print("SetActionBarToggles exists: " .. tostring(SetActionBarToggles ~= nil))
 	self:Print("ShowMultiCastActionBar exists: " .. tostring(ShowMultiCastActionBar ~= nil))
