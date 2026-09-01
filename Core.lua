@@ -3485,6 +3485,55 @@ function BTV:DiagMouseFocus()
 	self:Print("--- diag14 end ---")
 end
 
+-- "diag15": finds the greyed-out text region on checkbox 5 (Right
+-- ActionBar 2, still grey even when enabled/checked) and dumps its
+-- current color, plus checkbox 4's (normal, for comparison) - so the
+-- exact RGB to force can be read directly instead of guessed.
+function BTV:DiagCheckboxTextColor()
+	self:Print("--- diag15: checkbox text colors ---")
+
+	local names = {
+		"OptionsFrameCheckButton4", "OptionsFrameCheckButton5",
+		"OptionsFrameCheckButton4Control", "OptionsFrameCheckButton5Control",
+		"OptionsFrameCheckButton4Text", "OptionsFrameCheckButton5Text",
+	}
+	local i
+
+	for i = 1, table.getn(names) do
+		local btn = getglobal(names[i])
+
+		if not btn then
+			self:Print(names[i] .. ": not found")
+		elseif btn.GetObjectType and btn:GetObjectType() == "FontString" then
+			local okColor, cr, cg, cb = pcall(function() return btn:GetTextColor() end)
+
+			self:Print(
+				names[i] .. " (itself a FontString) text='" .. tostring(btn:GetText()) .. "'" ..
+				" color=" .. tostring(okColor and cr) .. "," .. tostring(okColor and cg) .. "," .. tostring(okColor and cb)
+			)
+		else
+			local regions = { btn:GetRegions() }
+			local j
+
+			for j = 1, table.getn(regions) do
+				local r = regions[j]
+				local okType, objType = pcall(function() return r.GetObjectType and r:GetObjectType() end)
+
+				if okType and objType == "FontString" then
+					local okColor, cr, cg, cb, ca = pcall(function() return r:GetTextColor() end)
+
+					self:Print(
+						names[i] .. " region" .. tostring(j) .. " text='" .. tostring(r:GetText()) .. "'" ..
+						" color=" .. tostring(okColor and cr) .. "," .. tostring(okColor and cg) .. "," .. tostring(okColor and cb)
+					)
+				end
+			end
+		end
+	end
+
+	self:Print("--- diag15 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3534,6 +3583,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagActionBarsPanelTree()
 	elseif msg == "diag14" then
 		BTV:DiagMouseFocus()
+	elseif msg == "diag15" then
+		BTV:DiagCheckboxTextColor()
 	else
 		BTV:ToggleMainMenu()
 	end

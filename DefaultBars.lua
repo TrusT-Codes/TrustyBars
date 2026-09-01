@@ -825,6 +825,12 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		self:ReflowStanceBarForBar2Toggle(enabled)
 	end
 
+	-- Matches native's own dependency (bar 5 requires bar 4 - see
+	-- FixRightActionBar2Checkbox): disabling bar 4 also disables bar 5.
+	if id == 4 and not enabled then
+		self:SetDefaultBarEnabled(5, false)
+	end
+
 	-- Mirror our own state into the native "Show ... ActionBar" global
 	-- (Interface Options -> Action Bars) purely so that checkbox doesn't
 	-- look stuck/wrong to the player - our own cfg.enabled above stays
