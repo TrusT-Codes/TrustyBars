@@ -616,10 +616,12 @@ function BTV:SetDefaultBarSpacing(id, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- Unconditional real minimum spacing, same for both border styles -
-	-- see Bar.lua's SetBarSpacing for why. Mirrors that clamp exactly.
-	if spacing < self.VANILLA_SPACING_FLOOR then
-		spacing = self.VANILLA_SPACING_FLOOR
+	-- Vanilla-only real minimum spacing - see Bar.lua's SetBarSpacing
+	-- for why. Mirrors that clamp exactly.
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then

@@ -513,13 +513,16 @@ function BTV:SetBarSpacing(bar, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- Unconditional real minimum spacing, same for both border styles -
-	-- now that modern/vanilla have the same visual footprint (buttonSize
-	-- correction, BTV.MODERN_BUTTON_SIZE_DELTA), the floor is just the
-	-- single shared minimum both styles use, not a vanilla-only overhang
-	-- concern any more.
-	if spacing < self.VANILLA_SPACING_FLOOR then
-		spacing = self.VANILLA_SPACING_FLOOR
+	-- Vanilla-only real minimum spacing - modern needs none (global
+	-- spacing override depends on this asymmetry to compute the right
+	-- real value per style; Settings.lua's GetSpacingDisplayOffset
+	-- separately keeps the per-bar slider's DISPLAYED number invariant
+	-- across a style switch, so the two together give the desired
+	-- behavior without forcing modern's real minimum up to match).
+	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
 	if spacing > 20 then
@@ -646,9 +649,12 @@ function BTV:ApplyGlobalSpacing()
 		return
 	end
 
-	-- Unconditional floor, same for both styles - see SetBarSpacing's
-	-- own comment.
-	local real = (BTVanillaDB.globalSpacingValue or 0) + self.VANILLA_SPACING_FLOOR
+	-- Vanilla-only floor - see SetBarSpacing's own comment. The global
+	-- slider's own displayed number is the raw stored value, never
+	-- itself offset, so this asymmetry is what makes the SAME displayed
+	-- global spacing number apply the correct real spacing per style.
+	local floor = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
+	local real = (BTVanillaDB.globalSpacingValue or 0) + floor
 
 	local barId
 	local bar

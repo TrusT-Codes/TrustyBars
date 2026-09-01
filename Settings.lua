@@ -128,22 +128,19 @@ local SPACING_MIN = 0
 local SPACING_MAX = 20
 local SPACING_STEP = 1
 
--- Real-to-displayed spacing offset for the default/custom bar (1-9)
--- Spacing slider AND the global Spacing slider (General tab) - NOT the
--- simple-bar (Bag Bar/Micro Menu/etc.) slider, which is out of scope.
--- Unconditional, same for both border styles - now that modern/vanilla
--- have the same visual footprint (buttonSize correction), the real
--- minimum spacing (BTV.VANILLA_SPACING_FLOOR) is a single shared value
--- both styles use, not a vanilla-only concern. Rather than showing that
--- floor directly (a confusing non-zero minimum), every display
--- touchpoint subtracts this offset so the UI always reads a plain
--- 0-based range - and since the offset is now the SAME constant in both
--- styles, the same real spacing value always shows the same number
--- regardless of style; switching styles never changes what's displayed
--- (or the real value itself - ApplyGlobalButtonStyle never touches
--- spacing). Real values are only ever written at the OnValueChanged/
--- refresh boundary - the slider's own on-screen value is always in
--- DISPLAYED space.
+-- Real-to-displayed spacing offset for the PER-BAR default/custom bar
+-- (1-9) spacing slider - NOT the simple-bar (Bag Bar/Micro Menu/etc.)
+-- slider, and NOT the global-spacing slider's own displayed number
+-- (that one shows BTVanillaDB.globalSpacingValue raw, un-offset - see
+-- Bar.lua's ApplyGlobalSpacing). Deliberately a FIXED constant,
+-- unconditional on border style, even though the REAL minimum spacing
+-- clamp (Bar.lua's SetBarSpacing) stays vanilla-only (0 in modern) -
+-- this is what makes the per-bar slider's DISPLAYED number invariant
+-- across a style switch (ApplyGlobalButtonStyle never touches a bar's
+-- real spacing, so real - offset stays the same number in both styles
+-- only if offset itself doesn't change with style). Real values are
+-- only ever written at the OnValueChanged/refresh boundary - the
+-- slider's own on-screen value is always in DISPLAYED space.
 local function GetSpacingDisplayOffset()
 	return BTV.VANILLA_SPACING_FLOOR
 end
