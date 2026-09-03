@@ -725,16 +725,20 @@ BTVListRowMixin = {}
 function BTV:CreateListRow(parent, name)
 	local row = CreateFrame("Button", name, parent)
 
-	Mixin(row, BTVListRowMixin)
-
-	-- Captured before OnLoad below ever runs (and before BTVListRowMixin's
-	-- own SetWidth override, defined further down, shadows it on this
-	-- instance) - same capture-then-wrap technique BTV:StyleModernButton
-	-- uses for Enable/Disable. This lets the row's own SetWidth (called by
-	-- every caller today, e.g. CreateBarListRow's row:SetWidth(110)) keep
-	-- the fade strips in sync with the row's size "for free", without
-	-- every call site needing to remember to also call SetVisualWidth.
+	-- Captured BEFORE Mixin below overwrites row.SetWidth with
+	-- BTVListRowMixin's own override - same capture-then-wrap technique
+	-- BTV:StyleModernButton uses for Enable/Disable. This lets the row's
+	-- own SetWidth (called by every caller today, e.g. CreateBarListRow's
+	-- row:SetWidth(110)) keep the fade strips in sync with the row's size
+	-- "for free", without every call site needing to remember to also call
+	-- SetVisualWidth. (Capturing this AFTER Mixin, as an earlier version of
+	-- this function did, captured the mixin's own SetWidth instead of the
+	-- native one - an infinite self-recursion the moment SetWidth was
+	-- called, live-tested and confirmed as a stack overflow opening
+	-- Settings.)
 	row.nativeSetWidth = row.SetWidth
+
+	Mixin(row, BTVListRowMixin)
 
 	row:OnLoad()
 
