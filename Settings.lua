@@ -200,6 +200,17 @@ local INDENT_INPUT   = 85
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
 
+-- Matches f.listPanel's own backdrop (SetWidth 140, SetBackdrop insets 2px
+-- each side, CreateSettingsFrame) - every row's fade-strip highlight
+-- (BTVListRowMixin:SetVisualWidth) spans this SAME fixed width/offset
+-- regardless of whether that particular row has an inline checkbox, so the
+-- highlighted area always fills the boxed list panel's own inner content
+-- rectangle edge-to-edge and reads as symmetrical, instead of stopping at
+-- wherever each row's own clickable width (110, or 132 with a checkbox)
+-- happens to end.
+local LIST_ITEM_VISUAL_OFFSET = 2
+local LIST_ITEM_VISUAL_WIDTH = 140 - (LIST_ITEM_VISUAL_OFFSET * 2)
+
 -- Defers `fn` to the next frame via C_Timer.After(0, ...) - DLL-native,
 -- confirmed real (docs/01-Environment-Capability-Analysis.md), never a
 -- hand-rolled OnUpdate poll. Falls back to calling fn immediately if
@@ -713,9 +724,14 @@ local function CreateSettingsFrame()
 	-- the frame edges by this same amount), live-tested and confirmed.
 	local TAB_FADE_INSET = 3
 
-	local function ApplyTabFadeHighlight(button)
-		button:SetBackdropBorderColor(0, 0, 0, 0)
+	-- StyleModernButton's own rest-state border color (UIWidgets.lua) -
+	-- restored here as the tab's own "inactive" border color, since tabs
+	-- keep a real border (unlike bar-list rows) for visual distinctness,
+	-- just recolored per-state instead of left at StyleModernButton's own
+	-- fixed grey/gold swap.
+	local TAB_BORDER_REST_COLOR = { 0.55, 0.55, 0.55 }
 
+	local function ApplyTabFadeHighlight(button)
 		local stripWidth = 90 - (TAB_FADE_INSET * 2)
 		local stripHeight = 20 - (TAB_FADE_INSET * 2)
 
@@ -746,15 +762,38 @@ local function CreateSettingsFrame()
 		hoverStrip:SetPeakAlpha(0.5)
 		hoverStrip:Hide()
 
+		button.isHovering = false
+
+		-- Border color always tracks whichever fade is currently the most
+		-- prominent for this button - hover wins over select (matches the
+		-- fade layering, hoverStrip drawn on top of selectStrip), select
+		-- wins over rest. Called on hover change AND from
+		-- BTV:RefreshActiveTabHighlight (select-state changes elsewhere).
+		function button:UpdateFadeBorderColor()
+			if self.isHovering then
+				self:SetBackdropBorderColor(BTV.UI_HOVER_COLOR[1], BTV.UI_HOVER_COLOR[2], BTV.UI_HOVER_COLOR[3], 1)
+			elseif self.tabSelectStrip and self.tabSelectStrip:IsShown() then
+				self:SetBackdropBorderColor(BTV.UI_ACCENT_COLOR[1], BTV.UI_ACCENT_COLOR[2], BTV.UI_ACCENT_COLOR[3], 1)
+			else
+				self:SetBackdropBorderColor(TAB_BORDER_REST_COLOR[1], TAB_BORDER_REST_COLOR[2], TAB_BORDER_REST_COLOR[3], 1)
+			end
+		end
+
+		button:UpdateFadeBorderColor()
+
 		-- Set AFTER StyleModernButton, which installed its own
 		-- OnEnter/OnLeave above - this replaces them rather than adding
 		-- to them. OnMouseDown/OnMouseUp (press-nudge) are untouched.
 		button:SetScript("OnEnter", function()
+			this.isHovering = true
 			hoverStrip:Show()
+			this:UpdateFadeBorderColor()
 		end)
 
 		button:SetScript("OnLeave", function()
+			this.isHovering = false
 			hoverStrip:Hide()
+			this:UpdateFadeBorderColor()
 		end)
 	end
 
@@ -851,6 +890,7 @@ local function CreateSettingsFrame()
 	-- before settingsFrame is even assigned where that function can't be
 	-- called yet.
 	tabBarsButton.tabSelectStrip:Show()
+	tabBarsButton:UpdateFadeBorderColor()
 
 	-------------------------------------------------------------------------
 	-- Divider between the tab row and the content below it - the tab
@@ -6692,6 +6732,10 @@ function BTV:RefreshActiveTabHighlight()
 		if button.tabSelectStrip then
 			button.tabSelectStrip:SetShown(settingsFrame.currentView == view)
 		end
+
+		if button.UpdateFadeBorderColor then
+			button:UpdateFadeBorderColor()
+		end
 	end
 end
 
@@ -6803,6 +6847,14 @@ local function CreateBarListRow(barId, isDefault, cfg)
 	row:SetWidth(110)
 	row:SetHeight(LIST_ROW_HEIGHT)
 
+	-- Every row's highlight spans the SAME fixed width/offset (matching
+	-- f.listPanel's own boxed inner area) regardless of whether this
+	-- particular row has an inline checkbox - see LIST_ITEM_VISUAL_WIDTH's
+	-- own comment. Overridden again below for checkbox rows only in the
+	-- sense that they'd already match (checkbox rows just also get their
+	-- own hover events forwarded into the same highlight).
+	row:SetVisualWidth(LIST_ITEM_VISUAL_WIDTH, LIST_ITEM_VISUAL_OFFSET)
+
 	row:SetLabel(
 		GetBarDisplayName(barId, isDefault)
 	)
@@ -6874,14 +6926,11 @@ local function CreateBarListRow(barId, isDefault, cfg)
 
 		checkbox.barId = barId
 
-		-- Extends the row's own fade-strip hover highlight (BTVListRowMixin
-		-- via BTV:CreateFadeStrip) across this checkbox's own space too,
-		-- and widens the row's visual strips to cover it (row's own click
-		-- hit-box stays at its normal 110px - only the highlight widens).
-		-- Row width (110) + gap (2) + checkbox width (20), matching the
-		-- literals used just above/below in this function.
-		row:SetVisualWidth(110 + 2 + 20)
-
+		-- Forwards the checkbox's own hover events into the row's shared
+		-- highlight (BTVListRowMixin:OnRowEnter/OnRowLeave) - the highlight
+		-- itself already spans the checkbox's space too, since every row
+		-- (checkbox or not) is set to the same fixed LIST_ITEM_VISUAL_WIDTH
+		-- above, not just checkbox rows.
 		checkbox:SetScript("OnEnter", function() row:OnRowEnter() end)
 		checkbox:SetScript("OnLeave", function() row:OnRowLeave() end)
 

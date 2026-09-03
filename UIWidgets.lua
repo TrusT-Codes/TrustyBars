@@ -831,13 +831,25 @@ function BTVListRowMixin:SetDisabled(disabled)
 	self:UpdateVisualState()
 end
 
--- Resizes only the two fade strips, NOT the row's own click hit-box
--- (self:SetWidth) - lets the visual highlight extend across a sibling
--- inline checkbox (Settings.lua's CreateBarListRow) without changing what
--- area the row itself actually responds to clicks/hover on. Works because
--- WoW doesn't clip a child texture to its parent frame's own bounds.
-function BTVListRowMixin:SetVisualWidth(width)
+-- Resizes/repositions only the two fade strips, NOT the row's own click
+-- hit-box (self:SetWidth) - lets the visual highlight extend across a
+-- sibling inline checkbox (Settings.lua's CreateBarListRow), or align to
+-- a container box wider than the row itself (e.g. the bar-list sidebar's
+-- own bordered panel), without changing what area the row itself actually
+-- responds to clicks/hover on. Works because WoW doesn't clip a child
+-- texture to its parent frame's own bounds. offsetX (default 0) shifts
+-- BOTH strips' own LEFT anchor relative to the row - lets a caller align
+-- the highlight to a box that doesn't start flush with the row's own left
+-- edge (e.g. a panel with its own left inset/padding).
+function BTVListRowMixin:SetVisualWidth(width, offsetX)
+	offsetX = offsetX or 0
+
+	self.selectStrip:ClearAllPoints()
+	self.selectStrip:SetPoint("LEFT", self, "LEFT", offsetX, 0)
 	self.selectStrip:SetStripWidth(width)
+
+	self.hoverStrip:ClearAllPoints()
+	self.hoverStrip:SetPoint("LEFT", self, "LEFT", offsetX, 0)
 	self.hoverStrip:SetStripWidth(width)
 end
 
