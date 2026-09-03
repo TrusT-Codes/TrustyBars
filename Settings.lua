@@ -858,7 +858,7 @@ local function CreateSettingsFrame()
 		f.listPanel,
 		"TOP",
 		0,
-		0
+		-8
 	)
 
 	listTitle:SetText("Action Bars")
