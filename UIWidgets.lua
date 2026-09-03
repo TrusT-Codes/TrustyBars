@@ -23,6 +23,13 @@
 
 local BTV = BTVanilla
 
+-- Shared colors for the fade-strip hover/select treatment (BTVFadeStripMixin
+-- below) - one place to change "the gold" addon-wide instead of a scattered
+-- literal per call site (StyleModernButton's own hover border literal is
+-- left as its own inline value on purpose - out of scope here, not broken).
+BTV.UI_ACCENT_COLOR = { 1, 0.82, 0 }
+BTV.UI_HOVER_COLOR = { 1, 1, 1 }
+
 -------------------------------------------------------------------------
 -- BTVInlineDropdownMixin
 --
@@ -596,32 +603,121 @@ function BTV:ShowDialog(config)
 end
 
 -------------------------------------------------------------------------
+-- BTVFadeStripMixin / BTV:CreateFadeStrip
+--
+-- A horizontal transparent -> solid -> transparent highlight strip, split
+-- 10%/80%/10% across its own width. This client's Texture:SetGradientAlpha
+-- only interpolates between 2 stops (no native 3-stop gradient primitive),
+-- so the flat 80% middle section has to be a separately-colored plain
+-- WHITE8X8 texture, not a wider gradient - hence 3 stacked textures rather
+-- than 1. Used both by the top nav tabs (Settings.lua, replacing their old
+-- solid-border hover swap) and by BTVListRowMixin's select/hover layers
+-- below - one widget, two call sites.
+-------------------------------------------------------------------------
+
+BTVFadeStripMixin = {}
+
+-- parent: frame to anchor into. width/height: the strip's initial pixel
+-- size (see :SetStripWidth to resize later without recreating textures).
+function BTV:CreateFadeStrip(parent, width, height)
+	local strip = CreateFrame("Frame", nil, parent)
+
+	Mixin(strip, BTVFadeStripMixin)
+
+	-- Never wants to intercept mouse events itself - it's a pure visual
+	-- overlay, layered over whatever real interactive frame (button/row/
+	-- checkbox) it's decorating, and per item 4 of the styling pass it can
+	-- extend past its own parent row's width into a sibling checkbox's
+	-- hit-region, where it must not steal clicks/hover.
+	strip:EnableMouse(false)
+	strip:SetHeight(height)
+
+	strip.r, strip.g, strip.b = 1, 1, 1
+	strip.peakAlpha = 1
+
+	strip.leftTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.leftTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	strip.midTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.midTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	strip.rightTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.rightTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	strip:SetStripWidth(width)
+	strip:ApplyFadeColors()
+
+	return strip
+end
+
+-- Resizes the frame and recomputes the 10/80/10 texture split - kept
+-- separate from color/alpha updates so BTVListRowMixin:SetVisualWidth can
+-- resize an already-colored strip without touching its color.
+function BTVFadeStripMixin:SetStripWidth(width)
+	self:SetWidth(width)
+
+	local edgeWidth = width * 0.1
+	local midWidth = width - (edgeWidth * 2)
+	local height = self:GetHeight()
+
+	self.leftTex:ClearAllPoints()
+	self.leftTex:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
+	self.leftTex:SetWidth(edgeWidth)
+	self.leftTex:SetHeight(height)
+
+	self.midTex:ClearAllPoints()
+	self.midTex:SetPoint("TOPLEFT", self.leftTex, "TOPRIGHT", 0, 0)
+	self.midTex:SetWidth(midWidth)
+	self.midTex:SetHeight(height)
+
+	self.rightTex:ClearAllPoints()
+	self.rightTex:SetPoint("TOPLEFT", self.midTex, "TOPRIGHT", 0, 0)
+	self.rightTex:SetWidth(edgeWidth)
+	self.rightTex:SetHeight(height)
+end
+
+-- Re-runs the gradient/solid-color calls with the current r/g/b/peakAlpha -
+-- shared by SetFadeColor and SetPeakAlpha so each only has to update the
+-- one field it owns before calling this.
+function BTVFadeStripMixin:ApplyFadeColors()
+	local r, g, b, a = self.r, self.g, self.b, self.peakAlpha
+
+	self.leftTex:SetGradientAlpha("HORIZONTAL", r, g, b, 0, r, g, b, a)
+	self.midTex:SetVertexColor(r, g, b, a)
+	self.rightTex:SetGradientAlpha("HORIZONTAL", r, g, b, a, r, g, b, 0)
+end
+
+function BTVFadeStripMixin:SetFadeColor(r, g, b)
+	self.r, self.g, self.b = r, g, b
+	self:ApplyFadeColors()
+end
+
+function BTVFadeStripMixin:SetPeakAlpha(a)
+	self.peakAlpha = a
+	self:ApplyFadeColors()
+end
+
+-------------------------------------------------------------------------
 -- BTVListRowMixin
 --
--- Generic reusable list-row widget: the same SetBackdrop technique as
--- BTV:StyleModernButton above, but with its border alpha at 0 at rest
--- (fading in on hover) instead of always visible - the "divided list,
+-- Generic reusable list-row widget: owns two BTVFadeStripMixin layers
+-- (selectStrip, hoverStrip) instead of the border-and-tinted-backdrop
+-- technique BTV:StyleModernButton uses - the "divided list, fading
 -- highlight on hover/select" look from this client's native Options
 -- window, rather than a dialog-style button. Shared by both the bar-list
 -- sidebar (Settings.lua's CreateBarListRow) and the settings search
 -- results list - one widget, two call sites, per the UI-redesign plan.
 --
--- States: rest / hover / selected / selected+hover / disabled. Disabled
--- always wins - a disabled row never shows a hover/selected highlight
--- (even if it was selected before becoming disabled, e.g. bar5's row
--- losing its dependency lock's grey-out) and blocks the onClick callback.
+-- States: rest / hover / selected / selected+hover / disabled. Both
+-- strips can be shown at once (selected + hovered layers the neutral
+-- hoverStrip on top of the gold selectStrip) - this naturally covers the
+-- old "selected+hover" 4th color without hand-picking one. Disabled
+-- always wins - a disabled row never shows either strip (even if it was
+-- selected before becoming disabled, e.g. bar5's row losing its
+-- dependency lock's grey-out) and blocks the onClick callback.
 -------------------------------------------------------------------------
 
 BTVListRowMixin = {}
-
-local LIST_ROW_BORDER_REST = { 0, 0, 0, 0 }
-local LIST_ROW_BORDER_HOVER = { 1, 0.82, 0, 1 }
-local LIST_ROW_BORDER_SELECTED = { 1, 0.82, 0, 0.7 }
-local LIST_ROW_BG_REST = { 1, 1, 1, 0.04 }
-local LIST_ROW_BG_HOVER = { 1, 1, 1, 0.12 }
-local LIST_ROW_BG_SELECTED = { 1, 0.82, 0, 0.18 }
-local LIST_ROW_BG_SELECTED_HOVER = { 1, 0.82, 0, 0.26 }
-local LIST_ROW_BG_DISABLED = { 1, 1, 1, 0.02 }
 
 -- parent: frame to anchor into. name: optional - unlike
 -- BTVInlineDropdownMixin's UIDropDownMenuTemplate wrapper, this widget has
@@ -630,38 +726,54 @@ function BTV:CreateListRow(parent, name)
 	local row = CreateFrame("Button", name, parent)
 
 	Mixin(row, BTVListRowMixin)
+
+	-- Captured before OnLoad below ever runs (and before BTVListRowMixin's
+	-- own SetWidth override, defined further down, shadows it on this
+	-- instance) - same capture-then-wrap technique BTV:StyleModernButton
+	-- uses for Enable/Disable. This lets the row's own SetWidth (called by
+	-- every caller today, e.g. CreateBarListRow's row:SetWidth(110)) keep
+	-- the fade strips in sync with the row's size "for free", without
+	-- every call site needing to remember to also call SetVisualWidth.
+	row.nativeSetWidth = row.SetWidth
+
 	row:OnLoad()
 
 	return row
 end
 
 function BTVListRowMixin:OnLoad()
-	self:SetBackdrop({
-		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-		tile = true,
-		tileSize = 16,
-		edgeSize = 10,
-		insets = { left = 2, right = 2, top = 2, bottom = 2 },
-	})
-
 	self.isSelected = false
 	self.isDisabled = false
 	self.isHovering = false
 	self.onClick = nil
+
+	local width, height = self:GetWidth(), self:GetHeight()
+
+	self.selectStrip = BTV:CreateFadeStrip(self, width, height)
+	self.selectStrip:SetPoint("LEFT", self, "LEFT", 0, 0)
+	self.selectStrip:SetFadeColor(BTV.UI_ACCENT_COLOR[1], BTV.UI_ACCENT_COLOR[2], BTV.UI_ACCENT_COLOR[3])
+	self.selectStrip:SetPeakAlpha(0.35)
+	self.selectStrip:Hide()
+
+	-- Created (and therefore drawn) after selectStrip, so it layers on top
+	-- of it when both are shown at once - no explicit frame level needed,
+	-- sibling frames created later draw above earlier siblings by default.
+	self.hoverStrip = BTV:CreateFadeStrip(self, width, height)
+	self.hoverStrip:SetPoint("LEFT", self, "LEFT", 0, 0)
+	self.hoverStrip:SetFadeColor(BTV.UI_HOVER_COLOR[1], BTV.UI_HOVER_COLOR[2], BTV.UI_HOVER_COLOR[3])
+	self.hoverStrip:SetPeakAlpha(0.25)
+	self.hoverStrip:Hide()
 
 	self.label = self:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
 	self.label:SetPoint("LEFT", self, "LEFT", 8, 0)
 	self.label:SetJustifyH("LEFT")
 
 	self:SetScript("OnEnter", function()
-		this.isHovering = true
-		this:UpdateVisualState()
+		this:OnRowEnter()
 	end)
 
 	self:SetScript("OnLeave", function()
-		this.isHovering = false
-		this:UpdateVisualState()
+		this:OnRowLeave()
 	end)
 
 	self:SetScript("OnClick", function()
@@ -700,30 +812,64 @@ function BTVListRowMixin:SetDisabled(disabled)
 	self:UpdateVisualState()
 end
 
+-- Resizes only the two fade strips, NOT the row's own click hit-box
+-- (self:SetWidth) - lets the visual highlight extend across a sibling
+-- inline checkbox (Settings.lua's CreateBarListRow) without changing what
+-- area the row itself actually responds to clicks/hover on. Works because
+-- WoW doesn't clip a child texture to its parent frame's own bounds.
+function BTVListRowMixin:SetVisualWidth(width)
+	self.selectStrip:SetStripWidth(width)
+	self.hoverStrip:SetStripWidth(width)
+end
+
+-- Overrides the native Button:SetWidth (captured as self.nativeSetWidth in
+-- BTV:CreateListRow before this shadows it) so the common case - a row
+-- with no inline checkbox, or the initial row:SetWidth(110) before a
+-- checkbox is added - keeps its strips sized to match without the caller
+-- having to also call SetVisualWidth. A later explicit SetVisualWidth
+-- call (e.g. once a checkbox exists) simply overrides this again.
+function BTVListRowMixin:SetWidth(width)
+	self.nativeSetWidth(self, width)
+
+	if self.selectStrip then
+		self.selectStrip:SetStripWidth(width)
+		self.hoverStrip:SetStripWidth(width)
+	end
+end
+
+-- Factored out of the row's own OnEnter/OnLeave scripts (see OnLoad) so
+-- another frame - e.g. a sibling inline checkbox that wants to share this
+-- row's hover fade - can invoke the exact same logic without needing
+-- `this` to be the row itself.
+function BTVListRowMixin:OnRowEnter()
+	self.isHovering = true
+	self:UpdateVisualState()
+end
+
+function BTVListRowMixin:OnRowLeave()
+	self.isHovering = false
+	self:UpdateVisualState()
+end
+
 function BTVListRowMixin:UpdateVisualState()
 	if self.isDisabled then
-		self:SetBackdropColor(LIST_ROW_BG_DISABLED[1], LIST_ROW_BG_DISABLED[2], LIST_ROW_BG_DISABLED[3], LIST_ROW_BG_DISABLED[4])
-		self:SetBackdropBorderColor(LIST_ROW_BORDER_REST[1], LIST_ROW_BORDER_REST[2], LIST_ROW_BORDER_REST[3], LIST_ROW_BORDER_REST[4])
+		self.selectStrip:Hide()
+		self.hoverStrip:Hide()
 		self.label:SetTextColor(0.5, 0.5, 0.5)
 		return
 	end
 
 	self.label:SetTextColor(1, 1, 1)
 
-	local bg = LIST_ROW_BG_REST
-	local border = LIST_ROW_BORDER_REST
-
-	if self.isSelected and self.isHovering then
-		bg = LIST_ROW_BG_SELECTED_HOVER
-		border = LIST_ROW_BORDER_SELECTED
-	elseif self.isSelected then
-		bg = LIST_ROW_BG_SELECTED
-		border = LIST_ROW_BORDER_SELECTED
-	elseif self.isHovering then
-		bg = LIST_ROW_BG_HOVER
-		border = LIST_ROW_BORDER_HOVER
+	if self.isSelected then
+		self.selectStrip:Show()
+	else
+		self.selectStrip:Hide()
 	end
 
-	self:SetBackdropColor(bg[1], bg[2], bg[3], bg[4])
-	self:SetBackdropBorderColor(border[1], border[2], border[3], border[4])
+	if self.isHovering then
+		self.hoverStrip:Show()
+	else
+		self.hoverStrip:Hide()
+	end
 end

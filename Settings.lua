@@ -702,6 +702,33 @@ local function CreateSettingsFrame()
 
 	f.currentView = "bars"
 
+	-- Top nav tabs get a fading gold highlight (BTV:CreateFadeStrip,
+	-- UIWidgets.lua) instead of BTV:StyleModernButton's own default solid
+	-- border swap - scoped to just these 3 buttons per the styling pass
+	-- ("the top navigation row" only); every other StyleModernButton call
+	-- site in this file keeps its original border-swap hover look.
+	local function ApplyTabFadeHighlight(button)
+		button:SetBackdropBorderColor(0, 0, 0, 0)
+
+		local strip = BTV:CreateFadeStrip(button, 90, 20)
+
+		strip:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
+		strip:SetFadeColor(BTV.UI_ACCENT_COLOR[1], BTV.UI_ACCENT_COLOR[2], BTV.UI_ACCENT_COLOR[3])
+		strip:SetPeakAlpha(0.5)
+		strip:Hide()
+
+		-- Set AFTER StyleModernButton, which installed its own
+		-- OnEnter/OnLeave above - this replaces them rather than adding
+		-- to them. OnMouseDown/OnMouseUp (press-nudge) are untouched.
+		button:SetScript("OnEnter", function()
+			strip:Show()
+		end)
+
+		button:SetScript("OnLeave", function()
+			strip:Hide()
+		end)
+	end
+
 	local tabBarsButton = CreateFrame(
 		"Button",
 		nil,
@@ -720,6 +747,7 @@ local function CreateSettingsFrame()
 
 	BTV:StyleModernButton(tabBarsButton, 90, 90)
 	tabBarsButton:SetText("Bars")
+	ApplyTabFadeHighlight(tabBarsButton)
 
 	tabBarsButton:SetScript(
 		"OnClick",
@@ -746,6 +774,7 @@ local function CreateSettingsFrame()
 
 	BTV:StyleModernButton(tabGeneralButton, 90, 90)
 	tabGeneralButton:SetText("General")
+	ApplyTabFadeHighlight(tabGeneralButton)
 
 	tabGeneralButton:SetScript(
 		"OnClick",
@@ -772,6 +801,7 @@ local function CreateSettingsFrame()
 
 	BTV:StyleModernButton(tabProfilesButton, 90, 90)
 	tabProfilesButton:SetText("Profiles")
+	ApplyTabFadeHighlight(tabProfilesButton)
 
 	tabProfilesButton:SetScript(
 		"OnClick",
@@ -6779,6 +6809,17 @@ local function CreateBarListRow(barId, isDefault, cfg)
 		checkbox:SetChecked(checkedState)
 
 		checkbox.barId = barId
+
+		-- Extends the row's own fade-strip hover highlight (BTVListRowMixin
+		-- via BTV:CreateFadeStrip) across this checkbox's own space too,
+		-- and widens the row's visual strips to cover it (row's own click
+		-- hit-box stays at its normal 110px - only the highlight widens).
+		-- Row width (110) + gap (2) + checkbox width (20), matching the
+		-- literals used just above/below in this function.
+		row:SetVisualWidth(110 + 2 + 20)
+
+		checkbox:SetScript("OnEnter", function() row:OnRowEnter() end)
+		checkbox:SetScript("OnLeave", function() row:OnRowLeave() end)
 
 		checkbox:SetScript(
 			"OnClick",
