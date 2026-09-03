@@ -915,11 +915,19 @@ local function CreateSettingsFrame()
 	-- Left bar list
 	-------------------------------------------------------------------------
 
-	f.listPanel = CreateFrame(
-		"Frame",
-		nil,
-		f
-	)
+	-- f.listPanel is the fixed VIEWPORT (visible bounds + border +
+	-- scrollbar), same shape as contentScrollFrame below - f.listContent
+	-- is its permanent scroll child that the actual bar-list rows/divider
+	-- get parented/anchored into (BTV:RefreshBarList), sized to the FULL
+	-- row-list height so BTV:UpdateScrollFrame can turn scrolling on
+	-- whenever the list has more rows than the window currently has room
+	-- for - previously a plain, non-scrolling Frame, which let rows render
+	-- past the window's own bottom edge (into the game world beneath it)
+	-- whenever the fitted window height came out shorter than the full
+	-- row list, live-tested and confirmed. Also future-proofs against a
+	-- later user-resizable window, where the list needs to already know
+	-- how to cope with less vertical space than its content needs.
+	f.listPanel = BTV:CreateScrollFrame(f, "BTVanillaSettingsListScrollFrame")
 
 	f.listPanel:SetWidth(140)
 	f.listPanel:SetHeight(610)
@@ -959,6 +967,9 @@ local function CreateSettingsFrame()
 	f.barButtons = {}
 	f.barButtonsByBarId = {}
 
+	-- Lives directly on the viewport (f.listPanel), NOT the scrolling
+	-- f.listContent below - stays fixed/visible at the top regardless of
+	-- scroll position, rather than scrolling away with the rows.
 	local listTitle = f.listPanel:CreateFontString(
 		nil,
 		"OVERLAY",
@@ -974,6 +985,8 @@ local function CreateSettingsFrame()
 	)
 
 	listTitle:SetText("Action Bars")
+
+	f.listContent = CreateFrame("Frame", nil, f.listPanel)
 
 	-------------------------------------------------------------------------
 	-- Right content panel
@@ -4475,7 +4488,18 @@ end
 -- candidateList, floored at SETTINGS_CONTENT_MIN_HEIGHT and CEILED at the
 -- screen-relative max (BTV:UpdateScrollFrame turns scrolling on for
 -- whatever doesn't fit within that ceiling).
-local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel)
+-- listCandidateList (optional): when given, the bar-list sidebar
+-- (settingsFrame.listPanel/listContent) is fitted/scrolled independently
+-- using the SAME shared viewportHeight this function computes for
+-- scrollFrame/scrollChildPanel - the window is still sized to fit
+-- whichever of the two (page content vs. bar list) needs more room (same
+-- as before), but now EACH side gets its own real BTV:UpdateScrollFrame
+-- call, so a bar list too long for the fitted/capped viewport scrolls
+-- instead of rendering rows past the window's own bottom edge - the
+-- previous behavior, since settingsFrame.listPanel used to be a plain,
+-- non-scrolling Frame just given a same-as-content SetHeight with nothing
+-- to actually clip its rows to that height.
+local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel, listCandidateList)
 	if not settingsFrame or not scrollFrame or not scrollChildPanel then
 		return
 	end
@@ -4508,6 +4532,10 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- view would measure as shorter than it really is.
 	scrollFrame:SetVerticalScroll(0)
 
+	if listCandidateList and settingsFrame.listPanel then
+		settingsFrame.listPanel:SetVerticalScroll(0)
+	end
+
 	local lowestBottom = nil
 	local i
 
@@ -4515,12 +4543,36 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		lowestBottom = ConsiderFrameBottom(candidateList[i], lowestBottom)
 	end
 
-	if not lowestBottom then
+	local listLowestBottom = nil
+
+	if listCandidateList then
+		for i = 1, table.getn(listCandidateList) do
+			listLowestBottom = ConsiderFrameBottom(listCandidateList[i], listLowestBottom)
+		end
+	end
+
+	-- The shared viewport is driven by whichever side's content reaches
+	-- further down (a SMALLER GetBottom() value, WoW's Y axis grows
+	-- upward) - same "tallest side wins" rule as before, just now computed
+	-- from two independently-measured sides instead of one merged list.
+	local overallLowestBottom = lowestBottom
+
+	if listLowestBottom and (not overallLowestBottom or listLowestBottom < overallLowestBottom) then
+		overallLowestBottom = listLowestBottom
+	end
+
+	if not overallLowestBottom then
 		return
 	end
 
 	local BOTTOM_MARGIN = 20
-	local contentHeight = (top - lowestBottom) + BOTTOM_MARGIN
+	local contentHeight = lowestBottom and ((top - lowestBottom) + BOTTOM_MARGIN) or SETTINGS_CONTENT_MIN_HEIGHT
+	local listContentHeight = listLowestBottom and ((top - listLowestBottom) + BOTTOM_MARGIN) or 0
+	local sharedRequirement = (top - overallLowestBottom) + BOTTOM_MARGIN
+
+	if sharedRequirement < SETTINGS_CONTENT_MIN_HEIGHT then
+		sharedRequirement = SETTINGS_CONTENT_MIN_HEIGHT
+	end
 
 	if contentHeight < SETTINGS_CONTENT_MIN_HEIGHT then
 		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
@@ -4535,7 +4587,7 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	local maxViewportHeight = (GetScreenHeight() * SETTINGS_MAX_HEIGHT_RATIO)
 		- SETTINGS_CHROME_TOP - SETTINGS_CHROME_BOTTOM
 
-	local viewportHeight = contentHeight
+	local viewportHeight = sharedRequirement
 
 	if viewportHeight > maxViewportHeight then
 		viewportHeight = maxViewportHeight
@@ -4548,7 +4600,16 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		viewportHeight
 	)
 
-	settingsFrame.listPanel:SetHeight(viewportHeight)
+	if listCandidateList and settingsFrame.listPanel and settingsFrame.listContent then
+		BTV:UpdateScrollFrame(
+			settingsFrame.listPanel,
+			settingsFrame.listContent,
+			listContentHeight,
+			viewportHeight
+		)
+	elseif settingsFrame.listPanel then
+		settingsFrame.listPanel:SetHeight(viewportHeight)
+	end
 
 	settingsFrame:SetHeight(
 		viewportHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
@@ -4646,11 +4707,22 @@ function BTV:FitSettingsWindowToBarPage(barId)
 		end
 	end
 
+	-- Measured/fitted SEPARATELY from the page's own candidates above (own
+	-- listCandidates table, not appended into `candidates`) - the bar-list
+	-- sidebar now scrolls independently of the content page
+	-- (BTV:CreateScrollFrame's settingsFrame.listPanel/listContent), so it
+	-- needs its own true bottom-most-row measurement rather than being
+	-- merged into one combined list, even though the window's own overall
+	-- height still ends up driven by whichever of the two is taller (see
+	-- ApplySettingsHeightFromCandidates' own listCandidateList handling).
+	local listCandidates = {}
+	local listN = 0
+
 	if settingsFrame.barButtons then
 		local i
 
 		for i = 1, table.getn(settingsFrame.barButtons) do
-			n = AppendCandidate(candidates, n, settingsFrame.barButtons[i])
+			listN = AppendCandidate(listCandidates, listN, settingsFrame.barButtons[i])
 		end
 	end
 
@@ -4658,7 +4730,7 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	-- every bar page uses page:SetAllPoints(settingsFrame.contentPanel)
 	-- (GetOrCreateBarPage), so `page` always just mirrors contentPanel's
 	-- own rect rather than having independently meaningful dimensions.
-	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentScrollFrame, settingsFrame.contentPanel)
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentScrollFrame, settingsFrame.contentPanel, listCandidates)
 end
 
 -- General view: no bar list is shown here, just the checkbox and its
@@ -6840,7 +6912,7 @@ end
 -------------------------------------------------------------------------
 
 local function CreateBarListRow(barId, isDefault, cfg)
-	local row = BTV:CreateListRow(settingsFrame.listPanel, nil)
+	local row = BTV:CreateListRow(settingsFrame.listContent, nil)
 
 	-- Wide enough for the longest friendly name ("Right Action Bar 2")
 	-- plus the inline enable checkbox some rows also carry.
@@ -6907,7 +6979,7 @@ local function CreateBarListRow(barId, isDefault, cfg)
 		local checkbox = CreateFrame(
 			"CheckButton",
 			"BTVanillaBarList" .. tostring(barId) .. "Checkbox",
-			settingsFrame.listPanel,
+			settingsFrame.listContent,
 			"UICheckButtonTemplate"
 		)
 
@@ -7043,7 +7115,7 @@ function BTV:RefreshBarList()
 
 			row:SetPoint(
 				"TOPLEFT",
-				settingsFrame.listPanel,
+				settingsFrame.listContent,
 				"TOPLEFT",
 				0,
 				yOffset
@@ -7106,7 +7178,7 @@ function BTV:RefreshBarList()
 
 			row:SetPoint(
 				"TOPLEFT",
-				settingsFrame.listPanel,
+				settingsFrame.listContent,
 				"TOPLEFT",
 				0,
 				yOffset
@@ -7128,7 +7200,7 @@ function BTV:RefreshBarList()
 	-- latter isn't confirmed to exist on this 1.12.1 client, while
 	-- WHITE8X8 is already proven working here (see Button.lua's
 	-- editOverlay). A thin dim line is enough of a section break.
-	local divider = settingsFrame.listPanel:CreateTexture(
+	local divider = settingsFrame.listContent:CreateTexture(
 		nil,
 		"ARTWORK"
 	)
@@ -7140,7 +7212,7 @@ function BTV:RefreshBarList()
 
 	divider:SetPoint(
 		"TOPLEFT",
-		settingsFrame.listPanel,
+		settingsFrame.listContent,
 		"TOPLEFT",
 		2,
 		yOffset + 2
@@ -7170,7 +7242,7 @@ function BTV:RefreshBarList()
 
 			row:SetPoint(
 				"TOPLEFT",
-				settingsFrame.listPanel,
+				settingsFrame.listContent,
 				"TOPLEFT",
 				0,
 				yOffset
