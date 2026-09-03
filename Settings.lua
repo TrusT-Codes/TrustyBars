@@ -4819,6 +4819,22 @@ function BTV:RebuildMainBarAssignmentRows()
 		return
 	end
 
+	-- Fix for the stance/page dropdown reverting to a stale value after
+	-- switching bar pages and back (UI redesign branch, diag16
+	-- investigation): the dropdowns below reuse a stable, name-based
+	-- CreateFrame identity across rebuilds (intentional - see
+	-- CreateExtraBarAssignmentRow's dropdownName comment), but the native
+	-- UIDropDownMenuTemplate/DropDownList1 popout is a SINGLE shared
+	-- global, not owned per-dropdown - if it was left open when this page
+	-- got hidden (rows below get Hide()/SetParent(nil)'d, which never
+	-- closes an open popout), a stale click could still land against the
+	-- reinitialized dropdown once this page is shown again. Force-closing
+	-- any open popout before tearing down/rebuilding the rows below
+	-- prevents that.
+	if CloseDropDownMenus then
+		CloseDropDownMenus()
+	end
+
 	local container = page.assignmentContainer
 	local i
 
