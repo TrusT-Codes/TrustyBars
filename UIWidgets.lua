@@ -676,6 +676,20 @@ function BTVFadeStripMixin:SetStripWidth(width)
 	self.rightTex:SetHeight(height)
 end
 
+-- Resizes just the height (SetStripWidth already recomputes the 3
+-- textures' own SetHeight from self:GetHeight() every time it runs, but
+-- nothing re-runs SetStripWidth when only the strip's HEIGHT changes -
+-- e.g. BTVListRowMixin:SetHeight, called by every row's own
+-- row:SetHeight(LIST_ROW_HEIGHT) AFTER OnLoad already created the strips
+-- at whatever bogus height the row had at that point, typically 0).
+function BTVFadeStripMixin:SetStripHeight(height)
+	self:SetHeight(height)
+
+	self.leftTex:SetHeight(height)
+	self.midTex:SetHeight(height)
+	self.rightTex:SetHeight(height)
+end
+
 -- Re-runs the gradient/solid-color calls with the current r/g/b/peakAlpha -
 -- shared by SetFadeColor and SetPeakAlpha so each only has to update the
 -- one field it owns before calling this.
@@ -737,6 +751,7 @@ function BTV:CreateListRow(parent, name)
 	-- called, live-tested and confirmed as a stack overflow opening
 	-- Settings.)
 	row.nativeSetWidth = row.SetWidth
+	row.nativeSetHeight = row.SetHeight
 
 	Mixin(row, BTVListRowMixin)
 
@@ -838,6 +853,22 @@ function BTVListRowMixin:SetWidth(width)
 	if self.selectStrip then
 		self.selectStrip:SetStripWidth(width)
 		self.hoverStrip:SetStripWidth(width)
+	end
+end
+
+-- Same reasoning/technique as SetWidth above, for height - without this,
+-- the strips stay stuck at whatever height OnLoad captured them at
+-- (typically 0, since OnLoad runs inside BTV:CreateListRow BEFORE the
+-- caller ever calls row:SetHeight(...)), rendering both strips at 0px
+-- tall - invisible regardless of Show()/Hide() state. This was the root
+-- cause of the bar-list sidebar showing no hover/select feedback at all
+-- after the fade-strip rework, live-tested and confirmed.
+function BTVListRowMixin:SetHeight(height)
+	self.nativeSetHeight(self, height)
+
+	if self.selectStrip then
+		self.selectStrip:SetStripHeight(height)
+		self.hoverStrip:SetStripHeight(height)
 	end
 end
 

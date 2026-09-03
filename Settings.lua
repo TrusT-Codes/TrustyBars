@@ -707,25 +707,54 @@ local function CreateSettingsFrame()
 	-- border swap - scoped to just these 3 buttons per the styling pass
 	-- ("the top navigation row" only); every other StyleModernButton call
 	-- site in this file keeps its original border-swap hover look.
+	-- Matches BTV:StyleModernButton's own backdrop insets (3px each side) -
+	-- the fade strips previously covered the FULL 90x20 button frame, which
+	-- spills past the button's actual black backdrop rectangle (inset from
+	-- the frame edges by this same amount), live-tested and confirmed.
+	local TAB_FADE_INSET = 3
+
 	local function ApplyTabFadeHighlight(button)
 		button:SetBackdropBorderColor(0, 0, 0, 0)
 
-		local strip = BTV:CreateFadeStrip(button, 90, 20)
+		local stripWidth = 90 - (TAB_FADE_INSET * 2)
+		local stripHeight = 20 - (TAB_FADE_INSET * 2)
 
-		strip:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
-		strip:SetFadeColor(BTV.UI_ACCENT_COLOR[1], BTV.UI_ACCENT_COLOR[2], BTV.UI_ACCENT_COLOR[3])
-		strip:SetPeakAlpha(0.5)
-		strip:Hide()
+		-- Persistent highlight for whichever tab matches the currently open
+		-- view (settingsFrame.currentView, see BTV:RefreshActiveTabHighlight
+		-- below) - same gold BTV.UI_ACCENT_COLOR the bar-list sidebar's own
+		-- selected row uses (BTVListRowMixin), so "currently open" reads
+		-- consistently across both the tabs and the sidebar. Created FIRST
+		-- so hoverStrip (below) draws on top of it when both show at once.
+		local selectStrip = BTV:CreateFadeStrip(button, stripWidth, stripHeight)
+
+		selectStrip:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", TAB_FADE_INSET, TAB_FADE_INSET)
+		selectStrip:SetFadeColor(BTV.UI_ACCENT_COLOR[1], BTV.UI_ACCENT_COLOR[2], BTV.UI_ACCENT_COLOR[3])
+		selectStrip:SetPeakAlpha(0.5)
+		selectStrip:Hide()
+
+		button.tabSelectStrip = selectStrip
+
+		-- Hover uses the neutral BTV.UI_HOVER_COLOR instead - matches the
+		-- bar-list sidebar's own hover/select color split (white hover,
+		-- gold select) rather than reusing gold for both, which would make
+		-- "hovering" and "currently open" indistinguishable from each
+		-- other.
+		local hoverStrip = BTV:CreateFadeStrip(button, stripWidth, stripHeight)
+
+		hoverStrip:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", TAB_FADE_INSET, TAB_FADE_INSET)
+		hoverStrip:SetFadeColor(BTV.UI_HOVER_COLOR[1], BTV.UI_HOVER_COLOR[2], BTV.UI_HOVER_COLOR[3])
+		hoverStrip:SetPeakAlpha(0.5)
+		hoverStrip:Hide()
 
 		-- Set AFTER StyleModernButton, which installed its own
 		-- OnEnter/OnLeave above - this replaces them rather than adding
 		-- to them. OnMouseDown/OnMouseUp (press-nudge) are untouched.
 		button:SetScript("OnEnter", function()
-			strip:Show()
+			hoverStrip:Show()
 		end)
 
 		button:SetScript("OnLeave", function()
-			strip:Hide()
+			hoverStrip:Hide()
 		end)
 	end
 
@@ -809,6 +838,19 @@ local function CreateSettingsFrame()
 			BTV:ShowProfilesView()
 		end
 	)
+
+	f.tabButtonsByView = {
+		bars = tabBarsButton,
+		general = tabGeneralButton,
+		profiles = tabProfilesButton,
+	}
+
+	-- Matches f.currentView's own initial value ("bars", set at the top of
+	-- this function) - every later view switch calls
+	-- BTV:RefreshActiveTabHighlight itself, but this is the one point
+	-- before settingsFrame is even assigned where that function can't be
+	-- called yet.
+	tabBarsButton.tabSelectStrip:Show()
 
 	-------------------------------------------------------------------------
 	-- Divider between the tab row and the content below it - the tab
@@ -4641,6 +4683,7 @@ function BTV:ShowBarPage(barId)
 	-- listPanel/contentPanel and hiding the General panel, rather than
 	-- every caller remembering to do it.
 	settingsFrame.currentView = "bars"
+	BTV:RefreshActiveTabHighlight()
 	settingsFrame.listPanel:Show()
 	settingsFrame.contentScrollFrame:Show()
 	settingsFrame.contentPanel:Show()
@@ -6633,6 +6676,25 @@ end
 -- View switching ("Bars" / "General" tabs)
 -------------------------------------------------------------------------
 
+-- Syncs each top nav tab's persistent gold selectStrip (CreateSettingsFrame's
+-- ApplyTabFadeHighlight) to settingsFrame.currentView - called after every
+-- place that assigns settingsFrame.currentView, so whichever tab matches
+-- the now-active view is the only one highlighted.
+function BTV:RefreshActiveTabHighlight()
+	if not settingsFrame or not settingsFrame.tabButtonsByView then
+		return
+	end
+
+	local view
+	local button
+
+	for view, button in pairs(settingsFrame.tabButtonsByView) do
+		if button.tabSelectStrip then
+			button.tabSelectStrip:SetShown(settingsFrame.currentView == view)
+		end
+	end
+end
+
 function BTV:ShowBarsView()
 	if not settingsFrame then
 		CreateSettingsFrame()
@@ -6657,6 +6719,7 @@ function BTV:ShowGeneralView()
 	settingsFrame.contentScrollFrame:Hide()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "general"
+	BTV:RefreshActiveTabHighlight()
 
 	-- Ensure the General panel (and its own dedicated scrollframe) exist
 	-- before trying to Show() the scrollframe below.
@@ -6698,6 +6761,7 @@ function BTV:ShowProfilesView()
 	settingsFrame.contentScrollFrame:Hide()
 	settingsFrame.contentPanel:Hide()
 	settingsFrame.currentView = "profiles"
+	BTV:RefreshActiveTabHighlight()
 
 	-- Ensure the Profiles panel (and its own dedicated scrollframe) exist
 	-- before trying to Show() the scrollframe below.
