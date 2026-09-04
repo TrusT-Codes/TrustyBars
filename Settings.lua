@@ -4767,66 +4767,58 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Test (ULTRACODE round 2): byte-for-byte replica of the
-	-- confirmed-working diag24+diag25 blocks - IDENTICAL reads, in the
-	-- IDENTICAL order (GetName -> IsShown -> GetBottom per candidate),
-	-- with the IDENTICAL tostring()/concat string building (so the same
-	-- string garbage and GC pressure is produced) - with exactly ONE
-	-- thing changed: the built string goes to a dummy local instead of
-	-- BTV:Print/DEFAULT_CHAT_FRAME:AddMessage.
+	-- Test (ULTRACODE round 3): same reads as the confirmed-working block,
+	-- in the same order (GetName -> IsShown -> GetBottom per candidate,
+	-- then GetBottom -> IsShown per named chain frame), with ALL of the
+	-- tostring()/concat string building stripped out.
 	--
 	-- Ruled out so far, each by its own live test: elapsed time /
-	-- instruction count (400k-iteration pure-arithmetic busy loop: no
-	-- effect), a single AddMessage call at this point (no effect), and
-	-- GetBottom()+IsShown() reads alone in a different order without the
-	-- string building (no effect). This isolates the last remaining split:
-	-- if this passes, AddMessage is irrelevant and the mechanism is in
-	-- the reads/string work (and we have a print-free fix); if it fails,
-	-- the chat-frame call itself is somehow load-bearing.
-	-- Remove once root-caused.
-	local diagReferenceTop = scrollChildPanel:GetTop()
-	local diagSink
+	-- instruction count (400k-iteration arithmetic busy loop), the
+	-- BTV:Print/AddMessage call itself (the full replica passes with its
+	-- output redirected to a dummy local, so the chat frame is
+	-- irrelevant), and GetBottom()+IsShown() reads in the WRONG order
+	-- without GetName() and without any string work.
+	--
+	-- This splits the two survivors: if it passes, it is purely the reads
+	-- (GetName() and/or their order) and this is the shippable fix; if it
+	-- fails, the string building itself matters (allocation churn / GC
+	-- pressure), which needs its own follow-up. Remove once root-caused.
+	scrollChildPanel:GetTop()
 
-	diagSink = "diag24: referenceTop=" .. tostring(diagReferenceTop) .. " n=" .. tostring(table.getn(candidateList))
+	local warmI
 
-	local diagJ
+	for warmI = 1, table.getn(candidateList) do
+		local warmFrame = candidateList[warmI]
 
-	for diagJ = 1, table.getn(candidateList) do
-		local diagFrame = candidateList[diagJ]
+		if warmFrame.GetName then
+			warmFrame:GetName()
+		end
 
-		diagSink =
-			"diag24: candidate " .. diagJ ..
-			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
-			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
-			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		if warmFrame.IsShown then
+			warmFrame:IsShown()
+		end
+
+		if warmFrame.GetBottom then
+			warmFrame:GetBottom()
+		end
 	end
 
 	if scrollChildPanel.hotkeyTitle then
-		local diag25Names = {
+		local warmNames = {
 			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
 			"countTitle", "countSlider", "countValueText", "countResetButton",
 			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
 			"modernBorderStyleCheckbox",
 		}
 
-		diagSink = "diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop)
+		local warmJ
 
-		local diagK
+		for warmJ = 1, table.getn(warmNames) do
+			local warmFrame = scrollChildPanel[warmNames[warmJ]]
 
-		for diagK = 1, table.getn(diag25Names) do
-			local key = diag25Names[diagK]
-			local frame = scrollChildPanel[key]
-
-			if frame then
-				local bottom = frame:GetBottom()
-
-				diagSink =
-					"diag25: " .. key ..
-					" shown=" .. tostring(frame:IsShown()) ..
-					" bottom=" .. tostring(bottom) ..
-					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
-			else
-				diagSink = "diag25: " .. key .. " <nil>"
+			if warmFrame then
+				warmFrame:GetBottom()
+				warmFrame:IsShown()
 			end
 		end
 	end
