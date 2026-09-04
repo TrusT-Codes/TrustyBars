@@ -4767,58 +4767,54 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Test (ULTRACODE round 3): same reads as the confirmed-working block,
-	-- in the same order (GetName -> IsShown -> GetBottom per candidate,
-	-- then GetBottom -> IsShown per named chain frame), with ALL of the
-	-- tostring()/concat string building stripped out.
+	-- REQUIRED INITIALIZATION, not a debug leftover - do not "clean up".
 	--
-	-- Ruled out so far, each by its own live test: elapsed time /
-	-- instruction count (400k-iteration arithmetic busy loop), the
-	-- BTV:Print/AddMessage call itself (the full replica passes with its
-	-- output redirected to a dummy local, so the chat frame is
-	-- irrelevant), and GetBottom()+IsShown() reads in the WRONG order
-	-- without GetName() and without any string work.
+	-- On this client a frame's cached rect is resolved lazily, relative to
+	-- its anchor's OWN cached rect, and SetVerticalScroll(0) above does
+	-- not eagerly re-resolve the subtree it just moved. Reading a child
+	-- while its ancestor is still stale therefore resolves - and caches -
+	-- that child against the OLD parent position, and the real
+	-- measurement below then happily reads back those wrong values.
 	--
-	-- This splits the two survivors: if it passes, it is purely the reads
-	-- (GetName() and/or their order) and this is the shippable fix; if it
-	-- fails, the string building itself matters (allocation churn / GC
-	-- pressure), which needs its own follow-up. Remove once root-caused.
+	-- So the whole chain has to be resolved top-down, once, before
+	-- anything measures it: scrollChildPanel first, then every frame the
+	-- measurement will read, then the General panel's own static anchor
+	-- frames (hotkeyTitle -> ... -> modernBorderStyleCheckbox), which
+	-- several candidates hang off but which are themselves never
+	-- measured, so nothing else would ever resolve them.
+	--
+	-- Live-verified: dropping either loop, or reading the children before
+	-- scrollChildPanel, brings the bug back (the General panel measures
+	-- short, and everything under the toggled control becomes
+	-- unreachable). The return values are deliberately discarded - the
+	-- CALL is the point, not the value.
 	scrollChildPanel:GetTop()
 
-	local warmI
+	local resolveI
 
-	for warmI = 1, table.getn(candidateList) do
-		local warmFrame = candidateList[warmI]
+	for resolveI = 1, table.getn(candidateList) do
+		local resolveFrame = candidateList[resolveI]
 
-		if warmFrame.GetName then
-			warmFrame:GetName()
-		end
-
-		if warmFrame.IsShown then
-			warmFrame:IsShown()
-		end
-
-		if warmFrame.GetBottom then
-			warmFrame:GetBottom()
+		if resolveFrame.GetBottom then
+			resolveFrame:GetBottom()
 		end
 	end
 
 	if scrollChildPanel.hotkeyTitle then
-		local warmNames = {
+		local resolveNames = {
 			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
 			"countTitle", "countSlider", "countValueText", "countResetButton",
 			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
 			"modernBorderStyleCheckbox",
 		}
 
-		local warmJ
+		local resolveJ
 
-		for warmJ = 1, table.getn(warmNames) do
-			local warmFrame = scrollChildPanel[warmNames[warmJ]]
+		for resolveJ = 1, table.getn(resolveNames) do
+			local resolveFrame = scrollChildPanel[resolveNames[resolveJ]]
 
-			if warmFrame then
-				warmFrame:GetBottom()
-				warmFrame:IsShown()
+			if resolveFrame then
+				resolveFrame:GetBottom()
 			end
 		end
 	end
