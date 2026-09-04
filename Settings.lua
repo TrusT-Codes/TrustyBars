@@ -4767,19 +4767,68 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Test (ULTRACODE round): pure CPU busy-loop, ZERO WoW API calls, no
-	-- frame reads, no prints - control test isolating whether the
-	-- confirmed-working diag24+diag25 code fixes this bug because of WHAT
-	-- it touches, or simply because of HOW LONG it takes to run (i.e. an
-	-- async engine-side layout process this modified client may run
-	-- alongside Lua execution, not synchronized to script yield points).
-	-- If this alone fixes the repro, the mechanism is time/instruction-
-	-- count, not frame API calls. Remove once root-caused.
-	local busyAcc = 0
-	local busyN
+	-- Test (ULTRACODE round 2): byte-for-byte replica of the
+	-- confirmed-working diag24+diag25 blocks - IDENTICAL reads, in the
+	-- IDENTICAL order (GetName -> IsShown -> GetBottom per candidate),
+	-- with the IDENTICAL tostring()/concat string building (so the same
+	-- string garbage and GC pressure is produced) - with exactly ONE
+	-- thing changed: the built string goes to a dummy local instead of
+	-- BTV:Print/DEFAULT_CHAT_FRAME:AddMessage.
+	--
+	-- Ruled out so far, each by its own live test: elapsed time /
+	-- instruction count (400k-iteration pure-arithmetic busy loop: no
+	-- effect), a single AddMessage call at this point (no effect), and
+	-- GetBottom()+IsShown() reads alone in a different order without the
+	-- string building (no effect). This isolates the last remaining split:
+	-- if this passes, AddMessage is irrelevant and the mechanism is in
+	-- the reads/string work (and we have a print-free fix); if it fails,
+	-- the chat-frame call itself is somehow load-bearing.
+	-- Remove once root-caused.
+	local diagReferenceTop = scrollChildPanel:GetTop()
+	local diagSink
 
-	for busyN = 1, 400000 do
-		busyAcc = busyAcc + busyN - (busyN - 1)
+	diagSink = "diag24: referenceTop=" .. tostring(diagReferenceTop) .. " n=" .. tostring(table.getn(candidateList))
+
+	local diagJ
+
+	for diagJ = 1, table.getn(candidateList) do
+		local diagFrame = candidateList[diagJ]
+
+		diagSink =
+			"diag24: candidate " .. diagJ ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+	end
+
+	if scrollChildPanel.hotkeyTitle then
+		local diag25Names = {
+			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
+			"countTitle", "countSlider", "countValueText", "countResetButton",
+			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
+			"modernBorderStyleCheckbox",
+		}
+
+		diagSink = "diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop)
+
+		local diagK
+
+		for diagK = 1, table.getn(diag25Names) do
+			local key = diag25Names[diagK]
+			local frame = scrollChildPanel[key]
+
+			if frame then
+				local bottom = frame:GetBottom()
+
+				diagSink =
+					"diag25: " .. key ..
+					" shown=" .. tostring(frame:IsShown()) ..
+					" bottom=" .. tostring(bottom) ..
+					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
+			else
+				diagSink = "diag25: " .. key .. " <nil>"
+			end
+		end
 	end
 
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
