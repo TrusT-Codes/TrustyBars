@@ -618,6 +618,21 @@ function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, 
 		else
 			scrollBar:Hide()
 		end
+
+		-- Hand the space a hidden scrollbar would have occupied back to the
+		-- content, instead of reserving it permanently - each scrollframe
+		-- that cares supplies its own re-layout callback at creation time
+		-- (see CreateSettingsFrame's ApplyBarsViewScrollbarReserves and
+		-- BTV:CreateWideContentScrollFrame). Note the scrollchild width is
+		-- re-synced above from the frame's PREVIOUS width, so it settles one
+		-- call behind a width change - harmless here, since every caller
+		-- re-fits whenever the content it holds actually changes.
+		scrollFrame.needsScrollbar = maxScroll > 0
+
+		if scrollFrame.applyScrollbarReserve then
+			scrollFrame.applyScrollbarReserve()
+			scrollChild:SetWidth(scrollFrame:GetWidth())
+		end
 	end
 end
 
@@ -963,18 +978,10 @@ local function CreateSettingsFrame()
 	f.listPanel:SetWidth(140)
 	f.listPanel:SetHeight(610)
 
-	-- Shifted right by SETTINGS_SCROLLBAR_RESERVED_WIDTH to make room for
-	-- its own scrollbar, now anchored to its LEFT (see BTV:CreateScrollFrame's
-	-- scrollbarOnLeft param above) instead of overlapping the window's own
-	-- left edge - contentScrollFrame below is narrowed by the same amount
-	-- so the gap between the two panels stays visually unchanged.
-	f.listPanel:SetPoint(
-		"TOPLEFT",
-		f,
-		"TOPLEFT",
-		18 + SETTINGS_SCROLLBAR_RESERVED_WIDTH,
-		-64
-	)
+	-- Positioned by ApplyBarsViewScrollbarReserves (defined once both
+	-- panels exist, just below contentScrollFrame) - the space each
+	-- scrollbar needs is only reserved while that scrollbar is actually
+	-- shown, so neither panel gives up room to a bar that isn't there.
 
 	-- Same backdrop technique/values as contentScrollFrame just below, so
 	-- the row list reads as one bordered/divided container, matching the
@@ -1058,22 +1065,69 @@ local function CreateSettingsFrame()
 	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
 	f.contentScrollFrame:SetHeight(610)
-	-- 602 = the window's own 780 width, minus the 18px padding on each side,
-	-- minus listPanel's 140 width, minus the 2px gap between the two panels.
-	-- Then minus BOTH scrollbar reservations: this frame's own (on its
-	-- right) and listPanel's (on its left, since that one is anchored
-	-- left-side per BTV:CreateScrollFrame's scrollbarOnLeft). Anchored by
-	-- TOPRIGHT, so narrowing it moves only its LEFT edge - which is what
-	-- sets the gap to the bar list beside it.
-	f.contentScrollFrame:SetWidth(602 - SETTINGS_SCROLLBAR_RESERVED_WIDTH - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
 
-	f.contentScrollFrame:SetPoint(
-		"TOPRIGHT",
-		f,
-		"TOPRIGHT",
-		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
-		-64
-	)
+	-------------------------------------------------------------------------
+	-- Bars-view horizontal geometry
+	--
+	-- Both panels' widths/anchors are recomputed from whichever scrollbars
+	-- are CURRENTLY shown, rather than permanently reserving room for both:
+	-- a panel that doesn't need to scroll gets that space back as usable
+	-- content width. Same "only reserve the space while the thing is
+	-- actually visible" rule as the profile-lock banner band
+	-- (BTV:ApplyPageBannerReserve) and the General tab's own reveal-sliders
+	-- (BTV:ReflowGeneralOverrideSliders).
+	--
+	-- The two are coupled - listPanel's scrollbar sits on its LEFT
+	-- (BTV:CreateScrollFrame's scrollbarOnLeft) and contentScrollFrame's on
+	-- its right - so one function owns both rather than each re-anchoring
+	-- itself and fighting over the gap between them. Driven from
+	-- BTV:UpdateScrollFrame, which is where scrollbar visibility is
+	-- actually decided.
+	-------------------------------------------------------------------------
+
+	local BARS_VIEW_PADDING = 18
+	local BARS_VIEW_LIST_WIDTH = 140
+	local BARS_VIEW_PANEL_GAP = 2
+	local BARS_VIEW_TOP = -64
+
+	local function ApplyBarsViewScrollbarReserves()
+		local leftReserve = f.listPanel.needsScrollbar and SETTINGS_SCROLLBAR_RESERVED_WIDTH or 0
+		local rightReserve = f.contentScrollFrame.needsScrollbar and SETTINGS_SCROLLBAR_RESERVED_WIDTH or 0
+
+		f.listPanel:ClearAllPoints()
+		f.listPanel:SetPoint(
+			"TOPLEFT",
+			f,
+			"TOPLEFT",
+			BARS_VIEW_PADDING + leftReserve,
+			BARS_VIEW_TOP
+		)
+
+		f.contentScrollFrame:ClearAllPoints()
+		f.contentScrollFrame:SetPoint(
+			"TOPRIGHT",
+			f,
+			"TOPRIGHT",
+			-BARS_VIEW_PADDING - rightReserve,
+			BARS_VIEW_TOP
+		)
+
+		-- Anchored by TOPRIGHT, so its width is what sets its LEFT edge -
+		-- i.e. the gap to the bar list beside it.
+		f.contentScrollFrame:SetWidth(
+			f:GetWidth()
+				- (2 * BARS_VIEW_PADDING)
+				- BARS_VIEW_LIST_WIDTH
+				- BARS_VIEW_PANEL_GAP
+				- leftReserve
+				- rightReserve
+		)
+	end
+
+	f.listPanel.applyScrollbarReserve = ApplyBarsViewScrollbarReserves
+	f.contentScrollFrame.applyScrollbarReserve = ApplyBarsViewScrollbarReserves
+
+	ApplyBarsViewScrollbarReserves()
 
 	f.contentScrollFrame:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -1133,17 +1187,25 @@ function BTV:CreateWideContentScrollFrame(name)
 	-- implied width this used to be computed from (TOPLEFT to listPanel +
 	-- TOPRIGHT here), which was not guaranteed resolved yet the moment
 	-- code right after this reads it back via GetWidth().
-	scrollFrame:SetWidth(
-		settingsFrame:GetWidth() - 18 - 18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH
-	)
+	-- Only reserves room for its own scrollbar while that bar is actually
+	-- shown (BTV:UpdateScrollFrame flips needsScrollbar and calls this back)
+	-- - an unscrolled panel gets the full width instead.
+	scrollFrame.applyScrollbarReserve = function()
+		local reserve = scrollFrame.needsScrollbar and SETTINGS_SCROLLBAR_RESERVED_WIDTH or 0
 
-	scrollFrame:SetPoint(
-		"TOPRIGHT",
-		settingsFrame,
-		"TOPRIGHT",
-		-18 - SETTINGS_SCROLLBAR_RESERVED_WIDTH,
-		-64
-	)
+		scrollFrame:SetWidth(settingsFrame:GetWidth() - 18 - 18 - reserve)
+
+		scrollFrame:ClearAllPoints()
+		scrollFrame:SetPoint(
+			"TOPRIGHT",
+			settingsFrame,
+			"TOPRIGHT",
+			-18 - reserve,
+			-64
+		)
+	end
+
+	scrollFrame.applyScrollbarReserve()
 
 	scrollFrame:SetBackdrop({
 		bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
@@ -6787,6 +6849,20 @@ local function ReflowStack(entries)
 	end
 end
 
+-- Re-fits the General view after its own content height changed. Deferred
+-- one frame so the reflowed controls' positions have settled before
+-- anything measures them (same reason ShowGeneralView defers its own
+-- fit), and guarded on the General view actually being the one on screen -
+-- RefreshGeneralPanel can run while another view is showing, and fitting
+-- the window to a hidden panel would resize it to the wrong thing.
+local function RefitGeneralViewSoon()
+	if not settingsFrame or settingsFrame.currentView ~= "general" then
+		return
+	end
+
+	DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
+end
+
 function BTV:ReflowGeneralOverrideSliders(panel)
 	ReflowStack({
 		{ frame = panel.globalSpacingCheckbox, column = REFLOW_COLUMN_CHECKBOX },
@@ -6795,6 +6871,12 @@ function BTV:ReflowGeneralOverrideSliders(panel)
 		{ frame = panel.globalButtonSizeSlider, column = REFLOW_COLUMN_SLIDER, isOptional = true },
 		{ frame = panel.bypassBar2DepCheckbox, column = REFLOW_COLUMN_CHECKBOX },
 	})
+
+	-- Revealing/hiding either slider changes how tall this panel's content
+	-- is, so the window (and its scrollchild) has to be re-measured -
+	-- otherwise turning a toggle ON grows the content past the viewport
+	-- with no matching scroll range, leaving the bottom unreachable.
+	RefitGeneralViewSoon()
 end
 
 function BTV:RefreshGeneralPanel()
