@@ -3634,6 +3634,63 @@ function BTV:DiagMainBarAssignmentRows()
 	self:Print("--- diag16 end ---")
 end
 
+-- "diag18" (UI redesign branch): dumps the Bars-view scrollbar-reserve
+-- geometry - reported that the Main Bar page's content scrollbar renders
+-- outside the window, while other pages (e.g. Experience Bar) are fine.
+-- Run with the Settings window open on the page in question.
+function BTV:DiagScrollbarReserves()
+	self:Print("--- diag18: scrollbar reserve geometry ---")
+
+	local f = getglobal("BTVanillaSettingsFrame")
+
+	if not f then
+		self:Print("settings frame not found")
+		self:Print("--- diag18 end ---")
+		return
+	end
+
+	self:Print("f width=" .. tostring(f:GetWidth()) .. " height=" .. tostring(f:GetHeight()))
+
+	local listPanel = f.listPanel
+	local contentScrollFrame = f.contentScrollFrame
+
+	if listPanel then
+		self:Print(
+			"listPanel needsScrollbar=" .. tostring(listPanel.needsScrollbar) ..
+			" w=" .. tostring(listPanel:GetWidth()) ..
+			" left=" .. tostring(listPanel:GetLeft()) ..
+			" right=" .. tostring(listPanel:GetRight())
+		)
+
+		if listPanel.scrollBar then
+			self:Print(
+				"listPanel.scrollBar shown=" .. tostring(listPanel.scrollBar:IsShown()) ..
+				" left=" .. tostring(listPanel.scrollBar:GetLeft()) ..
+				" right=" .. tostring(listPanel.scrollBar:GetRight())
+			)
+		end
+	end
+
+	if contentScrollFrame then
+		self:Print(
+			"contentScrollFrame needsScrollbar=" .. tostring(contentScrollFrame.needsScrollbar) ..
+			" w=" .. tostring(contentScrollFrame:GetWidth()) ..
+			" left=" .. tostring(contentScrollFrame:GetLeft()) ..
+			" right=" .. tostring(contentScrollFrame:GetRight())
+		)
+
+		if contentScrollFrame.scrollBar then
+			self:Print(
+				"contentScrollFrame.scrollBar shown=" .. tostring(contentScrollFrame.scrollBar:IsShown()) ..
+				" left=" .. tostring(contentScrollFrame.scrollBar:GetLeft()) ..
+				" right=" .. tostring(contentScrollFrame.scrollBar:GetRight())
+			)
+		end
+	end
+
+	self:Print("--- diag18 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3687,6 +3744,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagCheckboxTextColor()
 	elseif msg == "diag16" then
 		BTV:DiagMainBarAssignmentRows()
+	elseif msg == "diag18" then
+		BTV:DiagScrollbarReserves()
 	else
 		BTV:ToggleMainMenu()
 	end
