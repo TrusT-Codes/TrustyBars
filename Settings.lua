@@ -4865,6 +4865,17 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		viewportHeight = maxViewportHeight
 	end
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation, round 4): neither the double-read on every candidate
+	-- (diag26) nor reading the off-candidate ancestor frames (round 3)
+	-- fixed the repro on their own. The one remaining untested touch-point
+	-- from the old working diag23: it read scrollChildPanel:GetTop() AGAIN
+	-- here, AFTER contentHeight/viewportHeight were already computed and
+	-- BEFORE BTV:UpdateScrollFrame runs - a read at a point nothing else
+	-- in this file ever reads from. Testing that specific spot in
+	-- isolation. Remove once root-caused.
+	scrollChildPanel:GetTop()
+
 	BTV:UpdateScrollFrame(
 		scrollFrame,
 		scrollChildPanel,
