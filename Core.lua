@@ -3755,13 +3755,24 @@ function BTV:DiagGeneralPanelLayout()
 		)
 	end
 
+	-- Matches BTV:FitSettingsWindowToGeneralView's own candidate list
+	-- exactly (Settings.lua), in the same order - the first diag20 pull
+	-- only covered the reflow-adjacent subset and showed every one of
+	-- those items sitting at IDENTICAL positions in both the "broken" and
+	-- "fixed" dumps, yet the panel's own measured height still differed by
+	-- ~49px between them - meaning whichever candidate is actually driving
+	-- that difference wasn't in the first dump at all. This covers all of
+	-- them so it can't be missed again.
 	local names = {
+		"useDefaultLayoutCheckbox", "description",
+		"tintWholeButtonCheckbox", "disableBlizzardArtCheckbox",
+		"mainBarPaginationCheckbox", "mainBarStanceSwapCheckbox", "mainBarStanceSwapDescription",
+		"hotkeyValueText", "hotkeyResetButton", "countValueText", "countResetButton",
+		"snapToAdjacentDescription",
 		"modernBorderStyleCheckbox", "modernBorderStyleDescription",
 		"globalSpacingCheckbox", "globalSpacingSlider", "globalSpacingValueText",
 		"globalButtonSizeCheckbox", "globalButtonSizeSlider", "globalButtonSizeValueText",
 		"bypassBar2DepCheckbox",
-		"tintWholeButtonCheckbox", "disableBlizzardArtCheckbox",
-		"mainBarPaginationCheckbox", "mainBarStanceSwapCheckbox",
 	}
 
 	local i

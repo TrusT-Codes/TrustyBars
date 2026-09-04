@@ -5265,21 +5265,38 @@ function BTV:RebuildMainBarAssignmentRows()
 		return
 	end
 
-	-- Fix for the stance/page dropdown reverting to a stale value after
-	-- switching bar pages and back (UI redesign branch, diag16
-	-- investigation): the dropdowns below reuse a stable, name-based
-	-- CreateFrame identity across rebuilds (intentional - see
-	-- CreateExtraBarAssignmentRow's dropdownName comment), but the native
-	-- UIDropDownMenuTemplate/DropDownList1 popout is a SINGLE shared
-	-- global, not owned per-dropdown - if it was left open when this page
-	-- got hidden (rows below get Hide()/SetParent(nil)'d, which never
-	-- closes an open popout), a stale click could still land against the
-	-- reinitialized dropdown once this page is shown again. Force-closing
-	-- any open popout before tearing down/rebuilding the rows below
-	-- prevents that.
+	-- Force-close any open dropdown popout before tearing down/rebuilding
+	-- the rows below - DropDownList1 is a single shared global popout, not
+	-- owned per-dropdown, so a left-open one could otherwise still be
+	-- sitting on screen referencing a row this rebuild is about to discard.
 	if CloseDropDownMenus then
 		CloseDropDownMenus()
 	end
+
+	-- Live diag (UI redesign branch, stance/page dropdown investigation -
+	-- /btv diag16) proved CreateFrame does NOT actually return the same
+	-- underlying frame object on this client when a name is reused - two
+	-- consecutive rebuilds produced two DIFFERENT dropdown identities
+	-- (confirmed via tostring() address) despite passing the identical
+	-- name string both times, contradicting this function's own previous
+	-- assumption (and UIDropDownMenuMixin's whole generation-tracking
+	-- system, built on that assumption). Concretely: every rebuild was
+	-- silently creating a brand new dropdown widget that just HAPPENED to
+	-- share its predecessor's name - and native UIDropDownMenu_* code
+	-- resolves its own sub-pieces (Text/Left/Middle/Right) via
+	-- getglobal(self:GetName() .. "...") string lookups, so two different
+	-- live frame objects both nominally answering to the same name is
+	-- exactly the kind of collision that produces a fragmented skin/blank
+	-- label - even though the OLD frame's own row was Hidden, its
+	-- same-named regions were never actually a safe, non-colliding target
+	-- for those lookups in the first place. Suffixing every dropdown name
+	-- with a monotonic per-rebuild generation counter gives each rebuild's
+	-- dropdowns (and their native sub-pieces) a name no earlier or later
+	-- rebuild will ever reuse, closing the collision outright instead of
+	-- relying on a reuse behavior that doesn't actually happen here.
+	page.assignmentRebuildGeneration = (page.assignmentRebuildGeneration or 0) + 1
+
+	local generationSuffix = "_" .. tostring(page.assignmentRebuildGeneration)
 
 	local container = page.assignmentContainer
 	local i
@@ -5324,10 +5341,12 @@ function BTV:RebuildMainBarAssignmentRows()
 
 					BTV:RefreshMainBarSlots()
 				end,
-				-- Named by stance index (stable across rebuilds within the
-				-- same class/session) - required, not optional, per
-				-- CreateExtraBarAssignmentRow's own dropdownName comment.
-				"BTVanillaMainBarStanceAssignmentDropdown" .. tostring(s)
+				-- Named by stance index PLUS this rebuild's own generation
+				-- (see the comment above this function's CloseDropDownMenus
+				-- call) - a name is required (CreateExtraBarAssignmentRow's
+				-- own dropdownName comment), but must be unique per rebuild,
+				-- not stable across them.
+				"BTVanillaMainBarStanceAssignmentDropdown" .. tostring(s) .. generationSuffix
 			)
 
 			row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
@@ -5351,7 +5370,7 @@ function BTV:RebuildMainBarAssignmentRows()
 
 				BTV:RefreshMainBarSlots()
 			end,
-			"BTVanillaMainBarPageBarAssignmentDropdown"
+			"BTVanillaMainBarPageBarAssignmentDropdown" .. generationSuffix
 		)
 
 		row:SetPoint("TOPLEFT", container, "TOPLEFT", 0, y)
