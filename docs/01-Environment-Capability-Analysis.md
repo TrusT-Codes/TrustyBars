@@ -753,6 +753,34 @@ Implemented instead as a fresh, standard vanilla-era looping alpha animation: a 
 
 `"MEDIUM"` printed confirms no inheritance (matches this round's assumption, and this round's fix already accounts for it by setting strata explicitly everywhere it matters). `"HIGH"` printed would mean inheritance IS real on this client — which wouldn't break anything this round changed, but would mean some of the explicit `SetFrameStrata("HIGH")` calls added this round (e.g. on individual buttons, given their parent `bar` is now also `"HIGH"`) are technically redundant rather than load-bearing. Worth confirming once since it also bears on whether `BuildChainAnchoredContainer`'s reparented native buttons (Bag Bar/Micro Menu/Stance Bar — not reported broken, but structurally analogous: a `"HIGH"` container whose real child buttons are never individually given their own explicit strata) are correctly elevated by construction or are only working today by coincidence of their own native level already being high enough — if `"MEDIUM"` is confirmed, those three elements share the same latent fragility Key Ring/Bar 1 just had, and would need the same explicit-per-button treatment if they're ever reported to exhibit the same click-triggered disappearing-behind-art symptom.
 
+## 5af. Frame rects resolve LAZILY and TOP-DOWN on this client — reading a child before its ancestor caches the child against the ancestor's stale position
+
+**The single most expensive bug of the UI-redesign branch, and the finding most likely to bite again.** Symptom: in the Settings window's General view, toggling "Global Spacing"/"Global ButtonSize" made every control *below* the toggled checkbox unreachable — the window measured short, the scrollbar range was wrong, and only navigating away and back to the General tab restored it.
+
+**The behavior, stated plainly:** a frame's rect (`GetTop`/`GetBottom`/`GetLeft`) is not recomputed eagerly when something moves it. It is resolved on demand, **relative to its anchor frame's own currently-cached rect**, and the resolved value is then cached. `ScrollFrame:SetVerticalScroll(...)` moves an entire subtree without eagerly re-resolving any of it. So:
+
+- Reading a **child** while its **ancestor** is still stale resolves that child against the ancestor's *old* position — and caches that wrong value.
+- A later read of the same child returns the cached wrong value, not a fresh one. It looks perfectly stable and self-consistent, which is exactly why this is so hard to spot.
+- Reading the **ancestor first**, then the children, resolves the whole chain correctly.
+
+`Settings.lua`'s `ApplySettingsHeightFromCandidates` therefore performs an explicit **top-down resolve pass** immediately after its `SetVerticalScroll(0)` and before any measurement: `scrollChildPanel:GetTop()` first, then `GetBottom()` on every frame the measurement will read, then `GetBottom()` on the General panel's static anchor chain (`hotkeyTitle` → … → `modernBorderStyleCheckbox`) — frames several measured candidates hang off but which are themselves never measured, so nothing else would ever resolve them. **The return values are deliberately discarded; the call is the point.** It is load-bearing initialization, not a debug leftover, and it is commented as such in-place.
+
+**Why this needed nine live rounds, and what was definitively ruled out.** Each of these was its own live test on the real client, because the earlier rounds' plausible-sounding explanations were all wrong:
+
+| Hypothesis tested | Result |
+| --- | --- |
+| A second, immediate re-read returns a fresher value than the first (same tick) | **Ruled out** — every candidate reported `differs=false`; the cache is stale *and* stable |
+| One `C_Timer.After(0, …)` deferred frame (`DeferFit`) is enough on its own | **Ruled out** — the deferred fit still reads stale values |
+| Elapsed time / instruction count (an async engine-side layout process catching up) | **Ruled out** — a 400,000-iteration pure-arithmetic busy loop at the same point changed nothing |
+| `BTV:Print`/`DEFAULT_CHAT_FRAME:AddMessage` forcing a UI-layout flush | **Ruled out** — the whole working block still works with its output assigned to a dummy local instead of printed; and a single `AddMessage` at that point fixes nothing |
+| String building / allocation churn / GC pressure from the trace's `tostring`/concat work | **Ruled out** — stripping all string building while keeping the reads still passes |
+| `GetName()` / `IsShown()` reads mattering | **Ruled out** — both dropped, still passes; they were only ever present because the trace printed them |
+| Reading only the measured candidates, or only the static anchor chain | **Ruled out** — each alone reproduces the bug; both together, top-down, is what works |
+
+**Methodological note worth repeating.** This was only pinned down by bisecting the *literal* known-working code rather than reasoning about it. Three separate hand-written "clean equivalents" of a confirmed-working diagnostic block all still reproduced the bug, because each silently dropped some detail (the leading parent read, the read order, a getter) that turned out to matter — and the mechanism was invisible until the working block was restored byte-for-byte and then reduced one variable at a time. **When a change of "only debug prints" flips real behavior, restore the working text exactly and bisect it; do not rewrite it into what it "obviously" means.**
+
+**Where else this likely applies.** Any code in this addon that (a) moves a frame or subtree — `SetVerticalScroll`, `SetPoint`, `Show`/`Hide` on something others anchor to — and then (b) reads positions to measure or fit, is exposed to the same trap. `DeferFit` (one frame's delay) is *not* sufficient protection on its own. The correct pattern is the explicit top-down resolve pass above.
+
 ## 6. Summary: what to build vs. what to reuse
 
 

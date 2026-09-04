@@ -4767,27 +4767,24 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- REQUIRED INITIALIZATION, not a debug leftover - do not "clean up".
+	-- Top-down resolve pass. REQUIRED INITIALIZATION, not a debug
+	-- leftover - the discarded return values ARE the point, the CALL is
+	-- the work. See docs/01-Environment-Capability-Analysis.md §5af.
 	--
-	-- On this client a frame's cached rect is resolved lazily, relative to
-	-- its anchor's OWN cached rect, and SetVerticalScroll(0) above does
-	-- not eagerly re-resolve the subtree it just moved. Reading a child
-	-- while its ancestor is still stale therefore resolves - and caches -
-	-- that child against the OLD parent position, and the real
-	-- measurement below then happily reads back those wrong values.
+	-- Frame rects resolve lazily on this client, against the anchor's OWN
+	-- cached rect, and the SetVerticalScroll(0) above moves this whole
+	-- subtree without re-resolving any of it. Reading a child while its
+	-- ancestor is still stale resolves AND CACHES that child against the
+	-- ancestor's old position, so the measurement below then reads back
+	-- confidently wrong values. Resolving top-down first avoids that:
+	-- scrollChildPanel, then every frame the measurement reads, then the
+	-- General panel's static anchor chain (hotkeyTitle -> ... ->
+	-- modernBorderStyleCheckbox) - candidates hang off those but never
+	-- measure them, so nothing else would ever resolve them.
 	--
-	-- So the whole chain has to be resolved top-down, once, before
-	-- anything measures it: scrollChildPanel first, then every frame the
-	-- measurement will read, then the General panel's own static anchor
-	-- frames (hotkeyTitle -> ... -> modernBorderStyleCheckbox), which
-	-- several candidates hang off but which are themselves never
-	-- measured, so nothing else would ever resolve them.
-	--
-	-- Live-verified: dropping either loop, or reading the children before
-	-- scrollChildPanel, brings the bug back (the General panel measures
-	-- short, and everything under the toggled control becomes
-	-- unreachable). The return values are deliberately discarded - the
-	-- CALL is the point, not the value.
+	-- Live-verified: dropping either loop, or reading children before
+	-- scrollChildPanel, brings the bug back (panel measures short,
+	-- everything below the toggled control becomes unreachable).
 	scrollChildPanel:GetTop()
 
 	local resolveI
