@@ -529,20 +529,18 @@ function BTV:CreateScrollFrame(parent, name, scrollbarOnLeft)
 
 	scrollFrame.scrollBar = scrollBar
 
-	-- Temporary diag (UI redesign branch, MainBar-scrollbar-outside-window
-	-- investigation - diag18 showed contentScrollFrame.needsScrollbar=false
-	-- while its native scrollBar was still IsShown()=true, which our own
-	-- Show()/Hide() calls in BTV:UpdateScrollFrame should never leave
-	-- inconsistent - something else is calling :Show() on this frame.
-	-- Reports every real Show() with a caller stack so the source can be
-	-- identified directly instead of guessed. Remove once root-caused.
-	if scrollBar and debugstack then
-		scrollBar:HookScript("OnShow", function()
-			BTV:Print(
-				"diag19: " .. tostring(name) .. "ScrollBar shown -> " .. tostring(debugstack(2, 4, 0))
-			)
-		end)
-	end
+	-- UIPanelScrollFrameTemplate's own XML wires OnScrollRangeChanged to the
+	-- native ScrollFrame_OnScrollRangeChanged (Interface\FrameXML\UIPanelTemplates.lua),
+	-- which shows/hides the scrollbar itself based on its OWN internal range
+	-- calc - a second, conflicting authority over visibility on top of our
+	-- own maxScroll-based Show()/Hide() in BTV:UpdateScrollFrame (confirmed
+	-- live via diag19: it was re-Show()-ing a scrollbar our own code had
+	-- just Hidden, since no reserve was allocated for it - the "MainBar
+	-- scrollbar renders outside the window" bug). Overriding this to a
+	-- no-op makes BTV:UpdateScrollFrame the single source of truth for
+	-- scrollbar visibility, matching the reserve-space decision it already
+	-- drives.
+	scrollFrame:SetScript("OnScrollRangeChanged", function() end)
 
 	if scrollBar and scrollbarOnLeft then
 		scrollBar:ClearAllPoints()

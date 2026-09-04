@@ -54,6 +54,18 @@ BTVInlineDropdownMixin = {}
 function BTV:CreateInlineDropdown(parent, widthPixels, name)
 	local dropdown = CreateFrame("Frame", name, parent, "UIDropDownMenuTemplate")
 
+	-- CreateFrame only applies `parent` the FIRST time a given global `name`
+	-- is created - on every reuse (the whole point of passing a stable name
+	-- here, see the header comment above) it silently keeps whatever parent
+	-- the frame already had. RebuildMainBarAssignmentRows builds a brand
+	-- new `row` frame every rebuild and SetParent(nil)'s the OLD one once
+	-- it's replaced - without this explicit SetParent, the dropdown stays
+	-- attached to that now-orphaned old row forever, which is the actual
+	-- cause of the fragmented skin/blank label after switching bar pages
+	-- away and back (an orphaned-parent frame doesn't reliably render or
+	-- receive OnShow through the hierarchy even while IsShown() is true).
+	dropdown:SetParent(parent)
+
 	Mixin(dropdown, BTVInlineDropdownMixin)
 	dropdown:OnLoad(widthPixels)
 
