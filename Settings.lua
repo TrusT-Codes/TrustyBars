@@ -4794,52 +4794,11 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		)
 	end
 
-	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation): diag22/diag24 showed candidates from hotkeyValueText
-	-- onward drifting by up to ~114px between fits sharing the IDENTICAL
-	-- toggle state, even though none of that chain (hotkeyTitle ->
-	-- hotkeySlider -> hotkeyValueText -> countTitle -> countSlider ->
-	-- countValueText -> snapToAdjacentCheckbox -> snapToAdjacentDescription
-	-- -> modernBorderStyleCheckbox) is ever re-anchored after panel
-	-- creation (confirmed by grepping every :SetPoint call on these
-	-- frames) - yet mainBarStanceSwapDescription, the fixed anchor this
-	-- whole chain hangs off, measures a perfectly CONSTANT depth every
-	-- time. Dumping this chain with real labels (diag22/24 show most of
-	-- these as anonymous "name=nil") at the SAME post-scroll-reset moment
-	-- diag24 uses, to find exactly which link's depth stops matching its
-	-- predecessor's. Only meaningful for the General view (nil-guarded
-	-- for Bars/Profiles, whose panel has none of these fields).
-	-- Remove once root-caused.
-	if scrollChildPanel.hotkeyTitle then
-		local diag25Names = {
-			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
-			"countTitle", "countSlider", "countValueText", "countResetButton",
-			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
-			"modernBorderStyleCheckbox",
-		}
-
-		BTV:Print("diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop))
-
-		local diagK
-
-		for diagK = 1, table.getn(diag25Names) do
-			local key = diag25Names[diagK]
-			local frame = scrollChildPanel[key]
-
-			if frame then
-				local bottom = frame:GetBottom()
-
-				BTV:Print(
-					"diag25: " .. key ..
-					" shown=" .. tostring(frame:IsShown()) ..
-					" bottom=" .. tostring(bottom) ..
-					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
-				)
-			else
-				BTV:Print("diag25: " .. key .. " <nil>")
-			end
-		end
-	end
+	-- Bisection round 3 (UI redesign branch, General-panel disappearing-
+	-- items investigation): diag25 removed for this round, diag24 (above)
+	-- kept exactly as in the known-working a04afec commit - round 2
+	-- (diag24+diag25 together, diag22+diag23 removed) passed, so this
+	-- narrows further: does diag24 alone still pass?
 
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
