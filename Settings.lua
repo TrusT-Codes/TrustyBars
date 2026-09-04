@@ -4794,6 +4794,53 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		)
 	end
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22/diag24 showed candidates from hotkeyValueText
+	-- onward drifting by up to ~114px between fits sharing the IDENTICAL
+	-- toggle state, even though none of that chain (hotkeyTitle ->
+	-- hotkeySlider -> hotkeyValueText -> countTitle -> countSlider ->
+	-- countValueText -> snapToAdjacentCheckbox -> snapToAdjacentDescription
+	-- -> modernBorderStyleCheckbox) is ever re-anchored after panel
+	-- creation (confirmed by grepping every :SetPoint call on these
+	-- frames) - yet mainBarStanceSwapDescription, the fixed anchor this
+	-- whole chain hangs off, measures a perfectly CONSTANT depth every
+	-- time. Dumping this chain with real labels (diag22/24 show most of
+	-- these as anonymous "name=nil") at the SAME post-scroll-reset moment
+	-- diag24 uses, to find exactly which link's depth stops matching its
+	-- predecessor's. Only meaningful for the General view (nil-guarded
+	-- for Bars/Profiles, whose panel has none of these fields).
+	-- Remove once root-caused.
+	if scrollChildPanel.hotkeyTitle then
+		local diag25Names = {
+			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
+			"countTitle", "countSlider", "countValueText", "countResetButton",
+			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
+			"modernBorderStyleCheckbox",
+		}
+
+		BTV:Print("diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop))
+
+		local diagK
+
+		for diagK = 1, table.getn(diag25Names) do
+			local key = diag25Names[diagK]
+			local frame = scrollChildPanel[key]
+
+			if frame then
+				local bottom = frame:GetBottom()
+
+				BTV:Print(
+					"diag25: " .. key ..
+					" shown=" .. tostring(frame:IsShown()) ..
+					" bottom=" .. tostring(bottom) ..
+					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
+				)
+			else
+				BTV:Print("diag25: " .. key .. " <nil>")
+			end
+		end
+	end
+
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
 	local listDepth = nil
@@ -5993,6 +6040,11 @@ function BTV:GetOrCreateGeneralPanel()
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
 
+	-- Exposed only so the temporary diag25 trace (below in
+	-- FitSettingsWindowToGeneralView) can inspect this normally-static
+	-- anchor chain - not otherwise needed on panel.
+	panel.hotkeyTitle = hotkeyTitle
+
 	local hotkeySlider = CreateSettingSlider(
 		panel,
 		"BTVanillaGeneralHotkeyFontSizeSlider",
@@ -6152,6 +6204,10 @@ function BTV:GetOrCreateGeneralPanel()
 		"Item Count Text Size (" .. tostring(FONT_SIZE_MIN) ..
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
+
+	-- Exposed only so the temporary diag25 trace can inspect this
+	-- normally-static anchor chain - not otherwise needed on panel.
+	panel.countTitle = countTitle
 
 	local countSlider = CreateSettingSlider(
 		panel,
