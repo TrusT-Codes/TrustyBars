@@ -764,6 +764,39 @@ end
 -- keeps its real Blizzard buttons visible until a later login succeeds.
 -------------------------------------------------------------------------
 
+-- Bar 2's real parent frame (MultiBarBottomLeft) drives a real vanilla
+-- sizing decision that has nothing to do with its own 12 buttons - real
+-- vanilla's native ShapeshiftBar_Update() reads MultiBarBottomLeft:IsShown()
+-- to decide whether the Stance Bar has "the bottom-left bar's space" free
+-- to expand into, and swaps ShapeshiftButtonN's NormalTexture for a bigger
+-- one when it thinks that space is empty (confirmed live: 50x50 border
+-- when shown, 64x64 when hidden, on an unchanged 30x30 button - the
+-- button itself never resizes). Since TrustyBars already permanently
+-- hides this bar's own 12 buttons regardless of the "Show Bottom Left
+-- Actionbar" Interface Options checkbox, real vanilla sees an empty bar
+-- and wrongly inflates the Stance Bar's border to compensate, even though
+-- TrustyBars' own bar 2 replica already fills that space. Forcing this
+-- parent frame permanently shown (and neutering Hide, same "hide/show
+-- once, neuter permanently" treatment as HideBonusActionBarFrame/
+-- HideShapeshiftBarFrame) keeps ShapeshiftBar_Update() on the correct
+-- compact branch regardless of that checkbox - its 12 buttons stay
+-- separately, permanently hidden below either way, so this introduces no
+-- new visible art of its own.
+local hasNeuteredMultiBarBottomLeft = false
+
+local function ForceShowMultiBarBottomLeft(parent)
+	if not parent then
+		return
+	end
+
+	parent:Show()
+
+	if not hasNeuteredMultiBarBottomLeft then
+		parent.Hide = function() end
+		hasNeuteredMultiBarBottomLeft = true
+	end
+end
+
 -- Each real button's Show method is permanently overridden to a no-op
 -- once hidden, so any later native call (e.g. ACTIONBAR_SHOWGRID's sweep)
 -- can't make it visible again.
@@ -787,6 +820,19 @@ function BTV:CreateFixedSlotDefaultBars()
 					if btn then
 						btn:Hide()
 						btn.Show = function() end
+					end
+				end
+
+				if id == 2 then
+					ForceShowMultiBarBottomLeft(nativeButtons[1]:GetParent())
+
+					-- Forces an immediate recompute for a login that
+					-- already ran ShapeshiftBar_Update() against the
+					-- wrong (hidden) state above, before this fix ran.
+					-- Native code re-runs this itself on every later
+					-- UPDATE_SHAPESHIFT_FORMS regardless.
+					if ShapeshiftBar_Update then
+						ShapeshiftBar_Update()
 					end
 				end
 			end
@@ -2392,6 +2438,78 @@ function BTV:CaptureStanceBarNativeGap()
 	BTVanillaDB.stanceBarNativeGap = gap
 end
 
+-- ShapeshiftButtonN's native NormalTexture ("UI-Quickslot2", real vanilla's
+-- gold quickslot border) is drawn centered but oversized relative to the
+-- button frame itself (confirmed live: a 30x30 button's NormalTexture is
+-- 50x50) - the same overhanging-border trait Button.lua's own vanilla-
+-- style border replicates via BTV.BORDER_RATIO for custom buttons, just
+-- at a different, client-specific ratio for this native template. Captured
+-- once (not hardcoded) so SetStanceBarSpacing's floor stays correct
+-- against whatever this client's real button/texture sizes actually are,
+-- rather than guessing a fixed pixel count - same "capture, don't guess"
+-- rule as CaptureStanceBarNativeGap above. The required minimum spacing to
+-- keep two adjacent buttons' border art from overlapping is the full
+-- overhang (texture size minus button size), not half of it - each
+-- button's half-overhang eats into the gap from its own side.
+function BTV:CaptureStanceBarBorderOverhang()
+	if BTVanillaDB.stanceBarBorderOverhang then
+		return
+	end
+
+	local buttons = self:GetStanceBarButtons()
+	local btn = buttons and buttons[1]
+	local normalTex = btn and btn:GetNormalTexture()
+
+	if not btn or not normalTex then
+		return
+	end
+
+	local btnWidth = btn:GetWidth()
+	local texWidth = normalTex:GetWidth()
+
+	if not btnWidth or not texWidth then
+		return
+	end
+
+	local overhang = math.floor((texWidth - btnWidth) + 0.5)
+
+	-- A real overhang here is never negative (the border texture is never
+	-- smaller than the button it frames) - an implausible read is
+	-- discarded rather than persisted, same guard as
+	-- CaptureStanceBarNativeGap's own gap<=0 check.
+	if overhang <= 0 then
+		return
+	end
+
+	BTVanillaDB.stanceBarBorderOverhang = overhang
+end
+
+-- ShapeshiftBarFrame keeps its own native end-cap/middle background
+-- textures (ShapeshiftBarEnds/ShapeshiftBarMiddle) even after every
+-- ShapeshiftButtonN has been reparented out of it into the synthetic
+-- container above - reparenting a button doesn't touch the parent
+-- frame's own regions. Hidden and Show()-neutered unconditionally, same
+-- "hide once, neuter Show permanently" treatment as
+-- HideBonusActionBarFrame above, since UPDATE_SHAPESHIFT_FORMS runs
+-- vanilla's own ShapeshiftBar_Update() (which re-Shows this frame) on
+-- every call alongside RebuildStanceBarContainer below.
+local hasNeuteredShapeshiftBarFrame = false
+
+local function HideShapeshiftBarFrame()
+	local frame = ShapeshiftBarFrame
+
+	if not frame then
+		return
+	end
+
+	frame:Hide()
+
+	if not hasNeuteredShapeshiftBarFrame then
+		frame.Show = function() end
+		hasNeuteredShapeshiftBarFrame = true
+	end
+end
+
 -- Builds the Stance Bar's synthetic container the first time this session
 -- there are any active stance/form buttons to show - mirrors
 -- CreateBagBarAndMicroMenu's per-element structure exactly (native anchor/
@@ -2420,6 +2538,7 @@ function BTV:CreateStanceBarContainer()
 	-- CaptureStanceBarNativeGap's own comment) - this call is a harmless
 	-- no-op safety net, guarded on stanceBarNativeGap already being set.
 	self:CaptureStanceBarNativeGap()
+	self:CaptureStanceBarBorderOverhang()
 
 	SortButtonsByNativeLeft(buttons)
 
@@ -2451,14 +2570,20 @@ function BTV:CreateStanceBarContainer()
 		BTVanillaDB.stanceBarNativeSpacing = nativeSpacing
 	end
 
+	-- Routed through the setter (not a direct write) so a fresh install's
+	-- very first default spacing still gets floored to the real measured
+	-- border overhang in vanilla style - see SetStanceBarSpacing's comment.
 	if not BTVanillaDB.stanceBarSpacing then
-		BTVanillaDB.stanceBarSpacing = nativeSpacing
+		self:SetStanceBarSpacing(nativeSpacing)
 	end
 
 	self:ApplyStanceBarShape()
+	self:ApplyStanceBarBorderStyle()
 
 	self:ApplyStanceBarPosition()
 	self:SetStanceBarEnabled(BTVanillaDB.stanceBarEnabled ~= false)
+
+	HideShapeshiftBarFrame()
 
 	self:Print(
 		"Stance Bar captured: " .. tostring(container:GetWidth()) ..
@@ -2481,6 +2606,11 @@ end
 -- never touched by a rebuild.
 function BTV:RebuildStanceBarContainer()
 	self:EnsureDB()
+
+	-- Vanilla's own ShapeshiftBar_Update() also runs off this same
+	-- UPDATE_SHAPESHIFT_FORMS event and re-Shows ShapeshiftBarFrame - see
+	-- HideShapeshiftBarFrame's own comment above.
+	HideShapeshiftBarFrame()
 
 	local buttons = self:GetStanceBarButtons()
 
@@ -2524,6 +2654,7 @@ function BTV:RebuildStanceBarContainer()
 	self.stanceBarButtons = buttons
 
 	self:ApplyStanceBarShape()
+	self:ApplyStanceBarBorderStyle()
 
 	if BTVanillaDB.stanceBarEnabled ~= false then
 		container:Show()
@@ -2712,7 +2843,115 @@ function BTV:ApplyStanceBarShape()
 	)
 end
 
--- Mirrors SetBagBarSpacing's exact clamp/write/reapply template.
+-- Applies the current global border style (BTV:IsVanillaBorderStyle) to
+-- the Stance Bar's real ShapeshiftButtonN frames - mirrors Button.lua's
+-- BTVButtonMixin:ApplyBorderStyle, against a real Blizzard button instead
+-- of a synthetic one. Vanilla mode leaves the native NormalTexture
+-- ("UI-Quickslot2", the classic gold quickslot border) alone; modern mode
+-- hides it and draws the same flat dark-backdrop/inset-icon look Extra Bar
+-- buttons use.
+--
+-- The backdrop is NOT drawn via btn:SetBackdrop() directly - confirmed
+-- live that on this native template, SetBackdrop's bg/edge render ABOVE
+-- ShapeshiftButtonNIcon (a pre-existing native region), not below it,
+-- washing the icon out grey - the opposite of Button.lua's own synthetic
+-- buttons, where SetBackdrop is safe because self.icon is explicitly
+-- created on the "ARTWORK" layer. Instead this uses a separate plain
+-- child frame at a lower FrameLevel (and matching FrameStrata) than btn -
+-- a real sibling frame's own level/strata ordering against btn is a
+-- reliable mechanism, unlike backdrop-vs-native-region ordering on this
+-- particular template.
+function BTV:ApplyStanceBarBorderStyle()
+	local buttons = self.stanceBarButtons
+
+	if not buttons then
+		return
+	end
+
+	local vanilla = self:IsVanillaBorderStyle()
+	local i
+
+	for i = 1, table.getn(buttons) do
+		local btn = buttons[i]
+
+		if btn then
+			local name = btn:GetName()
+			local icon = name and getglobal(name .. "Icon")
+			local normalTex = btn:GetNormalTexture()
+
+			-- One-time cleanup for any button that already picked up the
+			-- old (buggy) btn:SetBackdrop() treatment this session, before
+			-- this fix - never applied by the code below anymore.
+			if btn.btvBackdropApplied then
+				btn:SetBackdrop(nil)
+				btn.btvBackdropApplied = nil
+			end
+
+			if vanilla then
+				if normalTex then
+					normalTex:Show()
+				end
+
+				if icon then
+					icon:ClearAllPoints()
+					icon:SetAllPoints(btn)
+				end
+
+				if btn.btvModernBackdrop then
+					btn.btvModernBackdrop:Hide()
+				end
+			else
+				if normalTex then
+					normalTex:Hide()
+				end
+
+				if icon then
+					icon:ClearAllPoints()
+					icon:SetPoint("TOPLEFT", btn, "TOPLEFT", 2, -2)
+					icon:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", -2, 2)
+				end
+
+				if not btn.btvModernBackdrop then
+					local backdrop = CreateFrame("Frame", nil, btn:GetParent())
+
+					backdrop:SetFrameStrata(btn:GetFrameStrata())
+					backdrop:SetFrameLevel(math.max((btn:GetFrameLevel() or 1) - 1, 0))
+					backdrop:SetPoint("TOPLEFT", btn, "TOPLEFT", 0, 0)
+					backdrop:SetPoint("BOTTOMRIGHT", btn, "BOTTOMRIGHT", 0, 0)
+					backdrop:SetBackdrop({
+						bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+						edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+						tile = true,
+						tileSize = 8,
+						edgeSize = 8,
+						insets = { left = 1, right = 1, top = 1, bottom = 1 },
+					})
+					backdrop:SetBackdropColor(0, 0, 0, 0.75)
+					backdrop:SetBackdropBorderColor(1, 1, 1, 1)
+
+					btn.btvModernBackdrop = backdrop
+				end
+
+				btn.btvModernBackdrop:Show()
+			end
+		end
+	end
+end
+
+-- Mirrors SetBagBarSpacing's clamp/write/reapply template, except for the
+-- floor: unlike Bag Bar/Micro Menu's own buttons, ShapeshiftButtonN uses
+-- the same overhanging native border art as default bars 1-5 (real
+-- vanilla's UI-Quickslot2 - see ApplyStanceBarBorderStyle above), which
+-- visually overlaps between adjacent buttons below the real measured
+-- overhang (BTVanillaDB.stanceBarBorderOverhang, captured live by
+-- CaptureStanceBarBorderOverhang - confirmed live at 20px for this
+-- client's 30px stance buttons, nowhere near generic BTV.VANILLA_SPACING_FLOOR's
+-- 4px, which was tuned for 36px custom-bar buttons instead). Only
+-- enforced in vanilla style; modern style hides that native border
+-- entirely (ApplyStanceBarBorderStyle). Falls back to
+-- VANILLA_SPACING_FLOOR only if the real capture hasn't run yet.
+-- maxSpacing widens past the usual 20 cap whenever the real overhang
+-- itself exceeds 20, so the floor can never be clamped below itself.
 function BTV:SetStanceBarSpacing(spacing)
 	self:EnsureDB()
 
@@ -2724,12 +2963,18 @@ function BTV:SetStanceBarSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	if spacing < 0 then
-		spacing = 0
+	local minSpacing = self:IsVanillaBorderStyle()
+		and (BTVanillaDB.stanceBarBorderOverhang or self.VANILLA_SPACING_FLOOR)
+		or 0
+
+	local maxSpacing = minSpacing > 20 and minSpacing or 20
+
+	if spacing < minSpacing then
+		spacing = minSpacing
 	end
 
-	if spacing > 20 then
-		spacing = 20
+	if spacing > maxSpacing then
+		spacing = maxSpacing
 	end
 
 	BTVanillaDB.stanceBarSpacing = spacing
@@ -2779,7 +3024,10 @@ end
 function BTV:ResetStanceBarLayout()
 	self:EnsureDB()
 
-	BTVanillaDB.stanceBarSpacing = BTVanillaDB.stanceBarNativeSpacing or 0
+	-- Routed through the setter (not a direct write) so the native gap
+	-- still gets floored to the real border overhang in vanilla style -
+	-- see SetStanceBarSpacing's own comment.
+	self:SetStanceBarSpacing(BTVanillaDB.stanceBarNativeSpacing or 0)
 	BTVanillaDB.stanceBarScale = 1
 	BTVanillaDB.stanceBarOrientation = false
 
