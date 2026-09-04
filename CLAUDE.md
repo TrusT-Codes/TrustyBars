@@ -16,7 +16,7 @@ TrustyBars (`BTVanilla`) is a Bartender2-style action bar addon for a **modified
 
 ## Commands
 
-- **Syntax-check a file before considering any edit done:** `luac5.1 -p <File>.lua` (both `luac5.1`/`lua5.1` are available). There is no other automated verification — no unit tests, no linter config. Always run this on every file you touch.
+- **Syntax-check a file before considering any edit done:** `luac -p <File>.lua`. On this machine the Lua 5.1 install (`C:\Program Files (x86)\Lua\5.1\`, already on PATH) ships the binary as plain `luac`/`lua`, not `luac5.1`/`lua5.1` — use `luac -p <File>.lua` (multiple files can be passed at once). There is no other automated verification — no unit tests, no linter config. Always run this on every file you touch.
 - **No build/install command** — the addon runs by being present in the client's `Interface/AddOns/TrustyBars` folder; there's nothing to compile or bundle.
 - Runtime testing happens live, in-game, via the user's client. When an API/CVar/event's exact behavior is uncertain, do not guess — see "Verifying uncertain client behavior" below.
 
