@@ -4776,11 +4776,18 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- positions are still computed off a stale pre-reset cache unless
 	-- they're explicitly read once first. Confirmed by bisection: reading
 	-- only candidateList's own frames isn't enough on its own, and reading
-	-- only the "static" General-panel anchor chain below (the frames
-	-- candidateList's own entries hang off, but which are never
-	-- themselves measured) isn't enough either - only reading BOTH sets,
-	-- at this exact point, settles the layout the real measurement below
-	-- needs to be trustworthy. General-panel-only (nil-guarded elsewhere).
+	-- only the General panel's named anchor chain below isn't enough
+	-- either - only reading BOTH, with BOTH GetBottom() AND IsShown(), at
+	-- this exact point, settles the layout the real measurement below
+	-- needs to be trustworthy. This exactly mirrors the read set of the
+	-- diag24+diag25 trace prints that were live-confirmed to fix this -
+	-- including their overlap: several named-chain frames below
+	-- (hotkeyValueText, hotkeyResetButton, countValueText, countResetButton,
+	-- snapToAdjacentDescription, modernBorderStyleCheckbox) are ALSO in
+	-- candidateList and so get read twice, once per loop, same as the
+	-- confirmed-working trace did - do not "deduplicate" this without
+	-- re-testing live, the bisection never isolated single-vs-double reads
+	-- on the overlapping subset. General-panel-only (nil-guarded below).
 	local warmupI
 
 	for warmupI = 1, table.getn(candidateList) do
@@ -4789,21 +4796,27 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		if warmupFrame and warmupFrame.GetBottom then
 			warmupFrame:GetBottom()
 		end
+
+		if warmupFrame and warmupFrame.IsShown then
+			warmupFrame:IsShown()
+		end
 	end
 
 	if scrollChildPanel.hotkeyTitle then
-		local warmupAncestors = {
-			scrollChildPanel.hotkeyTitle, scrollChildPanel.hotkeySlider,
-			scrollChildPanel.countTitle, scrollChildPanel.countSlider,
-			scrollChildPanel.snapToAdjacentCheckbox,
+		local warmupNames = {
+			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
+			"countTitle", "countSlider", "countValueText", "countResetButton",
+			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
+			"modernBorderStyleCheckbox",
 		}
 		local warmupJ
 
-		for warmupJ = 1, table.getn(warmupAncestors) do
-			local warmupFrame = warmupAncestors[warmupJ]
+		for warmupJ = 1, table.getn(warmupNames) do
+			local warmupFrame = scrollChildPanel[warmupNames[warmupJ]]
 
-			if warmupFrame and warmupFrame.GetBottom then
+			if warmupFrame then
 				warmupFrame:GetBottom()
+				warmupFrame:IsShown()
 			end
 		end
 	end
