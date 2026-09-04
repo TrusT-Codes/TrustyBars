@@ -4767,67 +4767,79 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Warm-up read pass, right after the scroll-position reset above and
-	-- before anything measures real positions below. Root-caused via live
-	-- bisection (UI redesign branch, General-panel disappearing-items
-	-- investigation): on this client, SetVerticalScroll(0) doesn't fully
-	-- settle every descendant's cached GetTop()/GetBottom() by the time a
-	-- deferred Fit (DeferFit, one frame later) reads them - some frames'
-	-- positions are still computed off a stale pre-reset cache unless
-	-- they're explicitly read once first. Confirmed by bisection: reading
-	-- only candidateList's own frames isn't enough on its own, and reading
-	-- only the General panel's named anchor chain below isn't enough
-	-- either - only reading BOTH, with BOTH GetBottom() AND IsShown(), at
-	-- this exact point, settles the layout the real measurement below
-	-- needs to be trustworthy. This exactly mirrors the read set of the
-	-- diag24+diag25 trace prints that were live-confirmed to fix this -
-	-- including their overlap: several named-chain frames below
-	-- (hotkeyValueText, hotkeyResetButton, countValueText, countResetButton,
-	-- snapToAdjacentDescription, modernBorderStyleCheckbox) are ALSO in
-	-- candidateList and so get read twice, once per loop, same as the
-	-- confirmed-working trace did - do not "deduplicate" this without
-	-- re-testing live, the bisection never isolated single-vs-double reads
-	-- on the overlapping subset. General-panel-only (nil-guarded below).
-	local warmupI
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22's own reads happened BEFORE the
+	-- SetVerticalScroll(0) resets above (it lives in a separate function,
+	-- FitSettingsWindowToGeneralView, called before this one) - invalidating
+	-- direct comparison against diag23's referenceTop, since a candidate's
+	-- GetBottom() shifts with scroll position. This dumps the SAME
+	-- candidateList's shown/bottom state AT THE EXACT POINT
+	-- MeasureDeepestExtent itself is about to read it (i.e. after the
+	-- scroll reset, same snapshot the real computation uses), so it can be
+	-- trusted against referenceTop directly. Remove once root-caused.
+	local diagReferenceTop = scrollChildPanel:GetTop()
 
-	for warmupI = 1, table.getn(candidateList) do
-		local warmupFrame = candidateList[warmupI]
+	BTV:Print("diag24: referenceTop=" .. tostring(diagReferenceTop) .. " n=" .. tostring(table.getn(candidateList)))
 
-		if warmupFrame and warmupFrame.GetBottom then
-			warmupFrame:GetBottom()
-		end
+	local diagJ
 
-		if warmupFrame and warmupFrame.IsShown then
-			warmupFrame:IsShown()
-		end
+	for diagJ = 1, table.getn(candidateList) do
+		local diagFrame = candidateList[diagJ]
+
+		BTV:Print(
+			"diag24: candidate " .. diagJ ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		)
 	end
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22/diag24 showed candidates from hotkeyValueText
+	-- onward drifting by up to ~114px between fits sharing the IDENTICAL
+	-- toggle state, even though none of that chain (hotkeyTitle ->
+	-- hotkeySlider -> hotkeyValueText -> countTitle -> countSlider ->
+	-- countValueText -> snapToAdjacentCheckbox -> snapToAdjacentDescription
+	-- -> modernBorderStyleCheckbox) is ever re-anchored after panel
+	-- creation (confirmed by grepping every :SetPoint call on these
+	-- frames) - yet mainBarStanceSwapDescription, the fixed anchor this
+	-- whole chain hangs off, measures a perfectly CONSTANT depth every
+	-- time. Dumping this chain with real labels (diag22/24 show most of
+	-- these as anonymous "name=nil") at the SAME post-scroll-reset moment
+	-- diag24 uses, to find exactly which link's depth stops matching its
+	-- predecessor's. Only meaningful for the General view (nil-guarded
+	-- for Bars/Profiles, whose panel has none of these fields).
+	-- Remove once root-caused.
 	if scrollChildPanel.hotkeyTitle then
-		local warmupNames = {
+		local diag25Names = {
 			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
 			"countTitle", "countSlider", "countValueText", "countResetButton",
 			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
 			"modernBorderStyleCheckbox",
 		}
-		local warmupJ
 
-		for warmupJ = 1, table.getn(warmupNames) do
-			local warmupFrame = scrollChildPanel[warmupNames[warmupJ]]
+		BTV:Print("diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop))
 
-			if warmupFrame then
-				warmupFrame:GetBottom()
-				warmupFrame:IsShown()
+		local diagK
+
+		for diagK = 1, table.getn(diag25Names) do
+			local key = diag25Names[diagK]
+			local frame = scrollChildPanel[key]
+
+			if frame then
+				local bottom = frame:GetBottom()
+
+				BTV:Print(
+					"diag25: " .. key ..
+					" shown=" .. tostring(frame:IsShown()) ..
+					" bottom=" .. tostring(bottom) ..
+					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
+				)
+			else
+				BTV:Print("diag25: " .. key .. " <nil>")
 			end
 		end
 	end
-
-	-- Test (round 6): exact-read reproduction (above) still failed live -
-	-- reading isn't enough on its own. Testing whether the act of
-	-- printing itself (BTV:Print -> DEFAULT_CHAT_FRAME:AddMessage, a real
-	-- chat-frame scroll/layout op, possibly forcing a pending-update flush
-	-- the reads alone don't) is what actually matters. One dummy print,
-	-- no per-frame data. Remove once root-caused.
-	BTV:Print("warmup")
 
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
@@ -4883,6 +4895,12 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		viewportHeight = maxViewportHeight
 	end
 
+	-- Bisection round 2 (UI redesign branch, General-panel disappearing-
+	-- items investigation): diag23 removed for this round (diag22 also
+	-- removed, below), diag24+diag25 kept exactly as in the known-working
+	-- a04afec commit - round 1 (diag22+diag23 only, no diag24/diag25)
+	-- still reproduced the bug, so testing the flip: diag24+diag25 alone.
+
 	BTV:UpdateScrollFrame(
 		scrollFrame,
 		scrollChildPanel,
@@ -4909,6 +4927,8 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 
 	return measuredContentHeight
 end
+
+
 
 -- Bars view: combines the current bar page's own controls with the bar
 -- list's rows - both are visible side by side in this view, so the
