@@ -4821,6 +4821,14 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		end
 	end
 
+	-- Test (round 6): exact-read reproduction (above) still failed live -
+	-- reading isn't enough on its own. Testing whether the act of
+	-- printing itself (BTV:Print -> DEFAULT_CHAT_FRAME:AddMessage, a real
+	-- chat-frame scroll/layout op, possibly forcing a pending-update flush
+	-- the reads alone don't) is what actually matters. One dummy print,
+	-- no per-frame data. Remove once root-caused.
+	BTV:Print("warmup")
+
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
 	local listDepth = nil
