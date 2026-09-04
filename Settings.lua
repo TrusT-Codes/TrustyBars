@@ -5100,8 +5100,15 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn, drop
 	dropdown.onSelect = function(value)
 		-- Temporary diag print (UI redesign branch, stance/page dropdown
 		-- investigation - /btv diag16) - remove once the bug is confirmed
-		-- fixed live.
+		-- fixed live. The stack dump distinguishes a callback that came
+		-- through the dropdown's own button (UIWidgets.lua's info.func,
+		-- which prints its own line just before this one) from one invoked
+		-- directly by something else entirely.
 		BTV:Print("diag16: onSelect fired for " .. tostring(dropdownName) .. " value=" .. tostring(value))
+
+		if debugstack then
+			BTV:Print("diag16: onSelect caller -> " .. tostring(debugstack(2, 4, 0)))
+		end
 
 		setFn(value ~= 0 and value or nil)
 		RefreshValue()

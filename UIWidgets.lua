@@ -66,6 +66,16 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	self.onSelect = nil
 	self.widthPixels = widthPixels or 160
 
+	-- Bumped every time this frame is (re)initialized. Because dropdown
+	-- frames are created with a STABLE global name across rebuilds
+	-- (Settings.lua's RebuildMainBarAssignmentRows), the native dropdown
+	-- system's shared popout (DropDownList1) can still be holding button
+	-- `func` closures created by an EARLIER OnLoad of this same frame -
+	-- each such closure captures the generation it was built under, so a
+	-- callback arriving from a stale one is identifiable (see the
+	-- initialize function below).
+	self.generation = (self.generation or 0) + 1
+
 	UIDropDownMenu_SetWidth(self.widthPixels, self)
 
 	-- Re-applied on every OnShow too, not just here - live-tested reports
@@ -80,6 +90,7 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	end)
 
 	local dropdown = self
+	local generation = self.generation
 
 	UIDropDownMenu_Initialize(self, function()
 		local info
@@ -100,6 +111,27 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 			info.text = optionText
 			info.notCheckable = true
 			info.func = function()
+				-- Temporary diag (UI redesign branch, stance/page dropdown
+				-- investigation - /btv diag16): reports whether this click
+				-- came from a button built under the CURRENT initialization
+				-- of this frame or a stale one left on the shared
+				-- DropDownList by a previous instantiation, plus who called
+				-- it. Deliberately still proceeds either way, so a real
+				-- click is never swallowed while we're identifying the
+				-- phantom's actual source. Remove once root-caused.
+				if dropdown.generation ~= generation then
+					BTV:Print(
+						"diag16: STALE dropdown click on " .. tostring(dropdown:GetName()) ..
+						" (button gen " .. tostring(generation) ..
+						" vs current gen " .. tostring(dropdown.generation) ..
+						"), value=" .. tostring(optionValue)
+					)
+				end
+
+				if debugstack then
+					BTV:Print("diag16: caller -> " .. tostring(debugstack(2, 3, 0)))
+				end
+
 				dropdown:SetSelected(optionValue, optionText)
 
 				if dropdown.onSelect then
