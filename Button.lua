@@ -317,6 +317,7 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self:SetScript("OnMouseWheel", BTVButtonMixin.OnMouseWheel)
 	self:SetScript("OnEnter", BTVButtonMixin.OnEnter)
 	self:SetScript("OnLeave", BTVButtonMixin.OnLeave)
+	self:SetScript("OnMouseDown", BTVButtonMixin.OnMouseDown)
 
 	self:RegisterEvent("ACTIONBAR_SLOT_CHANGED")
 	-- Drives the item stack-count text when bag count changes without a
@@ -798,6 +799,22 @@ function BTVButtonMixin.OnClick()
 		-- immediately rather than waiting on ACTIONBAR_UPDATE_STATE to
 		-- round-trip, so the glow appears the instant you click.
 		this:UpdateState()
+	end
+end
+
+-- OnClick only fires for LeftButton/RightButton (the only two registered via
+-- RegisterForClicks). Middle/Button4/Button5 never generate a click, but they
+-- do reach OnMouseDown regardless of RegisterForClicks - hoverbind mode uses
+-- that to capture them as keybinds (HoverBind.lua's BTV:HandleHoverBindMouseButton).
+function BTVButtonMixin.OnMouseDown()
+	if not BTV:IsHoverBindMode() then
+		return
+	end
+	if arg1 == "LeftButton" or arg1 == "RightButton" then
+		return
+	end
+	if BTV.HandleHoverBindMouseButton then
+		BTV:HandleHoverBindMouseButton(this, arg1)
 	end
 end
 

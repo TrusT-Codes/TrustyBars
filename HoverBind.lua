@@ -228,6 +228,17 @@ local MODIFIER_KEYS = {
 	LALT = true, RALT = true,
 }
 
+-- Mouse-button OnMouseDown arg1 name -> SetBinding/GetBindingKey key string.
+-- Live-confirmed on this client (diag2 + SetBinding round-trip): OnMouseDown
+-- reports "MiddleButton"/"Button4"/"Button5", but the binding system itself
+-- only recognizes "BUTTON3"/"BUTTON4"/"BUTTON5". LeftButton/RightButton are
+-- deliberately absent - those stay reserved for normal button use.
+local MOUSE_BUTTON_BINDING_KEYS = {
+	MiddleButton = "BUTTON3",
+	Button4 = "BUTTON4",
+	Button5 = "BUTTON5",
+}
+
 local function BuildComboString(key)
 	local combo = ""
 	if IsShiftKeyDown() then combo = combo .. "SHIFT-" end
@@ -236,19 +247,15 @@ local function BuildComboString(key)
 	return combo .. key
 end
 
-local function HoverBindCaptureFrame_OnKeyDown()
-	local key = arg1
-	if not key or MODIFIER_KEYS[key] then
-		return
+-- Refreshes tint/hotkey text for hovered after its binding changed.
+local function RefreshHoverBindTarget(hovered)
+	BTV:TintHoverBindButton(hovered)
+	if hovered.frame.UpdateHotkeyText then
+		hovered.frame:UpdateHotkeyText()
 	end
+end
 
-	local hovered = this.hoveredButton
-	if not hovered then
-		return
-	end
-
-	local combo = BuildComboString(key)
-
+local function ApplyHoverBindKey(hovered, combo)
 	local previousAction = GetBindingAction(combo)
 	if previousAction and previousAction ~= "" and previousAction ~= hovered.bindingId then
 		BTV:Print("Rebound " .. combo .. " (was: " .. previousAction .. ")")
@@ -271,13 +278,68 @@ local function HoverBindCaptureFrame_OnKeyDown()
 
 	SaveBindings(GetCurrentBindingSet())
 
-	BTV:TintHoverBindButton(hovered)
+	RefreshHoverBindTarget(hovered)
+end
 
-	-- Refresh this button's own hotkey text immediately rather than
-	-- waiting on its next unrelated Refresh().
-	if hovered.frame.UpdateHotkeyText then
-		hovered.frame:UpdateHotkeyText()
+-- Escape deletes the hovered button's current keybind rather than binding
+-- itself - it never becomes a keybind on this client.
+local function ClearHoverBindKey(hovered)
+	local existingKey1, existingKey2 = GetBindingKey(hovered.bindingId)
+
+	if not existingKey1 and not existingKey2 then
+		return
 	end
+
+	if existingKey1 then
+		SetBinding(existingKey1)
+	end
+	if existingKey2 then
+		SetBinding(existingKey2)
+	end
+
+	SaveBindings(GetCurrentBindingSet())
+
+	BTV:Print("Cleared keybind for " .. hovered.bindingId)
+
+	RefreshHoverBindTarget(hovered)
+end
+
+local function HoverBindCaptureFrame_OnKeyDown()
+	local key = arg1
+	if not key or MODIFIER_KEYS[key] then
+		return
+	end
+
+	local hovered = this.hoveredButton
+	if not hovered then
+		return
+	end
+
+	if key == "ESCAPE" then
+		ClearHoverBindKey(hovered)
+		return
+	end
+
+	ApplyHoverBindKey(hovered, BuildComboString(key))
+end
+
+-- Called from Button.lua's OnMouseDown while hoverbind mode is active, for
+-- any mouse button besides Left/Right (those never reach here - see the
+-- guard in Button.lua). arg1's OnMouseDown name is looked up against
+-- MOUSE_BUTTON_BINDING_KEYS since it isn't the string SetBinding expects.
+function BTV:HandleHoverBindMouseButton(frame, buttonName)
+	local captureFrame = self.hoverBindCaptureFrame
+	local hovered = captureFrame and captureFrame.hoveredButton
+	if not hovered or hovered.frame ~= frame then
+		return
+	end
+
+	local key = MOUSE_BUTTON_BINDING_KEYS[buttonName]
+	if not key then
+		return
+	end
+
+	ApplyHoverBindKey(hovered, BuildComboString(key))
 end
 
 local function CreateHoverBindCaptureFrame()
