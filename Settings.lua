@@ -514,12 +514,26 @@ local SETTINGS_SCROLL_WHEEL_STEP = 30
 -- Frame; actual content should be parented into whatever scrollchild
 -- BTV:UpdateScrollFrame below is later given for it (via
 -- scrollFrame:SetScrollChild), not into scrollFrame itself.
-function BTV:CreateScrollFrame(parent, name)
+-- scrollbarOnLeft (optional): UIPanelScrollBarTemplate's own XML anchors
+-- the scrollbar to the scrollframe's RIGHT side (TOPLEFT/BOTTOMLEFT ->
+-- TOPRIGHT/BOTTOMRIGHT, +4 x-offset) - passing true re-anchors it to the
+-- LEFT side instead (mirrored offsets), for callers like the bar-list
+-- sidebar where the scrollbar reads better on the left. Purely cosmetic
+-- repositioning - the scrollbar's own up/down buttons and thumb-drag
+-- still work exactly the same, since they're anchored relative to the
+-- scrollbar frame itself, not the scrollframe.
+function BTV:CreateScrollFrame(parent, name, scrollbarOnLeft)
 	local scrollFrame = CreateFrame("ScrollFrame", name, parent, "UIPanelScrollFrameTemplate")
 
 	local scrollBar = getglobal(name .. "ScrollBar")
 
 	scrollFrame.scrollBar = scrollBar
+
+	if scrollBar and scrollbarOnLeft then
+		scrollBar:ClearAllPoints()
+		scrollBar:SetPoint("TOPRIGHT", scrollFrame, "TOPLEFT", -4, -16)
+		scrollBar:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMLEFT", -4, 16)
+	end
 
 	scrollFrame:EnableMouseWheel(true)
 
@@ -927,16 +941,21 @@ local function CreateSettingsFrame()
 	-- row list, live-tested and confirmed. Also future-proofs against a
 	-- later user-resizable window, where the list needs to already know
 	-- how to cope with less vertical space than its content needs.
-	f.listPanel = BTV:CreateScrollFrame(f, "BTVanillaSettingsListScrollFrame")
+	f.listPanel = BTV:CreateScrollFrame(f, "BTVanillaSettingsListScrollFrame", true)
 
 	f.listPanel:SetWidth(140)
 	f.listPanel:SetHeight(610)
 
+	-- Shifted right by SETTINGS_SCROLLBAR_RESERVED_WIDTH to make room for
+	-- its own scrollbar, now anchored to its LEFT (see BTV:CreateScrollFrame's
+	-- scrollbarOnLeft param above) instead of overlapping the window's own
+	-- left edge - contentScrollFrame below is narrowed by the same amount
+	-- so the gap between the two panels stays visually unchanged.
 	f.listPanel:SetPoint(
 		"TOPLEFT",
 		f,
 		"TOPLEFT",
-		18,
+		18 + SETTINGS_SCROLLBAR_RESERVED_WIDTH,
 		-64
 	)
 
@@ -988,6 +1007,18 @@ local function CreateSettingsFrame()
 
 	f.listContent = CreateFrame("Frame", nil, f.listPanel)
 
+	-- Matches f.contentPanel's own pattern just below (SetWidth/SetHeight +
+	-- SetScrollChild called IMMEDIATELY here, not left until the first
+	-- deferred Fit) - without this, the list rendered nothing at all until
+	-- BTV:UpdateScrollFrame's own SetScrollChild call finally ran on the
+	-- next-frame-deferred Fit, and even then the scroll child had never
+	-- been given a real starting size, live-tested and confirmed as the
+	-- list not appearing at all.
+	f.listContent:SetWidth(f.listPanel:GetWidth())
+	f.listContent:SetHeight(610)
+
+	f.listPanel:SetScrollChild(f.listContent)
+
 	-------------------------------------------------------------------------
 	-- Right content panel
 	--
@@ -1010,7 +1041,12 @@ local function CreateSettingsFrame()
 	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
 	f.contentScrollFrame:SetHeight(610)
-	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
+	-- Narrowed by a SECOND SETTINGS_SCROLLBAR_RESERVED_WIDTH (on top of its
+	-- own scrollbar's usual reservation) - listPanel above shifted right by
+	-- this same amount to make room for ITS OWN scrollbar on its left
+	-- side, so this shrinks from the left to keep the visual gap between
+	-- the two panels unchanged rather than growing it.
+	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
 
 	f.contentScrollFrame:SetPoint(
 		"TOPRIGHT",
