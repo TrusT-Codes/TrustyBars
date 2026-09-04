@@ -1,69 +1,38 @@
 -- UIWidgets.lua
--- Small, reusable Mixin-based dialog/dropdown widget kit, built directly
--- on ClassicAPI's own confirmed-working primitives (Mixin/CreateFromMixins
--- - true DLL-native globals on this client, not Lua polyfills) rather than
--- vendoring in a third-party UI library - see
--- docs/01-Environment-Capability-Analysis.md section 3.1 for what
--- ClassicAPI actually provides and how it was confirmed. This is
--- deliberately the pilot for a broader future UI redesign (per the user's
--- own plan), so it's a small general-purpose widget kit rather than one-off
--- copy-pasted frames per dialog need - BTVDialogMixin covers every dialog
--- shape the Profiles feature needs (plain confirm, text input, dropdown
--- selection) through one config table instead of three separate widgets.
+-- Reusable Mixin-based dialog/dropdown widget kit, built on ClassicAPI's
+-- Mixin/CreateFromMixins primitives.
 --
--- Vanilla WoW 1.12.1 / Lua 5.0 compatible - see Button.lua's own header
--- comment for the `this`-vs-`:method()` convention this file follows too:
--- engine-invoked script handlers (OnClick, OnShow, OnHide) receive the
+-- Engine-invoked script handlers (OnClick, OnShow, OnHide) receive the
 -- frame via the global `this`, never as a `self` parameter.
---
--- No StaticPopup/EditBox/inline-dropdown-selector precedent exists
--- anywhere else in this addon (confirmed via a full-repo search before
--- writing this file) - this is genuinely new UI infrastructure, not a
--- refactor of something that already worked.
 
 local BTV = BTVanilla
 
--- Shared colors for the fade-strip hover/select treatment (BTVFadeStripMixin
--- below) - one place to change "the gold" addon-wide instead of a scattered
--- literal per call site (StyleModernButton's own hover border literal is
--- left as its own inline value on purpose - out of scope here, not broken).
+-- Shared accent/hover colors for the fade-strip treatment below.
 BTV.UI_ACCENT_COLOR = { 1, 0.82, 0 }
 BTV.UI_HOVER_COLOR = { 1, 1, 1 }
 
 -------------------------------------------------------------------------
 -- BTVInlineDropdownMixin
 --
--- Wraps the same native UIDropDownMenuTemplate/UIDropDownMenu_AddButton/
--- UIDropDownMenu_Initialize system Menu.lua already uses for the minimap
--- button's right-click context menu - but as a PERSISTENT in-panel
--- selector (a "<select>") instead of a transient right-click popup. The
--- underlying native API is unchanged; only how/when it's shown differs.
+-- Wraps the native UIDropDownMenuTemplate as a persistent in-panel
+-- selector instead of a transient right-click popup.
 -------------------------------------------------------------------------
 
 BTVInlineDropdownMixin = {}
 
--- parent: frame to anchor into. name: REQUIRED, not optional - unlike
--- every other frame in this addon, UIDropDownMenuTemplate's own native
--- FrameXML machinery (Interface\FrameXML\UIDropDownMenu.lua) builds
--- internal sub-widget references by string-concatenating this frame's
--- own GetName() throughout (UIDropDownMenu_Initialize/SetWidth/etc.) -
--- a nameless dropdown makes that native code fail with "attempt to
--- concatenate a nil value" the moment UIDropDownMenu_Initialize runs
--- below, live-tested and confirmed (Interface\FrameXML\UIDropDownMenu.lua:714).
+-- parent: frame to anchor into. name: REQUIRED - UIDropDownMenuTemplate's
+-- native FrameXML machinery builds internal sub-widget references by
+-- string-concatenating this frame's own GetName() (UIDropDownMenu_
+-- Initialize/SetWidth/etc.); a nameless dropdown fails with "attempt to
+-- concatenate a nil value".
 -- Returns the created dropdown frame with this mixin applied.
 function BTV:CreateInlineDropdown(parent, widthPixels, name)
 	local dropdown = CreateFrame("Frame", name, parent, "UIDropDownMenuTemplate")
 
-	-- CreateFrame only applies `parent` the FIRST time a given global `name`
-	-- is created - on every reuse (the whole point of passing a stable name
-	-- here, see the header comment above) it silently keeps whatever parent
-	-- the frame already had. RebuildMainBarAssignmentRows builds a brand
-	-- new `row` frame every rebuild and SetParent(nil)'s the OLD one once
-	-- it's replaced - without this explicit SetParent, the dropdown stays
-	-- attached to that now-orphaned old row forever, which is the actual
-	-- cause of the fragmented skin/blank label after switching bar pages
-	-- away and back (an orphaned-parent frame doesn't reliably render or
-	-- receive OnShow through the hierarchy even while IsShown() is true).
+	-- CreateFrame only applies `parent` the first time a given global
+	-- `name` is created - on reuse it keeps whatever parent it already
+	-- had. Must SetParent explicitly here or a reused dropdown stays
+	-- attached to an orphaned old frame and stops rendering reliably.
 	dropdown:SetParent(parent)
 
 	Mixin(dropdown, BTVInlineDropdownMixin)
@@ -80,19 +49,9 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 
 	UIDropDownMenu_SetWidth(self.widthPixels, self)
 
-	-- Re-applied on every OnShow too, not just here - live-tested reports
-	-- of the Left/Middle/Right skin pieces rendering fragmented (visible
-	-- gaps between them) on a dropdown built while its page was still
-	-- hidden (e.g. RebuildMainBarAssignmentRows runs before ShowBarPage's
-	-- own :Show() call) suggest UIDropDownMenuTemplate's skin textures
-	-- don't reliably finish settling into the width this call already
-	-- passed them at that point - cheap to just redo once actually shown.
-	-- Same reasoning applies to the displayed label text: SetSelected can
-	-- (and for the Main Bar assignment rows, always does) run while this
-	-- frame is still hidden, and UIDropDownMenu_SetText doesn't reliably
-	-- stick from that state either - reapplying the cached
-	-- selectedDisplayText here fixes the label going blank/stale after
-	-- switching bar pages away and back.
+	-- Re-applied on OnShow too: a dropdown built while its page is still
+	-- hidden can end up with fragmented skin pieces and a stale/blank
+	-- label otherwise.
 	self:SetScript("OnShow", function()
 		UIDropDownMenu_SetWidth(this.widthPixels, this)
 
@@ -110,11 +69,8 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 		for i = 1, table.getn(dropdown.options) do
 			local option = dropdown.options[i]
 
-			-- Each entry is either a plain string (label IS the value - the
-			-- original/common case, e.g. profile names) or a
-			-- { text = "...", value = ... } table when the underlying
-			-- stored value isn't itself a sensible display label (e.g. a
-			-- numeric bar id) - both shapes share one code path here.
+			-- option is either a plain string, or a { text =, value = }
+			-- table when the stored value isn't a sensible display label.
 			local optionText = (type(option) == "table") and option.text or option
 			local optionValue = (type(option) == "table") and option.value or option
 
@@ -134,22 +90,14 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	end)
 end
 
--- options: a plain array of strings (already ordered by the caller - e.g.
--- BTV:GetProfileNames() with a trailing "Create new profile" sentinel
--- appended by Settings.lua where relevant), OR an array of
--- { text = "...", value = ... } tables when the value isn't itself a
--- usable label.
+-- options: array of strings, or { text = "...", value = ... } tables when
+-- the value isn't itself a usable label.
 function BTVInlineDropdownMixin:SetOptions(options)
 	self.options = options or {}
 end
 
--- displayText is optional - when omitted (the plain-string-options case),
--- `value` itself is shown, same as before. When options are
--- { text =, value = } pairs, callers should pass the matching text
--- explicitly (as OnLoad's own selection handler above does); this function
--- falls back to searching self.options for a matching value so a caller
--- driving the initial/refreshed selection from stored data alone still
--- shows the right label without duplicating the options table.
+-- displayText is optional - when omitted, `value` itself is shown (plain-
+-- string options) or looked up from a matching { text=, value= } entry.
 function BTVInlineDropdownMixin:SetSelected(value, displayText)
 	self.selected = value
 
@@ -171,11 +119,7 @@ function BTVInlineDropdownMixin:SetSelected(value, displayText)
 		end
 	end
 
-	-- Cached so OnShow (below) can reapply the label - UIDropDownMenu_SetText
-	-- called while this frame is still hidden (RebuildMainBarAssignmentRows
-	-- runs RefreshValue()/SetSelected before ShowBarPage's own :Show()) does
-	-- not reliably stick, same underlying cause as the width-fragmentation
-	-- fix already applied in OnLoad's OnShow handler below.
+	-- Cached so OnShow can reapply the label after this frame becomes visible.
 	self.selectedDisplayText = displayText or value
 
 	UIDropDownMenu_SetText(self.selectedDisplayText, self)
@@ -188,26 +132,15 @@ end
 -------------------------------------------------------------------------
 -- Modern button styling
 --
--- UIPanelButtonTemplate's native 3-slice texture is built for short,
--- fixed-width labels (e.g. "Okay"/"Cancel") - stretched out to the wide,
--- variable widths this addon's dialogs need for long button labels (the
--- first-login dialog's own "I know what im doing, use default profile"),
--- its corner/middle pieces visibly distort. This backdrop-based button
--- instead scales cleanly to any width (SetBackdrop tiles/stretches its
--- edge and background independently, unlike a fixed 3-slice texture) and
--- matches the "modern" border look already used elsewhere in this addon
--- (Button.lua's own modern button style) for one consistent visual
--- language. General-purpose (not dialog-specific) since this file is
--- meant to be the pilot for a broader future UI redesign.
+-- Backdrop-based button styling (not UIPanelButtonTemplate) that scales
+-- cleanly to arbitrary widths.
 -------------------------------------------------------------------------
 
 -- Turns a plain, template-less Button frame into a modern-styled one.
--- Caller still creates the frame (CreateFrame("Button", ...)), sets its
--- own SetHeight/OnClick/etc as normal - this only applies the visuals and
--- installs a :SetText that both updates the label AND resizes the button
--- to fit it (BTV_BUTTON_PADDING_X either side), clamped to
--- [minWidth, maxWidth] so a short label doesn't look stretched and a long
--- one doesn't overflow its container. Pass 0/math.huge (or omit) for no
+-- Caller still creates the frame and sets its own SetHeight/OnClick/etc
+-- as normal - this applies the visuals and installs a :SetText that
+-- resizes the button to fit its label (BTV_BUTTON_PADDING_X either side),
+-- clamped to [minWidth, maxWidth]. Pass 0/math.huge (or omit) for no
 -- clamping on that side.
 local BTV_BUTTON_PADDING_X = 32
 
@@ -233,10 +166,8 @@ function BTV:StyleModernButton(button, minWidth, maxWidth)
 	button.minWidth = minWidth or 0
 	button.maxWidth = maxWidth or 0
 
-	-- Overrides the native Button:SetText - a plain, template-less Button
-	-- has no default font region wired to it the way a templated one
-	-- does, and this addon still wants every caller to just say
-	-- button:SetText(...) as normal.
+	-- Overrides the native Button:SetText - a template-less Button has no
+	-- font region wired to it by default.
 	button.SetText = function(self, value)
 		text:SetText(value or "")
 
@@ -271,10 +202,8 @@ function BTV:StyleModernButton(button, minWidth, maxWidth)
 		this.text:SetPoint("CENTER", this, "CENTER", 0, 0)
 	end)
 
-	-- :Disable()/:Enable() are native Button methods (grey out + block
-	-- clicks) - just also dim our own backdrop/text to match, since the
-	-- native greyed-out look is baked into UIPanelButtonTemplate's
-	-- texture, which this button no longer has.
+	-- Dims backdrop/text to match native Disable/Enable's grey-out, since
+	-- this button has no UIPanelButtonTemplate texture to grey out itself.
 	local nativeDisable = button.Disable
 	local nativeEnable = button.Enable
 
@@ -294,21 +223,14 @@ end
 -------------------------------------------------------------------------
 -- BTVDialogMixin
 --
--- One reusable dialog frame covering every shape the spec needs:
+-- One reusable dialog frame covering:
 --   mode = "confirm"   - title/message + buttons only
---   mode = "textinput" - adds an EditBox (InputBoxTemplate - the standard
---                         vanilla 1.12 FrameXML text-input widget, e.g.
---                         used by the Guild Info/note editors)
---   mode = "dropdown"  - adds a BTVInlineDropdownMixin populated from
---                         config.options
+--   mode = "textinput" - adds an EditBox (InputBoxTemplate)
+--   mode = "dropdown"  - adds a BTVInlineDropdownMixin from config.options
 --
--- A single frame instance is created lazily once (BTV.activeDialog) and
--- reconfigured on every BTV:ShowDialog call, mirroring Settings.lua's own
--- "one frame, reused" convention (CreateSettingsFrame) rather than
--- building/destroying a new frame per dialog. Only one BTV dialog is ever
--- open at a time in this addon's flows (each dialog's own button click
--- closes it before any follow-up dialog opens), so this is sufficient -
--- flagged here in case a future caller ever needs to stack dialogs.
+-- A single frame instance is created lazily (BTV.activeDialog) and
+-- reconfigured on every BTV:ShowDialog call rather than rebuilt. Only one
+-- dialog is ever open at a time.
 -------------------------------------------------------------------------
 
 BTVDialogMixin = {}
@@ -333,16 +255,13 @@ local function EnsureDialogFrame()
 end
 
 function BTVDialogMixin:OnLoad()
-	-- FULLSCREEN_DIALOG: above Settings.lua's own DIALOG-strata window
-	-- (CreateSettingsFrame, Settings.lua) so a Profiles dialog always
-	-- renders on top of it.
+	-- FULLSCREEN_DIALOG: renders above Settings.lua's DIALOG-strata window.
 	self:SetFrameStrata("FULLSCREEN_DIALOG")
 	self:SetWidth(DIALOG_WIDTH)
 	self:SetHeight(160)
 	self:SetPoint("CENTER", UIParent, "CENTER", 0, 0)
 
-	-- Same DialogFrame backdrop CreateSettingsFrame uses (Settings.lua),
-	-- for visual consistency with the rest of the addon's UI.
+	-- Matches CreateSettingsFrame's own backdrop (Settings.lua).
 	self:SetBackdrop({
 		bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
 		edgeFile = "Interface\\DialogFrame\\UI-DialogBox-Border",
@@ -367,10 +286,8 @@ function BTVDialogMixin:OnLoad()
 	self.messageText:SetWidth(DIALOG_WIDTH - 40)
 	self.messageText:SetJustifyH("CENTER")
 
-	-- InputBoxTemplate: the standard vanilla 1.12 FrameXML EditBox
-	-- template (first use anywhere in this addon - no existing EditBox
-	-- precedent to mirror). Created hidden; shown only for mode ==
-	-- "textinput".
+	-- InputBoxTemplate: standard vanilla FrameXML EditBox. Created hidden;
+	-- shown only for mode == "textinput".
 	self.editBox = CreateFrame("EditBox", "BTVanillaDialogEditBox", self, "InputBoxTemplate")
 	self.editBox:SetWidth(DIALOG_WIDTH - 80)
 	self.editBox:SetHeight(20)
@@ -385,9 +302,8 @@ function BTVDialogMixin:OnLoad()
 	self.dropdown = BTV:CreateInlineDropdown(self, DIALOG_WIDTH - 80, "BTVanillaDialogDropdown")
 	self.dropdown:Hide()
 
-	-- 4, not 3 - the first-login dialog (Core.lua's BTV:ShowFirstLoginDialog)
-	-- has 3 default buttons plus a conditional 4th ("use existing profile"),
-	-- the largest button count any dialog in this feature needs.
+	-- Up to 4 buttons - the first-login dialog needs 3 plus a conditional
+	-- 4th ("use existing profile").
 	self.buttons = {}
 
 	local i
@@ -397,10 +313,8 @@ function BTVDialogMixin:OnLoad()
 
 		button:SetHeight(DIALOG_BUTTON_HEIGHT)
 
-		-- Min width keeps very short labels ("OK") from looking like a
-		-- tiny nub; max width is the same usable width the title/message
-		-- text already wraps to, so a long label is the only thing that
-		-- ever grows a button to full dialog width.
+		-- minWidth avoids short labels looking like a tiny nub; maxWidth
+		-- matches the dialog's usable text width.
 		BTV:StyleModernButton(button, DIALOG_BUTTON_MIN_WIDTH, DIALOG_WIDTH - 40)
 		button:Hide()
 
@@ -442,16 +356,8 @@ function BTVDialogMixin:Init(config)
 		self.dropdown:Show()
 	end
 
-	-- Buttons flow horizontally, wrapping into as many centered rows as
-	-- needed - each row's buttons sit side by side with equal
-	-- BUTTON_GAP_X spacing, and the row itself is centered on the
-	-- dialog's own horizontal center (matching title/message/mode content,
-	-- which are all centered the same way). A row only wraps to a new
-	-- line once it can no longer fit the next button within the dialog's
-	-- usable width, so a single short-label confirm still renders as one
-	-- row, while the first-login dialog's four long labels spread across
-	-- multiple rows instead of forcing one axis to be either overflowing
-	-- (all in one row) or needlessly tall (one per row, the old design).
+	-- Buttons wrap into as many centered rows as needed, each row centered
+	-- on the dialog's own horizontal center.
 	local BUTTON_GAP_X = 12
 	local BUTTON_ROW_GAP_Y = 8
 	local availableWidth = DIALOG_WIDTH - 40
@@ -460,9 +366,9 @@ function BTVDialogMixin:Init(config)
 	local count = table.getn(self.buttonConfigs)
 	self.defaultButtonIndex = nil
 
-	-- Pass 1: configure every visible button (label/click handler) so its
-	-- real, content-fit width (BTV:StyleModernButton's SetText override)
-	-- is known before row-packing below.
+	-- Pass 1: configure each visible button so its content-fit width
+	-- (BTV:StyleModernButton's SetText override) is known before
+	-- row-packing below.
 	for i = 1, 4 do
 		local button = self.buttons[i]
 		local buttonConfig = self.buttonConfigs[i]
@@ -495,8 +401,7 @@ function BTVDialogMixin:Init(config)
 	end
 
 	-- Pass 2: greedily wrap buttons 1..count into rows - rows[r] is an
-	-- array of button indices, rowWidths[r] is that row's total width
-	-- (buttons + the BUTTON_GAP_X between them), used to center it below.
+	-- array of button indices, rowWidths[r] that row's total width.
 	local rows = {}
 	local rowWidths = {}
 	local rowCount = 0
@@ -525,13 +430,8 @@ function BTVDialogMixin:Init(config)
 		rowWidths[rowCount] = rowWidths[rowCount] + addWidth
 	end
 
-	-- Content-aware sizing/positioning: every button row is anchored
-	-- directly off self's own TOP with a precomputed pixel offset (rather
-	-- than chaining off the previous element's rendered position) so its
-	-- horizontal centering offset can be applied independently of its
-	-- vertical stacking order. Mirrors titleText's own existing pattern of
-	-- anchoring straight to self "TOP". TOP_OFFSET/title/message/mode-
-	-- content gaps match OnLoad's own anchor chain for those elements.
+	-- Each row is anchored off self's own TOP with a precomputed offset,
+	-- independent of vertical stacking order.
 	local TOP_OFFSET = 18
 	local BOTTOM_PADDING = 20
 
@@ -585,11 +485,7 @@ function BTVDialogMixin:GetValue()
 end
 
 -- Invokes the default button's own OnClick handler directly rather than
--- via a Button:Click() call - vanilla 1.12's Button widget type isn't
--- confirmed to support :Click() (a later-API addition), and the handler
--- itself doesn't depend on `this`/engine-invocation context, so calling it
--- as a plain function is equivalent and doesn't rely on an unconfirmed
--- API.
+-- via :Click().
 function BTVDialogMixin:ClickDefaultButton()
 	local index = self.defaultButtonIndex
 	local button = index and self.buttons[index]
@@ -603,14 +499,9 @@ function BTVDialogMixin:ClickDefaultButton()
 	end
 end
 
--- Named Display rather than Show deliberately - Mixin(dialog,
--- BTVDialogMixin) copies this function directly onto the frame's own
--- table, which would SHADOW the frame's native :Show() method if we named
--- it that (direct table assignment always wins over the widget
--- prototype's metatable-based method lookup), making the native Show
--- unreachable/recursive. Keeping this under a different name avoids that
--- entirely rather than relying on unverified metatable internals to reach
--- back through it.
+-- Named Display, not Show - Mixin() copies this directly onto the frame's
+-- table, which would shadow the native :Show() and make it unreachable if
+-- this were named Show.
 function BTVDialogMixin:Display()
 	self:Show()
 
@@ -619,8 +510,7 @@ function BTVDialogMixin:Display()
 	end
 end
 
--- BTV:ShowDialog(config) - the one entry point every caller (Settings.lua,
--- Core.lua's first-login flow) uses for every dialog need. Reuses the one
+-- The one entry point every caller uses for every dialog need. Reuses the
 -- lazily-created dialog frame (EnsureDialogFrame above).
 function BTV:ShowDialog(config)
 	local dialog = EnsureDialogFrame()
@@ -634,14 +524,10 @@ end
 -------------------------------------------------------------------------
 -- BTVFadeStripMixin / BTV:CreateFadeStrip
 --
--- A horizontal transparent -> solid -> transparent highlight strip, split
--- 10%/80%/10% across its own width. This client's Texture:SetGradientAlpha
--- only interpolates between 2 stops (no native 3-stop gradient primitive),
--- so the flat 80% middle section has to be a separately-colored plain
--- WHITE8X8 texture, not a wider gradient - hence 3 stacked textures rather
--- than 1. Used both by the top nav tabs (Settings.lua, replacing their old
--- solid-border hover swap) and by BTVListRowMixin's select/hover layers
--- below - one widget, two call sites.
+-- Horizontal transparent -> solid -> transparent highlight strip, split
+-- 10%/80%/10% across its width. SetGradientAlpha only interpolates
+-- between 2 stops, so the flat middle section is a separate solid
+-- texture rather than part of one wider gradient - 3 stacked textures.
 -------------------------------------------------------------------------
 
 BTVFadeStripMixin = {}
@@ -653,11 +539,8 @@ function BTV:CreateFadeStrip(parent, width, height)
 
 	Mixin(strip, BTVFadeStripMixin)
 
-	-- Never wants to intercept mouse events itself - it's a pure visual
-	-- overlay, layered over whatever real interactive frame (button/row/
-	-- checkbox) it's decorating, and per item 4 of the styling pass it can
-	-- extend past its own parent row's width into a sibling checkbox's
-	-- hit-region, where it must not steal clicks/hover.
+	-- Pure visual overlay - must not intercept mouse events meant for the
+	-- frame it decorates.
 	strip:EnableMouse(false)
 	strip:SetHeight(height)
 
@@ -705,12 +588,9 @@ function BTVFadeStripMixin:SetStripWidth(width)
 	self.rightTex:SetHeight(height)
 end
 
--- Resizes just the height (SetStripWidth already recomputes the 3
--- textures' own SetHeight from self:GetHeight() every time it runs, but
--- nothing re-runs SetStripWidth when only the strip's HEIGHT changes -
--- e.g. BTVListRowMixin:SetHeight, called by every row's own
--- row:SetHeight(LIST_ROW_HEIGHT) AFTER OnLoad already created the strips
--- at whatever bogus height the row had at that point, typically 0).
+-- Resizes just the height - SetStripWidth recomputes height from
+-- self:GetHeight() too, but nothing re-runs it when only the strip's
+-- height changes.
 function BTVFadeStripMixin:SetStripHeight(height)
 	self:SetHeight(height)
 
@@ -743,42 +623,24 @@ end
 -------------------------------------------------------------------------
 -- BTVListRowMixin
 --
--- Generic reusable list-row widget: owns two BTVFadeStripMixin layers
--- (selectStrip, hoverStrip) instead of the border-and-tinted-backdrop
--- technique BTV:StyleModernButton uses - the "divided list, fading
--- highlight on hover/select" look from this client's native Options
--- window, rather than a dialog-style button. Shared by both the bar-list
--- sidebar (Settings.lua's CreateBarListRow) and the settings search
--- results list - one widget, two call sites, per the UI-redesign plan.
+-- Generic list-row widget: owns two BTVFadeStripMixin layers (selectStrip,
+-- hoverStrip) for a divided-list fading highlight look.
 --
 -- States: rest / hover / selected / selected+hover / disabled. Both
--- strips can be shown at once (selected + hovered layers the neutral
--- hoverStrip on top of the gold selectStrip) - this naturally covers the
--- old "selected+hover" 4th color without hand-picking one. Disabled
--- always wins - a disabled row never shows either strip (even if it was
--- selected before becoming disabled, e.g. bar5's row losing its
--- dependency lock's grey-out) and blocks the onClick callback.
+-- strips can be shown at once (hoverStrip layers on top of selectStrip).
+-- Disabled always wins - never shows either strip and blocks onClick.
 -------------------------------------------------------------------------
 
 BTVListRowMixin = {}
 
--- parent: frame to anchor into. name: optional - unlike
--- BTVInlineDropdownMixin's UIDropDownMenuTemplate wrapper, this widget has
--- no native FrameXML machinery that depends on a real GetName().
+-- parent: frame to anchor into. name: optional.
 function BTV:CreateListRow(parent, name)
 	local row = CreateFrame("Button", name, parent)
 
-	-- Captured BEFORE Mixin below overwrites row.SetWidth with
-	-- BTVListRowMixin's own override - same capture-then-wrap technique
-	-- BTV:StyleModernButton uses for Enable/Disable. This lets the row's
-	-- own SetWidth (called by every caller today, e.g. CreateBarListRow's
-	-- row:SetWidth(110)) keep the fade strips in sync with the row's size
-	-- "for free", without every call site needing to remember to also call
-	-- SetVisualWidth. (Capturing this AFTER Mixin, as an earlier version of
-	-- this function did, captured the mixin's own SetWidth instead of the
-	-- native one - an infinite self-recursion the moment SetWidth was
-	-- called, live-tested and confirmed as a stack overflow opening
-	-- Settings.)
+	-- Must capture BEFORE Mixin below overwrites row.SetWidth/SetHeight
+	-- with BTVListRowMixin's own overrides - capturing after Mixin grabs
+	-- the mixin's own override instead of the native method, causing
+	-- infinite recursion the moment SetWidth/SetHeight is called.
 	row.nativeSetWidth = row.SetWidth
 	row.nativeSetHeight = row.SetHeight
 
@@ -803,9 +665,7 @@ function BTVListRowMixin:OnLoad()
 	self.selectStrip:SetPeakAlpha(0.35)
 	self.selectStrip:Hide()
 
-	-- Created (and therefore drawn) after selectStrip, so it layers on top
-	-- of it when both are shown at once - no explicit frame level needed,
-	-- sibling frames created later draw above earlier siblings by default.
+	-- Created after selectStrip so it draws on top when both are shown.
 	self.hoverStrip = BTV:CreateFadeStrip(self, width, height)
 	self.hoverStrip:SetPoint("LEFT", self, "LEFT", 0, 0)
 	self.hoverStrip:SetFadeColor(BTV.UI_HOVER_COLOR[1], BTV.UI_HOVER_COLOR[2], BTV.UI_HOVER_COLOR[3])
@@ -850,26 +710,17 @@ function BTVListRowMixin:IsRowSelected()
 	return self.isSelected
 end
 
--- Disabled overrides hover/selected visuals entirely (matches the existing
--- LockControl/dim convention used elsewhere in Settings.lua, e.g. bar5's
--- dependency lock) and blocks the onClick callback above - mouse events
--- still reach OnEnter/OnLeave (kept enabled) so a disabled row can still
--- show a tooltip explaining why it's locked, if a caller wants one.
+-- Disabled overrides hover/selected visuals and blocks onClick; OnEnter/
+-- OnLeave still fire so a disabled row can still show a tooltip.
 function BTVListRowMixin:SetDisabled(disabled)
 	self.isDisabled = disabled and true or false
 	self:UpdateVisualState()
 end
 
--- Resizes/repositions only the two fade strips, NOT the row's own click
--- hit-box (self:SetWidth) - lets the visual highlight extend across a
--- sibling inline checkbox (Settings.lua's CreateBarListRow), or align to
--- a container box wider than the row itself (e.g. the bar-list sidebar's
--- own bordered panel), without changing what area the row itself actually
--- responds to clicks/hover on. Works because WoW doesn't clip a child
--- texture to its parent frame's own bounds. offsetX (default 0) shifts
--- BOTH strips' own LEFT anchor relative to the row - lets a caller align
--- the highlight to a box that doesn't start flush with the row's own left
--- edge (e.g. a panel with its own left inset/padding).
+-- Resizes/repositions only the fade strips, not the row's own hit-box -
+-- lets the highlight extend across a sibling checkbox or align to a wider
+-- container without changing what area responds to clicks. offsetX
+-- shifts both strips' LEFT anchor relative to the row.
 function BTVListRowMixin:SetVisualWidth(width, offsetX)
 	offsetX = offsetX or 0
 
@@ -883,11 +734,8 @@ function BTVListRowMixin:SetVisualWidth(width, offsetX)
 end
 
 -- Overrides the native Button:SetWidth (captured as self.nativeSetWidth in
--- BTV:CreateListRow before this shadows it) so the common case - a row
--- with no inline checkbox, or the initial row:SetWidth(110) before a
--- checkbox is added - keeps its strips sized to match without the caller
--- having to also call SetVisualWidth. A later explicit SetVisualWidth
--- call (e.g. once a checkbox exists) simply overrides this again.
+-- BTV:CreateListRow) so a row with no inline checkbox keeps its strips
+-- sized to match without a separate SetVisualWidth call.
 function BTVListRowMixin:SetWidth(width)
 	self.nativeSetWidth(self, width)
 
@@ -897,13 +745,9 @@ function BTVListRowMixin:SetWidth(width)
 	end
 end
 
--- Same reasoning/technique as SetWidth above, for height - without this,
--- the strips stay stuck at whatever height OnLoad captured them at
--- (typically 0, since OnLoad runs inside BTV:CreateListRow BEFORE the
--- caller ever calls row:SetHeight(...)), rendering both strips at 0px
--- tall - invisible regardless of Show()/Hide() state. This was the root
--- cause of the bar-list sidebar showing no hover/select feedback at all
--- after the fade-strip rework, live-tested and confirmed.
+-- Same technique as SetWidth, for height - without this the strips stay
+-- stuck at whatever height OnLoad captured (typically 0, since OnLoad
+-- runs before the caller ever calls SetHeight), rendering invisible.
 function BTVListRowMixin:SetHeight(height)
 	self.nativeSetHeight(self, height)
 
@@ -913,10 +757,9 @@ function BTVListRowMixin:SetHeight(height)
 	end
 end
 
--- Factored out of the row's own OnEnter/OnLeave scripts (see OnLoad) so
--- another frame - e.g. a sibling inline checkbox that wants to share this
--- row's hover fade - can invoke the exact same logic without needing
--- `this` to be the row itself.
+-- Factored out of OnEnter/OnLeave (see OnLoad) so another frame - e.g. a
+-- sibling checkbox sharing this row's hover fade - can call it directly
+-- without needing `this` to be the row itself.
 function BTVListRowMixin:OnRowEnter()
 	self.isHovering = true
 	self:UpdateVisualState()

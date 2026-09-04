@@ -1,10 +1,6 @@
 -- Minimap.lua
--- Minimap button that opens the main context menu on click. Standard
--- vanilla-era technique - angle-based positioning around the minimap's
--- circumference, draggable to reposition. Pattern confirmed against
--- ButtonForge Classic's own shipped Minimap.lua (MIT-licensed, same
--- project referenced throughout this addon's design), not invented from
--- scratch.
+-- Minimap button that opens the main context menu on click. Positioned by
+-- angle around the minimap's circumference, draggable to reposition.
 
 local BTV = BTVanilla
 
@@ -19,9 +15,7 @@ local function ApplyMinimapPosition(button)
 	button:SetPoint("CENTER", Minimap, "CENTER", x, y)
 end
 
--- OnUpdate handler while dragging: follows the cursor around the
--- minimap's circumference by angle, not raw pixel position, so the icon
--- stays on the ring regardless of cursor distance from center.
+-- OnUpdate handler while dragging: tracks cursor angle around the minimap center.
 local function Minimap_OnDragUpdate()
 	local mx, my = Minimap:GetCenter()
 	if not mx then return end

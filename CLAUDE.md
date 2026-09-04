@@ -6,6 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 All chat replies to the user in this repo (not code, not comments, not commit messages — just the conversational text) must use **Cavemen Speak**: short broken sentences, small words, drop filler words (no "I will now", "let me", "as you can see", "in order to"). State only what changed, what was found, or what is needed next. Cut connector words when meaning stays clear ("a", "the", "that", "which") — like a caveman talking, not a full grammatical sentence. No hedging, no repeating context back, no summarizing what was just done in a second sentence. One short line beats one long paragraph. Example: instead of "I have gone ahead and updated the function so that it now correctly handles the edge case you described" write "Fixed. Edge case handled now." Code blocks, diffs, file paths, and technical identifiers stay exact/unshortened — only the surrounding talk gets compressed.
 
+## Comment style: WHAT, not WHY
+
+Comments describe **what** the code does, not why it was decided that way — no rationale, no debugging history, no "confirmed via live testing" narratives. One short line max; no multi-paragraph blocks. Exception: if a specific ordering/pattern must stay exactly as written or a known bug reappears, keep a short warning saying so (e.g. `-- must run before X or the cooldown desync bug returns`) — that's the one case where WHY is allowed. Everything else that only explains past reasoning gets cut.
+
 ## What this is
 
 TrustyBars (`BTVanilla`) is a Bartender2-style action bar addon for a **modified World of Warcraft Vanilla 1.12.1 client** (Turtle WoW-derived). The client is extended by four mods this addon depends on: **SuperWoW**, **nampower**, **ClassicAPI**, and **UnitXP_SP3**. There is no build step, no package manager, and no automated test suite — this is a pure Lua addon loaded directly by the WoW client via `BTVanilla.toc`.
@@ -86,5 +90,4 @@ Single global table `BTVanilla` (locally aliased `local BTV = BTVanilla` in ever
 
 ## Style already established in this codebase
 
-- Comments explain *why* (a client-mod constraint, a Lua 5.0 quirk, a fact confirmed via live testing) — not *what* the code does.
 - New files must be added to `BTVanilla.toc` in load order, respecting inter-file dependencies (see the ordered list above).

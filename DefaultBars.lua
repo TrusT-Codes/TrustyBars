@@ -11,14 +11,9 @@
 local BTV = BTVanilla
 
 -------------------------------------------------------------------------
--- Frame name mapping
---
--- These prefixes are the well-established vanilla 1.12.1 FrameXML names
--- for the 5 default action bars (12 buttons each, numbered 1-12). They
--- are extremely unlikely to differ on this client, but are centralized
--- here as a single table so a wrong name is a one-line fix - see the
--- plan's "01-Environment-Capability-Analysis.md" section 6 unresolved-
--- verification list.
+-- Frame name mapping for the 5 default action bars (12 buttons each,
+-- numbered 1-12), centralized here since exact FrameXML names aren't
+-- guaranteed on this client fork.
 -------------------------------------------------------------------------
 
 BTV.DEFAULT_BAR_FRAME_PREFIXES = {
@@ -29,12 +24,9 @@ BTV.DEFAULT_BAR_FRAME_PREFIXES = {
 	[5] = "MultiBarLeftButton",       -- Right 2.
 }
 
--- Real vanilla 1.12.1 shapeshift bars top out at 10 stance slots
--- (ShapeshiftButton1-10, well-established FrameXML naming) - no class
--- needs more than that on this client. Some classes have far fewer
--- (e.g. Warrior stances), which is exactly why GetStanceBarButtons below
--- uses the same "stop at the first missing frame" tolerance as
--- GetDefaultBarButtons rather than assuming all 10 exist.
+-- Real vanilla stance bars top out at 10 slots (ShapeshiftButton1-10).
+-- GetStanceBarButtons stops at the first missing frame instead of
+-- assuming all 10 exist, the same tolerance as GetDefaultBarButtons.
 BTV.MAX_STANCE_BUTTONS = 10
 
 -- Returns an ordered table (1-12) of the real Blizzard button frames for
@@ -54,8 +46,7 @@ function BTV:GetDefaultBarButtons(id)
 		local frame = getglobal(prefix .. tostring(i))
 
 		if not frame then
-			-- Missing frames beyond this point aren't collected - a
-			-- partially-loaded UI shouldn't produce a sparse table.
+			-- Stops collecting rather than producing a sparse table.
 			break
 		end
 
@@ -70,43 +61,20 @@ function BTV:GetDefaultBarButtons(id)
 end
 
 -------------------------------------------------------------------------
--- Main Bar (bar 1) dynamic paging - Main Bar migration, Parts 2/3
+-- Main Bar (bar 1) dynamic paging
 --
--- Unlike bars 2-5 (a fixed cfg.fixedActionSlots array, resolved once),
--- bar 1's 12 pool buttons resolve their action slot dynamically from
--- whichever page is currently "effective" - see GetMainBarEffectivePage
--- below - re-evaluated any time CURRENT_ACTIONBAR_PAGE or
--- GetBonusBarOffset() changes. This deliberately never writes to the
--- real CURRENT_ACTIONBAR_PAGE global itself (unlike Bartender2's own
--- technique, which relies on it because Bartender2 wraps the real,
--- still-paged ActionButton1-12 frames directly) - our own replica
--- buttons read a real native action slot number directly via
--- Rebind/GetActionTexture etc, so there is nothing native left for us
--- to redirect; only our OWN resolved slot needs to track the paged
--- state.
---
--- Real FrameXML source (ActionButton_GetPagedID) confirms the formula:
+-- Bar 1's 12 pool buttons resolve their action slot dynamically from the
+-- currently effective page (GetMainBarEffectivePage below), instead of a
+-- fixed cfg.fixedActionSlots array like bars 2-5. Native paging formula:
 -- actionSlot = buttonID + (page-1)*12. GetBonusBarOffset() (1/2/3 for
--- stance/form/stealth) maps to page 6+offset (7/8/9) - confirmed via
--- Bartender2's own GetBonusActionBarPage (vendored under Bartender2/,
--- read directly for this migration) and this addon's own Part 5 slot-
--- allocator research.
+-- stance/form/stealth) maps to page 6+offset (7/8/9).
 -------------------------------------------------------------------------
 
--- Page the Main Bar's buttons should currently read from, honoring both
--- toggles (Core.lua's EnsureDB seeds both true, matching real vanilla's
--- own always-on paging/stance-swap behavior).
---
--- Pagination disabled: locked to page 1, CURRENT_ACTIONBAR_PAGE is never
--- read at all - the player's Shift/Ctrl modifier keybinds become inert
--- for this bar, matching what "no pagination" means.
---
--- Stance-swap only applies "on top of" page 1 - mirrors Bartender2's own
--- `if CURRENT_ACTIONBAR_PAGE == 1 then` guard exactly, so the two
--- toggles compose correctly instead of fighting: a manually-paged-away
--- bar (e.g. Shift held, page 2) never gets silently overridden by a
--- stance change, exactly like real vanilla's own main bar never does
--- either.
+-- Page bar 1's buttons currently read from. Pagination toggle locks to
+-- page 1 (Shift/Ctrl modifier keybinds become inert for this bar).
+-- Stance-swap only applies on top of page 1, mirroring real vanilla's
+-- own main bar, so a manually-paged-away bar is never overridden by a
+-- stance change.
 function BTV:GetMainBarEffectivePage()
 	self:EnsureDB()
 
@@ -127,15 +95,11 @@ function BTV:GetMainBarEffectivePage()
 	return page
 end
 
--- Real vanilla 1.12.1 FrameXML signature (stock ShapeshiftBar.lua's own
--- ShapeshiftBar_Update): icon, name, isActive, isCastable =
--- GetShapeshiftFormInfo(index). Used here (Stance/Page Bar Assignment
--- feature, Parts 2/3) to resolve WHICH of the player's stance slots
--- (1..GetNumShapeshiftForms()) is currently active - GetBonusBarOffset()
--- alone only reports which of up to 3 bonus action bars is showing, not
--- the stance-form INDEX that corresponds to, which isn't a 1:1 mapping
--- for a class with more forms than bonus bars (e.g. Druid's Travel Form
--- grants no bonus bar of its own at all).
+-- Resolves which of the player's stance slots (1..GetNumShapeshiftForms())
+-- is currently active. GetBonusBarOffset() alone only reports which bonus
+-- bar is showing, not the stance-form index - not a 1:1 mapping for a
+-- class with more forms than bonus bars (e.g. Druid's Travel Form grants
+-- no bonus bar of its own).
 function BTV:GetActiveStanceIndex()
 	local count = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
 
@@ -156,35 +120,14 @@ function BTV:GetActiveStanceIndex()
 	return nil
 end
 
--- Real vanilla paging formula (ActionButton_GetPagedID), applied to
--- whichever page GetMainBarEffectivePage currently resolves to - UNLESS
--- the user has explicitly assigned an Extra Bar (Stance/Page Bar
--- Assignment feature, Parts 2/3) as this state's content source, in which
--- case this reads that Extra Bar's own live action slot instead of
--- computing a native page number at all.
---
--- Composition/precedence: deliberately derived from GetMainBarEffectivePage's
--- OWN resolved page number, rather than re-deriving "is a stance active"/
--- "is pagination away from page 1" independently - that function already
--- encodes the exact "stance-swap only applies on top of page 1" rule
--- (its own header comment), so reading its result back here means an
--- assignment can only ever kick in in the exact same circumstances native
--- redirection already would have, extending - never replacing - that same
--- precedence rule instead of inventing a new one:
---
---   page in 7-9  -> GetMainBarEffectivePage already resolved this via the
---                   stance/form/stealth branch (only possible when page 1
---                   AND stance-swap is on) - try this stance's assignment.
---   page ~= 1    -> otherwise this is CURRENT_ACTIONBAR_PAGE itself (the
---                   Shift/Ctrl pagination toggle actually paged away) -
---                   try the page-bar assignment.
---   page == 1    -> neither redirect is active - untouched native math.
---
--- Either branch falls straight through to the native math below if
--- unassigned (nil) or the assigned Extra Bar can't currently resolve a
--- slot (e.g. a corrupt/hand-edited save) - additive, not a replacement,
--- for any state the user hasn't explicitly configured, per the feature's
--- own spec.
+-- Resolves the action slot for pool button `slotIndex` on the effective
+-- page. If the user has assigned an Extra Bar as this state's content
+-- source (Stance/Page Bar Assignment), reads that Extra Bar's live slot
+-- instead of computing a native page slot:
+--   page 7-9  -> try the stance-indexed assignment.
+--   page ~= 1 -> try the page-bar assignment.
+--   page == 1 -> native math only.
+-- Falls through to native math if unassigned or unresolved.
 function BTV:GetMainBarSlotForIndex(slotIndex)
 	local page = self:GetMainBarEffectivePage()
 
@@ -212,14 +155,10 @@ function BTV:GetMainBarSlotForIndex(slotIndex)
 	return slotIndex + ((page - 1) * 12)
 end
 
--- Re-resolves every one of bar 1's 12 pool buttons' action slot from the
--- CURRENT page/bonus-bar state - just Bar.lua's own ApplyBarShape, which
--- already re-runs GetMainBarSlotForIndex for every button on every call
--- (see its own cfg.dynamicMainBar branch) - called any time
--- CURRENT_ACTIONBAR_PAGE or GetBonusBarOffset() changes (the
--- hooksecurefunc/event registrations below), or either toggle is flipped
--- from Settings (SetMainBarPaginationEnabled/SetMainBarStanceSwapEnabled
--- below).
+-- Re-resolves all of bar 1's pool buttons' action slots from the current
+-- page/bonus-bar state (via Bar.lua's ApplyBarShape, cfg.dynamicMainBar
+-- branch). Called whenever CURRENT_ACTIONBAR_PAGE or GetBonusBarOffset()
+-- changes, or either toggle is flipped from Settings.
 function BTV:RefreshMainBarSlots()
 	local bar = self.bars and self.bars[1]
 
@@ -228,11 +167,9 @@ function BTV:RefreshMainBarSlots()
 	end
 end
 
--- Settings.lua General tab checkboxes write through these - mirrors
--- every other Set*Enabled clamp/write/reapply template in this file
--- (e.g. SetBagBarEnabled), just reapplying via RefreshMainBarSlots
--- instead of a Show()/Hide() cascade, since neither toggle changes bar
--- 1's visibility, only which action slots its buttons read from.
+-- Settings.lua General tab checkboxes write through these. Neither toggle
+-- changes bar 1's visibility, only which action slots its buttons read
+-- from, so both reapply via RefreshMainBarSlots instead of Show()/Hide().
 function BTV:SetMainBarPaginationEnabled(enabled)
 	self:EnsureDB()
 
@@ -240,12 +177,8 @@ function BTV:SetMainBarPaginationEnabled(enabled)
 
 	self:RefreshMainBarSlots()
 
-	-- Page Indicator (Part 4): shown/hidden entirely by this same toggle -
-	-- see ApplyPageIndicatorVisibility's own comment for why it has no
-	-- independent enable flag of its own. Settings.lua's General panel
-	-- checkbox also live-refreshes its own assignment rows and the Main
-	-- Bar page's Scale slider visibility on this same click - see that
-	-- checkbox's own OnClick handler.
+	-- Page Indicator visibility is driven by this same toggle - it has no
+	-- independent enable flag of its own.
 	if self.ApplyPageIndicatorVisibility then
 		self:ApplyPageIndicatorVisibility()
 	end
@@ -259,55 +192,24 @@ function BTV:SetMainBarStanceSwapEnabled(enabled)
 	self:RefreshMainBarSlots()
 end
 
--- hooksecurefunc runs AFTER the real vanilla ChangeActionBarPage (real
--- FrameXML global, confirmed present - fires on every Shift/Ctrl page
--- swap and the page-arrow clicks) has already updated
--- CURRENT_ACTIONBAR_PAGE, so RefreshMainBarSlots always reads the new
--- value, never the stale one. hooksecurefunc is confirmed DLL-native on
--- this client (ClassicAPI - see this addon's environment doc), not a
--- Lua 5.0 polyfill. Registered once here at file load (top-level, not
--- deferred to PLAYER_LOGIN) - FrameXML's own ChangeActionBarPage is
--- already defined by the time addon Lua files load, same timing every
--- other top-level hooksecurefunc/event registration in this file already
--- relies on (e.g. stanceFormEventFrame further below).
+-- Runs after real vanilla's ChangeActionBarPage (fires on every Shift/Ctrl
+-- page swap and the page-arrow clicks) has updated CURRENT_ACTIONBAR_PAGE,
+-- so RefreshMainBarSlots always reads the new value. Registered once at
+-- file load since FrameXML's ChangeActionBarPage is already defined by
+-- the time addon Lua files load.
 if hooksecurefunc and ChangeActionBarPage then
 	hooksecurefunc("ChangeActionBarPage", function()
 		BTV:RefreshMainBarSlots()
 	end)
 end
 
--- UPDATE_BONUS_ACTIONBAR is real vanilla's own event (confirmed via
--- Bartender2's own UPDATE_BONUS_ACTIONBAR handler, vendored under
--- Bartender2/) - fires whenever the player's stance/form/stealth state
--- changes (GetBonusBarOffset() about to report a new value). A dedicated
--- listener is needed on top of the ChangeActionBarPage hook above:
--- entering/leaving a stance doesn't necessarily call
--- ChangeActionBarPage itself, it just changes what GetBonusBarOffset()
--- reports - GetMainBarEffectivePage reads that value directly, so this
--- event is what actually drives the stance-swap toggle's live behavior.
--- Issue 2 (bug-fix batch): BonusActionBarFrame is a SEPARATE real vanilla
--- FrameXML frame from ActionButton1-12 - Blizzard's own stock
--- UPDATE_BONUS_ACTIONBAR handler (vendored Bartender2/Bartender2.lua's own
--- UPDATE_BONUS_ACTIONBAR handler confirms this, calling
--- BonusActionBarFrame:Hide() itself for exactly this reason) shows it as an
--- overlay any time bonus/stance content becomes active (entering
--- stealth/shapeshift/stance). ActionButton1-12 being permanently hidden
--- (CreateFixedSlotDefaultBars above) does nothing to suppress this
--- distinct frame, which is why stealth/stance entry was still visibly
--- changing buttons on top of bar 1's replica regardless of the
--- Stance/Form/Stealth Swapping toggle's state - that toggle only governs
--- which action slot OUR OWN replica buttons read from
--- (GetMainBarEffectivePage), it has no relationship to this native overlay
--- frame at all. Hidden unconditionally here (not gated on
--- mainBarStanceSwapEnabled) since TrustyBars' own replica buttons are now
--- the sole visual representation of bar 1 regardless of that toggle's
--- state - exactly like ActionButton1-12 are hidden unconditionally too.
---
--- Show is permanently neutered the same way ActionButton1-12's is
--- (CreateFixedSlotDefaultBars above) rather than relying on a plain Hide()
--- alone - same class of problem (a native frame Blizzard's own FrameXML
--- may call :Show() on again later from code this addon doesn't control),
--- same permanent fix.
+-- UPDATE_BONUS_ACTIONBAR fires whenever the player's stance/form/stealth
+-- state changes. BonusActionBarFrame is a separate native frame from
+-- ActionButton1-12 that Blizzard shows as an overlay any time bonus/
+-- stance content becomes active - hiding ActionButton1-12 does nothing to
+-- suppress it. Hidden and Show()-neutered unconditionally here (not gated
+-- on mainBarStanceSwapEnabled), since TrustyBars' own replica buttons are
+-- the sole visual representation of bar 1 regardless of that toggle.
 local hasNeuteredBonusActionBarFrame = false
 
 local function HideBonusActionBarFrame()
@@ -331,91 +233,27 @@ mainBarBonusEventFrame:SetScript("OnEvent", function()
 end)
 
 -------------------------------------------------------------------------
--- "Disable Blizzard Art" (General tab checkbox, feature 1)
+-- "Disable Blizzard Art" (General tab checkbox)
 --
--- MainMenuBarArtFrame is the well-established vanilla 1.12.1 FrameXML
--- name for the main bar's decorative end-cap/background art (the
--- textured strip bar 1's real ActionButton1-12 frames sit on top of).
--- Hiding it lets bar 1's own replica-free real buttons show against
--- whatever the user's own UI/background looks like instead, exactly
--- like Bartender2's "hide Blizzard art" option on other client
--- generations.
+-- MainMenuBarArtFrame is the main bar's decorative end-cap/background art
+-- (the textured strip bar 1's real ActionButton1-12 frames sit on top
+-- of). Hiding it lets bar 1's replica buttons show against the user's own
+-- UI/background instead.
 --
--- Bug-fix batch Fix 1: live testing confirmed ActionButton1:GetParent()
--- IS MainMenuBarArtFrame on this client - the old skip-and-warn logic
--- above (now removed) correctly refused to hide the whole frame, since
--- doing so would have taken bar 1's real action buttons down with it.
+-- Only its own regions (via GetRegions(), which returns a frame's own
+-- directly-owned Texture/FontString regions, never child Frames) are
+-- hidden/shown - never the frame itself, which would take ActionButton1-12
+-- (real child Frames of artFrame) down with it.
 --
--- Fixed via a different mechanism instead of hiding MainMenuBarArtFrame
--- itself: enumerate ONLY its own regions via {artFrame:GetRegions()} and
--- hide/show whichever of those are Textures. GetRegions() is a real
--- vanilla API guarantee - it returns a frame's own directly-owned
--- Texture/FontString regions, never its child Frames - so this can never
--- touch ActionButton1-12 (real child Frames of artFrame) regardless of
--- parentage, while it still hides whatever decorative background/
--- gryphon/endcap textures are drawn directly on MainMenuBarArtFrame
--- itself.
--- Issue 4 (bug-fix batch round 4): pin MainMenuBarArtFrame to a strata
--- BELOW every TrustyBars bar/container UNCONDITIONALLY, independent of
--- BTVanillaDB.disableBlizzardArt - texture visibility (hide/show the art's
--- own regions, below) and z-order (this frame must always render BEHIND
--- every TrustyBars bar/container, whether its texture is currently shown
--- or hidden) are two independent concerns. The previous approach
--- (repeatedly re-raising bar:SetFrameLevel(10) on every ApplyBarShape call,
--- for bar 1 only, plus a blanket SetFrameStrata("MEDIUM") on every bar) was
--- whack-a-mole: it only ever worked for as long as it correctly guessed
--- whatever level MainMenuBarArtFrame itself happened to be at, and never
--- covered bars 2-5's own render order at all. Flipping the approach -
--- directly lowering the ONE native art frame instead of chasing it with
--- ever-higher bar levels - fixes this permanently regardless of whatever
--- level Blizzard's own FrameXML assigns MainMenuBarArtFrame under any
--- circumstance.
---
--- Round 15: this was originally pinned to "BACKGROUND" (the lowest strata
--- this client has), which fixed the z-order bug above but had a live-
--- confirmed side effect - the user found a stray ~1px artifact (a "blue
--- bar" visible just under the XP bar, present only while TrustyBars is
--- enabled) that disappeared when the art frame's strata was raised to
--- "MEDIUM" live, meaning BACKGROUND was low enough to expose some other
--- native texture/frame that normally sits hidden behind the art at its
--- true native strata (also live-confirmed as "MEDIUM", via a fresh reload
--- with TrustyBars fully disabled). Round 15 then moved this to "LOW" - a
--- middle ground below "MEDIUM" (so TrustyBars bars would still win the
--- strata tier alone) but above "BACKGROUND" (so the blue-bar artifact
--- would stay hidden).
---
--- Round 24: "LOW" turned out to break a second, previously-unrelated
--- relationship. Real vanilla FrameXML relies on MainMenuBarArtFrame
--- sitting ABOVE MainMenuExpBar (the XP bar) to mask/cap that bar's own
--- colored StatusBar fill from visually overflowing past its intended
--- edges - live-confirmed via screenshot: with the art frame pinned to
--- "LOW", the XP bar's colored fill bled past the art even at the bar's
--- default native position. MainMenuExpBar itself is live-confirmed to sit
--- at strata "MEDIUM", level 2 - a strictly lower tier than "LOW" can never
--- mask, since "LOW" always renders below every "MEDIUM" frame regardless
--- of level. Since "MEDIUM" was already separately live-confirmed correct
--- for the blue-bar artifact (above), and TrustyBars bars are confirmed to
--- sit at "MEDIUM" level 10 (Bar.lua's CreateBarFromConfig/ApplyBarShape),
--- the actual fix is to keep the art frame at "MEDIUM" - the same tier as
--- both bars and the XP bar - and use an explicit frame LEVEL between the
--- two to control ordering instead of trying to separate them by strata
--- tier: level 5 sits strictly above MainMenuExpBar's confirmed level 2
--- (restoring the XP-fill masking) and strictly below TrustyBars bars'
--- confirmed level 10 (preserving the original bars-render-above-art fix
--- this whole saga started from). This resolves both relationships at once
--- within the one confirmed-correct "MEDIUM" strata tier, rather than
--- chasing a third strata tier that can't simultaneously sit above one
--- "MEDIUM" frame and below another. Applied once here (this function
--- itself is only ever called once, at PLAYER_LOGIN, per Core.lua) rather
--- than needing its own separate call site.
+-- MainMenuBarArtFrame is pinned to strata "MEDIUM", frame level 5, at all
+-- times, independent of the checkbox (texture visibility and z-order are
+-- separate concerns). Level 5 must stay strictly between MainMenuExpBar's
+-- level 2 (or the XP bar's fill bleeds past the art) and TrustyBars bars'
+-- level 10 (or bars render behind the art) - do not change without
+-- re-verifying both those frames' levels.
 --
 -- MultiBarBottomLeft/MultiBarBottomRight/MultiBarRight/MultiBarLeft (bars
--- 2-5) have no equivalent decorative art frame of their own in real
--- vanilla 1.12.1 FrameXML - they're plain button-holding frames with no
--- background/endcap textures - so MainMenuBarArtFrame is the only native
--- frame that ever needs this treatment. (Re-verify live if a future
--- client build turns out to add one - see this task's own report for the
--- flag.)
+-- 2-5) have no equivalent decorative art frame in vanilla FrameXML.
 function BTV:ApplyBlizzardArtVisibility()
 	local artFrame = MainMenuBarArtFrame
 
@@ -427,10 +265,7 @@ function BTV:ApplyBlizzardArtVisibility()
 
 	artFrame:SetFrameStrata("MEDIUM")
 
-	-- Explicit level, not left to whatever Blizzard's own FrameXML
-	-- happens to assign - see this function's round-24 comment above for
-	-- why 5 is chosen (strictly between MainMenuExpBar's confirmed level 2
-	-- and TrustyBars bars' confirmed level 10).
+	-- See this section's header comment for why level 5 specifically.
 	artFrame:SetFrameLevel(5)
 
 	local hide = BTVanillaDB.disableBlizzardArt
@@ -452,13 +287,10 @@ function BTV:ApplyBlizzardArtVisibility()
 end
 
 -------------------------------------------------------------------------
--- Position + grid reflow
---
--- Reuses the same 1-based-index -> col/row math as Bar.lua's
--- ButtonIndexToGridPos/LayoutButtons, just applied to the real Blizzard
--- frames instead of a custom bar's own button pool. That helper is
--- local to Bar.lua, so it's re-derived here rather than shared - it's a
--- two-line formula, not worth exposing a cross-file dependency for.
+-- Position + grid reflow: reuses the same 1-based-index -> col/row math
+-- as Bar.lua's ButtonIndexToGridPos/LayoutButtons, applied to the real
+-- Blizzard frames instead of a custom bar's own button pool. Re-derived
+-- here (rather than shared) since it's local to Bar.lua.
 -------------------------------------------------------------------------
 
 local function ButtonIndexToGridPos(index, cols)
@@ -468,28 +300,12 @@ local function ButtonIndexToGridPos(index, cols)
 	return col, row
 end
 
--- CRITICAL FIX (login-breaking crash): PixelUtil.SetPoint calls
--- GetEffectiveScale() on BOTH the region being positioned and its
--- relativeTo anchor - a real Frame/Button method, but NOT one FontString
--- objects expose in this client's object model (FontString/Texture are
--- plain Region-derived widgets with no scale of their own - GetLeft/
--- GetTop/GetWidth/GetHeight/SetParent/IsShown/SetPoint all work on them,
--- GetEffectiveScale does not). Live-confirmed root cause of
--- "!!!ClassicAPI\Util\PixelUtil.lua:66: attempt to call method
--- 'GetEffectiveScale' (a nil value)": the Page Indicator container (Part
--- 4, below) chain-anchors MainMenuBarPageNumber - a real FontString, not
--- a Button - alongside ActionBarUpButton/ActionBarDownButton via this
--- exact helper, and ApplyChainAnchoredShape's PixelSetPoint calls pass
--- that FontString as either `region` or as another button's `relativeTo`
--- anchor. Every OTHER call site of PixelSetPoint in this file only ever
--- touches containers/overlays (frames we created ourselves), so this
--- guard is a no-op cost for them - it only actually changes behavior for
--- the Page Indicator's FontString member, which now degrades to plain
--- (non-pixel-perfect-scale-corrected) SetPoint instead of erroring
--- outright. Checked on both region AND relativeTo (arg[2]) since
--- PixelUtil.SetPoint's own internal GetEffectiveScale call can be against
--- either object depending on which one it's computing relative-scale
--- for.
+-- PixelUtil.SetPoint calls GetEffectiveScale() on both `region` and its
+-- relativeTo anchor - a method FontString/Texture objects (Region-derived,
+-- not Frame) don't expose. Falls back to plain SetPoint when either side
+-- lacks GetEffectiveScale (e.g. the Page Indicator's MainMenuBarPageNumber
+-- FontString, chain-anchored alongside ActionBarUpButton/
+-- ActionBarDownButton) instead of erroring.
 local function PixelSetPoint(region, ...)
 	local relativeTo = arg[2]
 	local canPixelSnap = region and region.GetEffectiveScale
@@ -511,26 +327,11 @@ local function PixelSetSize(region, width, height)
 	end
 end
 
--- (v1.0 polish pass) The old per-default-bar edit-mode overlay
--- (EnsureDefaultBarOverlay/defaultBarOverlays) that used to live here
--- predated default bars 1-5 being migrated onto Bar.lua's own bar-pool
--- engine (CreateFixedSlotDefaultBars -> CreateBarFromConfig) and had been
--- dead code (never called) since - removed. Default bars 1-5 now share
--- Bar.lua's EnsureBarOverlay with every other bar; see its comment for the
--- current bar-level edit-mode overlay implementation.
-
--- Stance Bar (ShapeshiftButton1-N) migration: this used to wrap the real
--- ShapeshiftBarFrame directly with its own bespoke overlay/position/drag
--- implementation (EnsureStanceBarOverlay/PositionStanceBarOverlay, removed
--- here). It now uses the exact same chain-anchored-container technique as
--- the Bag Bar/Micro Menu below (BuildChainAnchoredContainer/
--- ApplyChainAnchoredShape/EnsureContainerOverlay) instead of a bespoke
--- implementation - see the "Stance Bar" section further below in this file
--- (after BuildChainAnchoredContainer/ApplyChainAnchoredShape/
--- EnsureContainerOverlay are defined, since it depends on all three). The
--- old per-element overlay this used to have is gone; EnsureContainerOverlay
--- is generic enough to serve it exactly like it already serves Bag Bar/
--- Micro Menu.
+-- Default bars 1-5 share Bar.lua's EnsureBarOverlay with every other bar
+-- for their edit-mode overlay. The Stance Bar uses the chain-anchored-
+-- container technique (BuildChainAnchoredContainer/ApplyChainAnchoredShape/
+-- EnsureContainerOverlay) shared with Bag Bar/Micro Menu - see the
+-- "Stance Bar" section further below in this file.
 
 -- Positions and grid-reflows the 12 real Blizzard buttons for default
 -- bar `id` according to its saved config (point/relativePoint/x/y/cols/
@@ -538,12 +339,10 @@ end
 -- the configured point; the remaining 11 are anchored relative to the
 -- first button using the same grid math as custom bars.
 --
--- Every default bar (1-5, major architecture migration Phases 1 and 2) is
--- now a real Bar.lua bar object (self.bars[id], built by
--- CreateFixedSlotDefaultBars) and delegates straight to Bar.lua's own
--- ApplyBarShape/ApplyBarPosition, which already know how to reposition/
--- reflow a button pool - including bar 1's own dynamic per-button slot
--- resolution (cfg.dynamicMainBar, see Bar.lua's ApplyBarShape).
+-- Every default bar (1-5) is a real Bar.lua bar object (self.bars[id])
+-- and delegates to Bar.lua's own ApplyBarShape/ApplyBarPosition, which
+-- already know how to reposition/reflow a button pool - including bar 1's
+-- own dynamic per-button slot resolution (cfg.dynamicMainBar).
 function BTV:ApplyDefaultBarShape(id)
 	self:EnsureDB()
 
@@ -561,15 +360,9 @@ function BTV:ApplyDefaultBarShape(id)
 	end
 end
 
--- Resizes the 12 real Blizzard buttons for default bar `id`. Blizzard's
--- own ActionButtonTemplate buttons respond correctly to plain
--- SetWidth/SetHeight - unlike TrustyBars' own pool buttons there's no
--- separate ApplySize wrapper to call here.
---
--- Every default bar (1-5) delegates to Bar.lua's own SetBarButtonSize
--- (which already handles the clamp rule, plus the equip-ring/glow/
--- backdrop scaling every Bar.lua button pool has), same reasoning as
--- ApplyDefaultBarShape above.
+-- Resizes the 12 real Blizzard buttons for default bar `id`, delegating
+-- to Bar.lua's own SetBarButtonSize (clamp rule plus equip-ring/glow/
+-- backdrop scaling).
 function BTV:SetDefaultBarButtonSize(id, size)
 	self:EnsureDB()
 
@@ -586,19 +379,10 @@ function BTV:SetDefaultBarButtonSize(id, size)
 	end
 end
 
--- Mirrors SetDefaultBarButtonSize's structure exactly - clamp, write,
--- reapply - for the analogous spacing slider added alongside the
--- Button Size slider in Settings.lua.
---
--- Bug-fix batch Fix 2: bars 2-5 now also get a Spacing slider, since
--- Bar.lua's LayoutButtons/BarFrameSize honor cfg.spacing for any bar that
--- has it and every default bar (1-5, Main Bar migration included) has a
--- real captured cfg.spacing/cfg.nativeSpacing baseline (Core.lua's
--- CaptureNativeSpacing/seedDefaultBars) - it just went unread by Bar.lua
--- until now. Writes cfg.spacing directly (bar.config IS this same
--- BTVanillaDB.defaultBars[id] table - see CreateBarFromConfig) then
--- delegates to Bar.lua's own ApplyBarShape (LayoutButtons/BarFrameSize),
--- which already knows how to re-lay-out a button pool from cfg.spacing.
+-- Mirrors SetDefaultBarButtonSize's structure (clamp, write, reapply) for
+-- the Spacing slider. Writes cfg.spacing directly (bar.config IS this same
+-- BTVanillaDB.defaultBars[id] table) then reapplies via Bar.lua's own
+-- ApplyBarShape.
 function BTV:SetDefaultBarSpacing(id, spacing)
 	self:EnsureDB()
 
@@ -638,17 +422,12 @@ function BTV:SetDefaultBarSpacing(id, spacing)
 end
 
 -------------------------------------------------------------------------
--- Position (live, Phase 4 Settings UI)
---
--- Mirrors Bar.lua's SetBarPosition for custom bars. Default bars only
--- ever move via x/y (point/relativePoint stay whatever seedDefaultBars
--- chose) - dragging isn't supported for default bars since they're real
--- Blizzard frames, not TrustyBars' own draggable bar frame.
+-- Position (live). Default bars only move via x/y (point/relativePoint
+-- stay whatever seedDefaultBars chose) - dragging isn't supported since
+-- they're real Blizzard frames, not TrustyBars' own draggable bar frame.
 -------------------------------------------------------------------------
 
--- Every default bar (1-5) delegates straight to Bar.lua's own
--- SetBarPosition (same reasoning as ApplyDefaultBarShape/
--- SetDefaultBarButtonSize above).
+-- Delegates to Bar.lua's own SetBarPosition.
 function BTV:SetDefaultBarPosition(id, x, y)
 	self:EnsureDB()
 
@@ -669,44 +448,23 @@ end
 -- Reset to Blizzard default layout (position, spacing, grid shape, and
 -- button size)
 --
--- Restores FROM cfg.nativeAnchor/cfg.nativeSpacing - the pristine
--- snapshots Core.lua's seedDefaultBars captured ONCE, the very first
--- time this bar's config was ever seeded, before TrustyBars had
--- repositioned it even a single time. Deliberately does NOT re-read the
--- real Blizzard frame's current GetPoint()/GetLeft() here: by the time a
--- user clicks this button (potentially well into a play session),
--- ApplyDefaultBarShape has likely already moved that frame to wherever
--- the user last dragged/slid/resized it, so a live re-read at this point
--- would just capture our own last SetPoint, not Blizzard's true original
--- position/spacing - only the untouched snapshots still remember that.
+-- Restores from cfg.nativeAnchor/cfg.nativeSpacing, the pristine
+-- snapshots Core.lua's seedDefaultBars captured once, before TrustyBars
+-- ever repositioned this bar. Does not re-read the real Blizzard frame's
+-- current position - by reset time it likely already reflects wherever
+-- the user last dragged/resized it, not Blizzard's original layout.
 --
--- Spacing is restored here too (not a separate reset control) so the
--- button's "Reset to Blizzard Default" framing is honest: one click
--- returns the ENTIRE default-bar layout to pristine, not just position.
---
--- Renamed from ResetDefaultBarPosition (bug-fix batch, Issue 3): grid
--- shape (cols/rows) and button size are now restored too, so "Position"
--- was no longer an accurate name for what this does. Unlike position/
--- spacing, cols/rows/buttonSize don't need a live-captured snapshot the
--- way nativeAnchor/nativeSpacing do - they're simply the fixed literal
--- defaults seedDefaultBars (Core.lua) always assigns a fresh bar (grid
--- shape from the shared BTV.DEFAULT_BAR_GRID table, button size from
--- BTV.BUTTON_SIZE), so those same constants are re-applied directly here
--- rather than needing their own snapshot fields.
+-- Grid shape (cols/rows) and button size are restored from the fixed
+-- BTV.DEFAULT_BAR_GRID/BTV.BUTTON_SIZE constants instead, since
+-- seedDefaultBars always assigns a fresh bar these same values (no
+-- snapshot needed).
 -------------------------------------------------------------------------
 
--- Every default bar (1-5): position and grid shape/button size are
--- restored the exact same way (from the same permanent nativeAnchor/
--- DEFAULT_BAR_GRID/BUTTON_SIZE snapshots), APPLIED through Bar.lua's own
--- ApplyBarPosition/SetBarLayout/SetBarButtonSize.
---
--- Bug-fix batch Fix 2: cfg.nativeSpacing is restored too - Bar.lua's
--- LayoutButtons/BarFrameSize honor cfg.spacing for any bar that has it
--- (see SetDefaultBarSpacing's updated comment). ApplyBarShape (not just
--- SetBarLayout/SetBarButtonSize) is called explicitly afterward to make
--- the restored spacing take visual effect immediately, since neither of
--- those two setters alone re-lays-out the grid from a freshly-written
--- cfg.spacing.
+-- Restores position, grid shape, and button size for default bar `id`,
+-- applied through Bar.lua's own ApplyBarPosition/SetBarLayout/
+-- SetBarButtonSize. ApplyBarShape is called explicitly afterward so the
+-- restored spacing takes visual effect even if SetBarLayout was skipped
+-- (e.g. no grid entry for this id).
 function BTV:ResetDefaultBarLayout(id)
 	self:EnsureDB()
 
@@ -741,51 +499,27 @@ function BTV:ResetDefaultBarLayout(id)
 
 	self:SetBarButtonSize(bar, self.BUTTON_SIZE)
 
-	-- SetBarLayout/SetBarButtonSize above already each internally
-	-- re-apply the bar's shape (Bar.lua's ApplyBarShape), but this
-	-- final explicit call guarantees the just-restored cfg.spacing is
-	-- reflected too, regardless of which (if either) of those two
-	-- calls actually ran (e.g. grid being nil would skip SetBarLayout
-	-- entirely).
+	-- Guarantees the restored spacing is reflected even if SetBarLayout
+	-- above didn't run (e.g. grid is nil for this id).
 	self:ApplyBarShape(bar)
 end
 
 -------------------------------------------------------------------------
 -- Enable / disable (bars 2-5 only - bar 1 is always active, no UI)
 --
--- Major architecture migration, Phase 1 of 2: the entire native
--- SHOW_MULTI_ACTIONBAR_1-4/MultiActionBar_Update()/SetActionBarToggles()
--- mechanism this section used to own is now DEAD for bars 2-5 - their
--- real Blizzard buttons are permanently hidden at migration time (see
--- CreateFixedSlotDefaultBars below) regardless of TrustyBars' own
--- enabled/disabled state, so there is nothing left for those native
--- globals to usefully drive. Our own cfg.enabled + a plain Show()/Hide()
--- on our own Bar.lua bar frame is now the SOLE visibility mechanism -
--- exactly the "simple, reliable enable toggle" the migration plan asks
--- for, with no native persistence quirks (see the removed comment on the
--- old SetDefaultBarEnabled about SHOW_MULTI_ACTIONBAR_* never actually
--- surviving a real logout) left to work around.
+-- Bars 2-5's real Blizzard buttons are permanently hidden regardless of
+-- state (CreateFixedSlotDefaultBars below); cfg.enabled + Show()/Hide()
+-- on this addon's own Bar.lua bar frame is the sole visibility mechanism.
 -------------------------------------------------------------------------
 
--- Issue 3 (round 14): real vanilla 1.12.1 FrameXML (MultiActionBarFrame.lua)
--- calls ShapeshiftBar_UpdatePosition() as a side effect whenever
--- MultiBarBottomLeft's shown state changes, sliding ShapeshiftBarFrame up/
--- down so it never overlaps that bar - this addon's own pre-migration
--- version (see backupVersionBeforeArchitecture/DefaultBars.lua's
--- SetDefaultBarEnabled) replicated this by calling that same native
--- function directly, gated on `id == 2` and `useDefaultLayout ~= false`.
--- That native call stopped having any visible effect once the Stance Bar
--- was migrated to its own synthetic chain-anchored container
--- (CreateStanceBarContainer below): the real ShapeshiftBarFrame's own
--- position is no longer what's on screen at all (its buttons were
--- reparented out of it into our container - see
--- BuildChainAnchoredContainer), and Blizzard's reflow logic keys off the
--- REAL MultiBarBottomLeftButton1-12 frames' shown state, which never
--- changes anymore now that they're permanently hidden regardless of our
--- own cfg.enabled (CreateFixedSlotDefaultBars). This has to be replicated
--- ourselves instead - see ReflowStanceBarForBar2Toggle below (defined
--- alongside the rest of the Stance Bar section, since it operates on
--- self.stanceBarContainer).
+-- Toggling bar 2 (Bottom Left) reflows the Stance Bar's own position
+-- (ReflowStanceBarForBar2Toggle below) to keep it from overlapping bar 2.
+-- Real vanilla FrameXML normally does this itself via
+-- ShapeshiftBar_UpdatePosition(), but that no longer has any visible
+-- effect once the Stance Bar's buttons are reparented into a synthetic
+-- container (see BuildChainAnchoredContainer) - Blizzard's own reflow
+-- keys off the real MultiBarBottomLeftButton1-12 frames' shown state,
+-- which never changes now that they're permanently hidden.
 function BTV:SetDefaultBarEnabled(id, enabled)
 	if id == 1 then
 		-- Bar 1 (Main) has no enable/disable - always active.
@@ -802,11 +536,10 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 
 	enabled = enabled and true or false
 
-	-- Captured BEFORE overwriting cfg.enabled below - ReflowStanceBarForBar2Toggle
-	-- must only fire on a genuine state CHANGE, not on every call (e.g.
-	-- ApplyAllDefaultBars calls this at every login with cfg.enabled's own
-	-- already-current value, which must never shift the Stance Bar's saved
-	-- position on its own).
+	-- Captured before cfg.enabled is overwritten - ReflowStanceBarForBar2Toggle
+	-- must only fire on an actual state change, not on every call (e.g.
+	-- ApplyAllDefaultBars calls this at every login with the already-
+	-- current value).
 	local wasEnabled = cfg.enabled and true or false
 
 	cfg.enabled = enabled
@@ -832,61 +565,33 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 			self:SetDefaultBarEnabled(5, false)
 		end
 
-		-- Refresh bar 5's own Settings UI (sidebar + page enableCheckbox)
-		-- every time bar 4's state changes, in EITHER direction - it
-		-- locks/unlocks based on bar 4 (RefreshBarSettingsPage/
-		-- CreateBarListRow), and SetDefaultBarEnabled alone doesn't
-		-- refresh any UI on its own (only
-		-- ReconcileDefaultBarEnabledFromNative does, for whichever id
-		-- IT'S reconciling - id 4 here, never 5).
+		-- Refreshes bar 5's own Settings UI (sidebar + page checkbox) since
+		-- it locks/unlocks based on bar 4's state.
 		if enabled ~= wasEnabled and BTV:IsSettingsFrameCreated() then
 			BTV:RefreshBarList()
 			BTV:RefreshBarSettingsPage(5)
 		end
 	end
 
-	-- Mirror our own state into the native "Show ... ActionBar" global
-	-- (Interface Options -> Action Bars) purely so that checkbox doesn't
-	-- look stuck/wrong to the player - our own cfg.enabled above stays
-	-- the sole VISUAL authority, since bars 2-5's real native buttons are
-	-- permanently Show()-no-op'd regardless (CreateFixedSlotDefaultBars),
-	-- so calling MultiActionBar_Update() here can never actually make a
-	-- real native button reappear.
+	-- Mirrors state into the native "Show ... ActionBar" global purely so
+	-- the Interface Options checkbox doesn't look stuck - cfg.enabled
+	-- above remains the sole visual authority.
 	local nativeGlobal = BTV.SHOW_MULTI_ACTIONBAR_GLOBAL[id]
 
 	if nativeGlobal then
-		-- STRING "1", not the number 1 - matches this project's own
-		-- confirmed-working convention for this exact class of native
-		-- global (LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS, both live-
-		-- confirmed stored/compared as the string "1"/"0", not a
-		-- boolean or number - see docs/01-Environment-Capability-
-		-- Analysis.md §5i and Button.lua's own IsAlwaysShowMultibars).
+		-- Stored/compared as the string "1"/"0", not a boolean or number -
+		-- matches LOCK_ACTIONBAR/ALWAYS_SHOW_MULTIBARS convention.
 		--
-		-- Deliberately does NOT call MultiActionBar_Update() here (it
-		-- did, until a live-tested regression: "Right ActionBar 2"
-		-- (bar 5) became stuck unable to re-enable via the real Options
-		-- checkbox after "Right ActionBar 1" (bar 4) had been toggled
-		-- off once, even after turning bar 4 back on) - real vanilla's
-		-- own MultiActionBar_Update almost certainly enforces a
-		-- dependency (bar 5 requires bar 4) by auto-clearing bar 5's
-		-- global whenever bar 4's turns off, and this write-back path
-		-- calling it (on top of the ReconcileDefaultBarEnabledFromNative
-		-- hook below re-entering this same function, which used to also
-		-- call it) ran that native logic far more often than a normal
-		-- single native click ever would, wedging bar 5's global at nil
-		-- in a way real player interaction doesn't reproduce. Just
-		-- setting the global is enough for the real Options panel's own
-		-- checkbox display to read correctly next time it's shown/
-		-- refreshed - it doesn't need MultiActionBar_Update()'s other
-		-- side effects for that.
+		-- Deliberately does not call MultiActionBar_Update() here - doing
+		-- so caused "Right ActionBar 2" (bar 5) to get stuck permanently
+		-- unable to re-enable after bar 4 was toggled off once. Setting
+		-- the global alone is enough for the real Options panel checkbox
+		-- to read correctly next time it's shown.
 		setglobal(nativeGlobal, enabled and "1" or nil)
 
-		-- Same live-update gap as FixRightActionBar2Checkbox: this
-		-- custom Options framework only reads the global into the
-		-- checkbox's own checked-display at panel-show time, not
-		-- reactively - so if the panel's already open when WE write the
-		-- global, its own checkbox stays visually stale until closed/
-		-- reopened unless set directly too.
+		-- This custom Options framework only reads the global into the
+		-- checkbox's checked-display at panel-show time, not reactively -
+		-- set the control directly too so an already-open panel stays synced.
 		local control = getglobal("OptionsFrameCheckButton" .. tostring(id) .. "Control")
 
 		if control and control.SetChecked then
@@ -897,15 +602,11 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 	self:FixRightActionBar2Checkbox()
 end
 
--- Same-session reactive sync: reconciles our OWN cfg.enabled (bars 2-5)
--- FROM the native SHOW_MULTI_ACTIONBAR_1-4 globals whenever
--- MultiActionBar_Update runs (fires on the real Interface Options
--- checkbox's own OnClick, among other native triggers). Live-confirmed
--- via /btv diag11 that toggling the real checkbox correctly flips both
--- the global AND the real MultiBarLeft/Right frame's shown state on this
--- fork, so this is safe to trust reactively WITHIN the current session -
--- never at login (see BTV.SHOW_MULTI_ACTIONBAR_GLOBAL's own comment on
--- why not: these globals don't survive a real logout on this fork).
+-- Reconciles our own cfg.enabled (bars 2-5) from the native
+-- SHOW_MULTI_ACTIONBAR_1-4 globals whenever MultiActionBar_Update runs
+-- (e.g. the real Interface Options checkbox's own OnClick). Only trusted
+-- reactively within the current session - these globals don't survive a
+-- real logout on this fork (see BTV.SHOW_MULTI_ACTIONBAR_GLOBAL).
 function BTV:ReconcileDefaultBarEnabledFromNative()
 	if not (BTVanillaDB and BTVanillaDB.defaultBars) then
 		return
@@ -947,31 +648,19 @@ function BTV:ReconcileDefaultBarEnabledFromNative()
 	self:FixRightActionBar2Checkbox()
 end
 
--- Live-confirmed (/btv diag14, user's own manual :Enable() test): this
--- fork's Options -> Action Bars panel is a custom framework (not stock
--- FrameXML), and its "Show Right ActionBar 2" checkbox
--- (OptionsFrameCheckButton5Control) gets stuck permanently disabled
--- rather than reactively toggling with "Show Right ActionBar"
--- (bar id 4) the way the panel's own nesting/indentation implies it
--- should. Manually re-enabling it sticks (not a recurring re-disable),
--- so this just mirrors bar 4's real enabled state onto it directly,
--- every time we already have a reason to touch bar 4/5's state anyway.
--- Only fixes the ENABLED state, not the label's own grey text color
--- (that display, separately, doesn't seem to be tied to :IsEnabled()) -
--- flagged as a known remaining cosmetic gap, not chased further without
--- knowing that label's real color values on this framework.
--- Live-tested: this custom framework does NOT call native
--- MultiActionBar_Update() on its own checkbox clicks (our hook on it
--- never re-fires bar 5's fix after a live native bar-4 click while the
--- panel stays open) - so bar 4's own checkbox click is hooked directly,
--- once, the first time this function finds it.
+-- This fork's Options -> Action Bars panel is a custom framework (not
+-- stock FrameXML): "Show Right ActionBar 2" (bar 5,
+-- OptionsFrameCheckButton5Control) gets stuck disabled instead of
+-- reactively following "Show Right ActionBar" (bar 4). Bar 4's real state
+-- is mirrored onto it directly whenever bar 4/5 state is touched. Only
+-- fixes the enabled state, not the label's grey text color (not tied to
+-- :IsEnabled() on this framework). This custom framework does not call
+-- native MultiActionBar_Update() on its own checkbox clicks, so bar 4's
+-- checkbox click is hooked directly instead, once.
 local hookedBar4Checkbox = false
 
--- Live-confirmed (/btv diag15) label colors: enabled/normal (1, 0.82, 0),
--- native's own grey-disabled default is whatever it already renders -
--- only force the ENABLED color here, never force grey (native handles
--- that fine on its own; it just never re-applies the enabled color once
--- we programmatically :Enable() the checkbox).
+-- Enabled label color (1, 0.82, 0) - only forced when enabled; native
+-- handles the disabled grey color on its own.
 local RIGHT_ACTIONBAR2_LABEL_ENABLED_COLOR = { 1, 0.82, 0 }
 
 local function SetCheckbox5LabelEnabledColor()
@@ -1054,66 +743,30 @@ function BTV:SetDefaultBarLayout(id, cols, rows)
 end
 
 -------------------------------------------------------------------------
--- Build every default bar (1-5) as a Bar.lua bar object (major
--- architecture migration, Phases 1 and 2)
+-- Builds every default bar (1-5) as a Bar.lua bar object.
 --
--- Called once at PLAYER_LOGIN (Core.lua), BEFORE ApplyAllDefaultBars -
--- every function above (ApplyDefaultBarShape, SetDefaultBarButtonSize,
--- SetDefaultBarPosition, ResetDefaultBarLayout, SetDefaultBarEnabled,
--- SetDefaultBarLayout) reads self.bars[id], so that entry must already
--- exist by the time any of them first run.
+-- Must run once at PLAYER_LOGIN, before ApplyAllDefaultBars - every
+-- function above reads self.bars[id], which this creates.
 --
--- For each of bars 2-5 whose cfg.fixedActionSlots was successfully
--- discovered by Core.lua's seedDefaultBars (via CaptureFixedActionSlots),
--- and for bar 1 (cfg.dynamicMainBar, always present - see seedDefaultBars):
---   1. Permanently hides its 12 real Blizzard buttons - confirmed live
---      that Hide()ing a real ActionButton does not break its native
---      keybind dispatch (SetBinding'd action names like ACTIONBUTTON5/
---      MULTIACTIONBAR1BUTTON5 still fire UseAction on that slot via the
---      hidden frame's own internal handler), so this is safe to do
---      unconditionally and permanently, independent of TrustyBars' own
---      enabled/disabled state for that bar - our own replica's Show()/
---      Hide() becomes the sole VISUAL mechanism from this point on.
+-- For each of bars 2-5 with a discovered cfg.fixedActionSlots, and for
+-- bar 1 (cfg.dynamicMainBar, always present):
+--   1. Permanently hides the bar's 12 real Blizzard buttons and neuters
+--      their Show method to a no-op. Hiding a real ActionButton does not
+--      break its native keybind dispatch, so our own replica bar becomes
+--      the sole visual representation from this point on.
 --   2. Builds this bar's own Bar.lua/Button.lua button pool
 --      (CreateBarFromConfig, pointed at cfg.fixedActionSlots or resolved
---      dynamically per cfg.dynamicMainBar - see Bar.lua's ApplyBarShape -
---      instead of a free-pool slotStart) and stores it in self.bars[id] -
---      the exact same table a real custom bar (id 6+) lives in, so every
---      other system that already iterates self.bars (edit-mode overlay/
---      drag/scroll-resize, HoverBind.lua's ForEachButton, grid-visibility
---      sweeps) picks these bars up automatically with zero extra code.
+--      dynamically per cfg.dynamicMainBar) and stores it in self.bars[id]
+--      - the same table a custom bar (id 6+) lives in, so every other
+--      system that iterates self.bars picks these bars up automatically.
 --
--- If discovery failed for one of bars 2-5 (cfg.fixedActionSlots absent -
--- see CaptureFixedActionSlots' own comment on when this can happen), that
--- bar is simply skipped here and keeps behaving exactly like it did
--- before this migration (its real Blizzard buttons stay visible/native-
--- wrapped) until a later login succeeds. Bar 1's cfg.dynamicMainBar has no
--- equivalent discovery-failure case (see its own comment in
--- seedDefaultBars), so it's built unconditionally.
+-- If discovery failed for one of bars 2-5, that bar is skipped here and
+-- keeps its real Blizzard buttons visible until a later login succeeds.
 -------------------------------------------------------------------------
 
--- Bug-fix batch Fix 3: the recurring ~1-second C_Timer.NewTicker re-hide
--- sweep that used to live here is REMOVED. It was both needless CPU
--- overhead and too slow to prevent a visible flash - Blizzard's own
--- ACTIONBAR_SHOWGRID handling calls :Show() on EVERY action button,
--- including these 48 real (now-redundant) ones, the instant the player
--- picks up a spell/item, and the old ticker's up-to-1-second polling
--- interval meant that Show() could render for up to a full second before
--- the next sweep caught it.
---
--- Fixed at the source instead: each real button's own Show method is
--- permanently overridden to a no-op the moment it's hidden here. This
--- makes ANY future native code path's own :Show() call on these specific
--- frames (ACTIONBAR_SHOWGRID's sweep, ActionButton_Update on a stance/
--- talent change, etc.) silently do nothing forever, with zero ongoing
--- polling cost and no dependency on catching any particular event.
--- Confirmed live (per the major architecture migration's own testing)
--- that Hide()ing a real ActionButton does not break its native keybind
--- dispatch - overriding :Show() the same permanent way is exactly as
--- safe, since nothing else in this addon (or in native FrameXML) has any
--- remaining reason to make one of these 48 real buttons visible again;
--- their visual role is permanently replaced by TrustyBars' own replica
--- buttons (self.bars[id]) for the rest of the session.
+-- Each real button's Show method is permanently overridden to a no-op
+-- once hidden, so any later native call (e.g. ACTIONBAR_SHOWGRID's sweep)
+-- can't make it visible again.
 function BTV:CreateFixedSlotDefaultBars()
 	self:EnsureDB()
 
@@ -1140,24 +793,8 @@ function BTV:CreateFixedSlotDefaultBars()
 
 			self.bars[id] = self:CreateBarFromConfig(cfg)
 
-			-- Issue 1 (bug-fix batch, CRITICAL): bar 1 (Main) has NO
-			-- enable/disable concept at all (see SetDefaultBarEnabled's own
-			-- "Bar 1 (Main) has no enable/disable - always active" comment
-			-- above) - unlike bars 2-5, cfg.enabled is never written for id
-			-- 1 (Core.lua's BTV.DEFAULT_BAR_GRID[1] has no `enabled` key, so
-			-- seedDefaultBars' result[1].enabled is always nil). The old
-			-- `if cfg.enabled then Show() else Hide() end` gate here was
-			-- written generically for every id 1-5 without accounting for
-			-- that - since nil is falsy, bar 1 was unconditionally Hidden
-			-- the instant it was created, every single login, with nothing
-			-- anywhere in this addon ever calling :Show() on it afterward
-			-- (ApplyAllDefaultBars only calls SetDefaultBarEnabled, which
-			-- itself early-returns for id == 1, for ids 2-5). This is why
-			-- the Main Bar rendered nothing at all post-migration while
-			-- still dispatching keybinds correctly (the real, now-hidden
-			-- ActionButton1-12 still fire natively regardless of our own
-			-- replica's Show/Hide state - see this function's own comment
-			-- on Hide() not breaking native keybind dispatch).
+			-- Bar 1 has no cfg.enabled key (always nil), so it must be
+			-- shown explicitly here - nothing else ever calls :Show() on it.
 			if id == 1 or cfg.enabled then
 				self.bars[id]:Show()
 			else
@@ -1181,77 +818,33 @@ function BTV:ApplyAllDefaultBars()
 
 		if cfg then
 			if id ~= 1 then
-				-- Bars 2-5: apply OUR OWN saved cfg.enabled directly - it's
-				-- now the sole source of truth (see SetDefaultBarEnabled's
-				-- header comment above; the old native-global
-				-- reconciliation this comment used to describe no longer
-				-- exists, since bars 2-5's real Blizzard buttons are
-				-- permanently hidden regardless of this flag).
+				-- Bars 2-5: cfg.enabled is the sole visibility source now
+				-- that their real Blizzard buttons are permanently hidden.
 				self:SetDefaultBarEnabled(id, cfg.enabled)
 			end
 
-			-- Issue 1 (bug-fix batch v4): ALWAYS (re)apply this bar's
-			-- shape/overlay here, regardless of enabled state - this was
-			-- the actual root cause of the overlay-sharing regression.
-			-- Previously, for ids 2-5, ApplyDefaultBarShape only ever ran
-			-- as a side effect INSIDE SetDefaultBarEnabled(id, true) - so
-			-- a bar that resolved disabled here (e.g. bars 4/5, which
-			-- additionally depend on each other per
-			-- IsDefaultBarNativelyShown's bar-4/bar-5 rule) never got its
-			-- real Blizzard button frames repositioned away from
-			-- whatever raw anchor Blizzard's own FrameXML left them at,
-			-- and the (since-removed, dead-code) default-bar overlay
-			-- creation that used to run only FROM ApplyDefaultBarShape
-			-- never even created that bar's overlay frame at all -
-			-- explaining bars 4/5 having no overlay
-			-- whatsoever. Worse, since vanilla's own FrameXML anchors the
-			-- extra multibars relative to the main bar/each other (not to
-			-- UIParent) for their native stacked-above-the-main-bar
-			-- layout, a bar that was never independently re-anchored by
-			-- ApplyDefaultBarShape stayed visually coincident with
-			-- whichever bar it was still natively anchored to - which is
-			-- exactly why bar 1's overlay APPEARED to span bars 2/3's
-			-- area too (their real buttons had never moved away from
-			-- bar 1's native anchor chain) and why dragging bar 1
-			-- appeared to drag bars 2/3 along with it (they were still
-			-- riding bar 1's anchor, not independently positioned from
-			-- their own cfg.x/cfg.y at all). Calling ApplyDefaultBarShape
-			-- unconditionally here guarantees every one of the 5 bars is
-			-- independently re-anchored to UIParent from its own cfg (see
-			-- ApplyDefaultBarShape's `first:ClearAllPoints()` /
-			-- PixelSetPoint call), which fully severs any such inherited
-			-- anchor chain, and guarantees every bar's overlay frame
-			-- exists and is correctly sized/positioned from that point on
-			-- - independent of whether the bar is currently enabled to
-			-- display (a hidden bar's buttons/overlay simply stay
-			-- Hidden, per SetDefaultBarEnabled's Show()/Hide() loop and
-			-- ApplyDefaultLayoutEditVisual's enabled check, respectively).
+			-- Always reapply shape/overlay here regardless of enabled state.
+			-- Vanilla FrameXML anchors the extra multibars relative to the
+			-- main bar/each other, not UIParent - a disabled bar skipped
+			-- here would stay riding that native anchor chain and never get
+			-- its own overlay frame, instead of being independently
+			-- re-anchored to UIParent from its own cfg.
 			self:ApplyDefaultBarShape(id)
 		end
 	end
 end
 
 -------------------------------------------------------------------------
--- Default bar / stance bar dragging (Edit Layout mode, useDefaultLayout
--- == false only)
+-- Default bar / stance bar dragging (Edit Layout mode,
+-- useDefaultLayout == false only)
 --
--- (v1.0 polish pass) The dragKind == "defaultBar" branch and
--- BTV:StartDefaultBarDrag/StopDefaultBarDrag that used to live here
--- predated the major architecture migration (Core.lua's schema versions
--- 5/7) that moved default bars 1-5 onto Bar.lua's own bar-pool engine
--- (CreateFixedSlotDefaultBars -> CreateBarFromConfig) and had been dead
--- code with no call site since - removed. Default bars 1-5 drag via
--- Bar.lua's own EnsureBarOverlay/StartBarDrag/StopBarDrag now, same as
--- every custom/Extra Bar - see Bar.lua's own StartBarDrag comment: it
--- calls BTV:StartSharedDrag/StopSharedDrag below via the dragKind == "bar"
--- branch, the exact same shared cursor-tracking OnUpdate mechanism.
+-- Default bars 1-5 drag via Bar.lua's own EnsureBarOverlay/StartBarDrag/
+-- StopBarDrag, same as every custom/Extra Bar (dragKind == "bar").
 --
--- The stance bar dragging below this note is very much alive (dragKind ==
--- "stanceBar") - it's a single real Blizzard frame (ShapeshiftBarFrame)
--- this addon doesn't own a container frame for, so it tracks the cursor
--- delta manually every frame (this shared OnUpdate-driven frame, not a
--- polling-from-scratch loop) and re-applies its position directly, the
--- same reasoning every other chain-anchored element below uses.
+-- The Stance Bar (dragKind == "stanceBar") has no Bar.lua container frame
+-- of its own - it's a single real Blizzard frame (ShapeshiftBarFrame)
+-- tracked and repositioned directly through this same shared cursor-
+-- tracking OnUpdate mechanism.
 -------------------------------------------------------------------------
 
 -- Created lazily, exactly once - shared by every default-bar AND
@@ -1260,20 +853,12 @@ end
 -- kind would be redundant.
 local dragFrame
 
--- LOCK_ACTIONBAR proactive session-scoped lock - REMOVED (Issue 2, bug-fix
--- batch v3). This used to force LOCK_ACTIONBAR = "1" for the entire
--- CanDragDefaultLayout() window as a workaround for HookScript("OnDragStart",
--- ...) always running AFTER Blizzard's own native handler had already
--- decided to PickupAction - too late to react by the time a post-hook ran.
--- That workaround is no longer needed: dragging is now owned entirely by
--- Bar.lua's EnsureBarOverlay/EnsureContainerOverlay's own bar-level frames
--- (SetScript, not HookScript), which are mouse-enabled and sit in HIGH
--- strata fully covering the real buttons during exactly this same window
--- (see ApplyDefaultLayoutEditVisual below). A mouse-enabled frame on top
--- intercepts the drag gesture at the frame-stacking level before it ever
--- reaches the real button underneath - the native OnDragStart handler
--- those buttons still have is simply never invoked at all in this state,
--- so there is nothing left for LOCK_ACTIONBAR to need to prevent.
+-- Dragging is intercepted at the frame-stacking level: Bar.lua's overlay
+-- frames (EnsureBarOverlay/EnsureContainerOverlay, see
+-- ApplyDefaultLayoutEditVisual below) are mouse-enabled and sit in HIGH
+-- strata fully covering the real buttons, so the native OnDragStart
+-- handler on those buttons never fires and LOCK_ACTIONBAR never needs to
+-- be touched.
 
 local function GetCursorPositionUIScale()
 	local scale = UIParent:GetEffectiveScale()
@@ -1281,31 +866,20 @@ local function GetCursorPositionUIScale()
 	return x / scale, y / scale
 end
 
--- Round 35: shared per-tick snap injection for every dragKind below
--- (BTV:ComputeSnapAdjustment, Core.lua) - called with the real frame
--- actually being repositioned (the container/native frame itself, never
--- its overlay) and the position table about to be applied, so it can nudge
--- pos.x/pos.y in place BEFORE the caller applies them - this is what gives
--- these elements live, real-time snapping while dragging.
--- No-ops (leaves pos.x/pos.y untouched) when the setting is off, or if the
--- frame can't yet report a size/scale (e.g. never shown this session).
+-- Shared per-tick snap injection for every dragKind below
+-- (BTV:ComputeSnapAdjustment, Core.lua): called with the real frame being
+-- repositioned (never its overlay) and the pending position table, and
+-- nudges pos.x/pos.y in place before the caller applies them. Also used
+-- by the dragKind == "bar" branch (Bar.lua's StartBarDrag/StopBarDrag,
+-- bars 1-9), so every draggable element shares one snap code path.
+-- No-ops when the setting is off or the frame can't yet report a
+-- size/scale (e.g. never shown this session).
 --
--- Round 36: also used by the dragKind == "bar" branch below (Bar.lua's
--- StartBarDrag/StopBarDrag, bars 1-9) - bars used to be the one exception
--- noted here, dragging via native bar:StartMoving()/StopMovingOrSizing()
--- with no per-frame hook at all, so they could only ever snap at drop time.
--- They're now migrated onto this exact same shared OnUpdate mechanism, so
--- every draggable element in the addon shares one snap code path.
---
--- pos.point/pos.relativePoint are always the hardcoded "TOPLEFT"/
--- "BOTTOMLEFT" pair every caller's own Apply*Position function captures/
--- applies with (confirmed via a whole-file search - no other code path
--- ever writes a different pair for any of these fields; Bar.lua's
--- StartBarDrag explicitly normalizes a bar's cfg.point/relativePoint to
--- this same pair the moment a drag starts, precisely so this holds for
--- bars too), so pos.x/pos.y (the frame's own local-unit offset from
--- UIParent's BOTTOMLEFT corner) convert to/from real screen pixels via
--- this frame's own effective scale alone - no anchor-point math needed.
+-- pos.point/pos.relativePoint are always "TOPLEFT"/"BOTTOMLEFT" - every
+-- caller normalizes to this pair before a drag starts - so pos.x/pos.y
+-- (the frame's local-unit offset from UIParent's BOTTOMLEFT corner)
+-- convert to/from screen pixels via this frame's effective scale alone,
+-- no anchor-point math needed.
 local function ApplyDragSnap(frame, pos)
 	if not frame or not pos then
 		return
@@ -1319,8 +893,8 @@ local function ApplyDragSnap(frame, pos)
 		return
 	end
 
-	-- (v1.0 polish pass) Inflate the dragged element's own proposed box by
-	-- its visual inset (Core.lua's BTV:GetElementVisualInset - nonzero only
+	-- Inflates the dragged element's own proposed box by its visual inset
+	-- (Core.lua's BTV:GetElementVisualInset - nonzero only
 	-- for default bars 1-5, whose native border overhangs their frame, and
 	-- NOT symmetric top vs. bottom - see BTV.BORDER_Y_OFFSET's comment) so
 	-- it's compared against every target's own inset-adjusted box
@@ -1437,21 +1011,14 @@ local function DefaultBarDrag_OnUpdate()
 			BTV:ApplyPageIndicatorPosition()
 		end
 	elseif this.dragKind == "bar" then
-		-- Round 36 (unify bar dragging): bars 1-9 (Bar.lua's
-		-- StartBarDrag/StopBarDrag, both default bars 1-5 and every
-		-- custom/Extra Bar 6-9) - unlike the other dragKinds above, which
-		-- each wrap a real/synthetic native frame with its own dedicated
-		-- BTVanillaDB.xPosition table, a bar's position lives directly on
+		-- Bars 1-9 (Bar.lua's StartBarDrag/StopBarDrag): unlike the other
+		-- dragKinds above, a bar's position lives directly on
 		-- bar.config.x/y (Bar.lua's own ApplyBarPosition reads exactly
-		-- these two fields) - so this reads/writes bar.config in place
-		-- rather than a separate position table, but otherwise follows the
-		-- identical per-tick shape as every dragKind above: compute the
-		-- proposed position from the cursor delta, let ApplyDragSnap nudge
-		-- it in place, then apply. BTV:ApplyBarPosition (not ApplyBarShape)
-		-- is deliberately the minimal correct call here - ApplyBarShape
+		-- these two fields), so this reads/writes bar.config in place
+		-- rather than a separate position table. BTV:ApplyBarPosition (not
+		-- ApplyBarShape) is the minimal correct call here - ApplyBarShape
 		-- would also re-bind every button's action slot, resize the bar
-		-- frame, and re-run LayoutButtons on every single tick, none of
-		-- which ever changes during a pure position drag.
+		-- frame, and re-run LayoutButtons on every tick.
 		local bar = BTV.bars and BTV.bars[this.dragId]
 
 		if bar and bar.config then
@@ -1480,14 +1047,11 @@ local function EnsureDragFrame()
 end
 
 -------------------------------------------------------------------------
--- Round 36: generic start/stop seam onto the shared cursor-tracking drag
--- frame above (dragFrame/EnsureDragFrame/DefaultBarDrag_OnUpdate/
--- GetCursorPositionUIScale are all file-local to this file) - exposed as
--- BTV methods purely so Bar.lua's own StartBarDrag/StopBarDrag (bars 1-9)
--- can initiate/finalize a drag through this exact mechanism instead of
--- duplicating it. Every existing Start*Drag function below (StartBagBarDrag,
--- StartStanceBarDrag, etc.) could in principle be rewritten to call this
--- too, but they're left as-is - this only needs to cover the one new caller.
+-- Generic start/stop seam onto the shared cursor-tracking drag frame
+-- above (dragFrame/EnsureDragFrame/DefaultBarDrag_OnUpdate/
+-- GetCursorPositionUIScale are all file-local to this file), exposed as
+-- BTV methods so Bar.lua's own StartBarDrag/StopBarDrag (bars 1-9) can
+-- initiate/finalize a drag through this same mechanism.
 -------------------------------------------------------------------------
 
 function BTV:StartSharedDrag(dragKind, dragId, startX, startY)
@@ -1524,26 +1088,24 @@ function BTV:CanDragDefaultLayout()
 	return self:IsEditMode() and BTVanillaDB and BTVanillaDB.useDefaultLayout == false
 end
 
--- Stance Bar position/spacing/scale/orientation/enable/drag: moved to the
--- "Stance Bar (chain-anchored container)" section further below in this
--- file, alongside Bag Bar/Micro Menu/Key Ring/Latency Bar - it now uses the
--- exact same BuildChainAnchoredContainer/ApplyChainAnchoredShape/
--- EnsureContainerOverlay machinery those elements use, rather than wrapping
--- the real ShapeshiftBarFrame directly the way this section used to.
+-- Stance Bar position/spacing/scale/orientation/enable/drag: see the
+-- "Stance Bar (chain-anchored container)" section further below, which
+-- shares the BuildChainAnchoredContainer/ApplyChainAnchoredShape/
+-- EnsureContainerOverlay machinery with Bag Bar/Micro Menu/Key Ring/
+-- Latency Bar.
 
 -------------------------------------------------------------------------
--- Bag Bar / Micro Menu (feature 3)
+-- Bag Bar / Micro Menu
 --
 -- Neither element has a single native Blizzard container frame on real
--- vanilla 1.12.1 (confirmed via the vendored Bartender2/ reference
--- addon's own approach on this same client generation) - Bartender2's
--- proven pattern is followed exactly: build our own empty synthetic
--- container frame and individually reparent+chain-anchor each real
--- button into it (button 2 anchored to button 1's own edge, etc. - NOT
--- each button anchored independently to the container).
+-- vanilla 1.12.1. Builds a synthetic container frame and reparents each
+-- real button into it, chain-anchored (button 2 to button 1's own edge,
+-- etc. - not each button anchored independently to the container), the
+-- same pattern the Bartender2 reference addon uses on this client
+-- generation.
 --
--- Bag Bar = the 5 real vanilla 1.12 bag buttons (no KeyRing - that's a
--- later-expansion feature). Micro Menu = the 8 real micro-menu buttons
+-- Bag Bar = the 5 real vanilla 1.12 bag buttons (no Key Ring - a later-
+-- expansion feature). Micro Menu = the 8 real micro-menu buttons
 -- ("Socials", not "Social" - real FrameXML name).
 -------------------------------------------------------------------------
 
@@ -1614,19 +1176,8 @@ end
 -- afterward, per the same "capture, don't guess" reasoning as
 -- CaptureNativeSpacing.
 --
--- Bug-fix batch Fix 1: uses the MEDIAN of the raw gaps array rather than
--- a bucket-within-0.5px/majority-vote scheme. The old majority-vote
--- approach silently defaulted to buckets[1] (whichever gap was measured
--- first) on a tie between two equally-sized buckets - live-tested native
--- data for the Micro Menu turned out to be extremely uniform (no real
--- bug triggered there), but a median is still more statistically robust
--- against outliers/ties than a vote system, and removes that silent-
--- tiebreak failure mode entirely for any chain whose native spacing
--- turns out less uniform than the Micro Menu's. Sorting a small (<=7
--- element, one fewer than BAG_BAR_BUTTON_NAMES/MICRO_MENU_BUTTON_NAMES'
--- own max length) array via table.sort is real Lua 5.0 (confirmed
--- working per this addon's environment doc), so no custom sort is
--- needed.
+-- Uses the median of the raw gaps, which is more robust against
+-- outliers/ties than a majority-vote bucket scheme.
 local function ComputeMajorityGap(lefts, widths)
 	local gaps = {}
 	local n = 0
@@ -1664,20 +1215,16 @@ local function ComputeMajorityGap(lefts, widths)
 end
 
 -- Builds one synthetic container frame and reparents `buttons` (already
--- sorted left-to-right by SortButtonsByNativeLeft) into it, exactly
--- mirroring Bartender2's own technique - the actual chain-anchoring
--- (button 1 to the container's own TOPLEFT, every subsequent button
--- anchored to the previous one) is factored out into
--- ApplyChainAnchoredShape below (bug-fix batch Fix 4) so it can be
--- re-run any time cfg.spacing/cfg.orientation/cfg.scale changes, not just
--- once here at creation.
+-- sorted left-to-right by SortButtonsByNativeLeft) into it. The actual
+-- chain-anchoring (button 1 to the container's own TOPLEFT, every
+-- subsequent button anchored to the previous one) is factored out into
+-- ApplyChainAnchoredShape below, so it can be re-run any time
+-- cfg.spacing/cfg.orientation/cfg.scale changes, not just once here.
 --
--- HIGH strata (bug-fix batch Fix 2): without an explicit strata this
--- frame inherits the ordinary default tier, which can render BEHIND
--- MainMenuBarArtFrame's own background art - HIGH sits above that
--- unconditionally, not just during edit mode (EnsureContainerOverlay's
--- own TOOLTIP-strata overlay is unaffected, being a separate frame only
--- shown during editing).
+-- HIGH strata: without an explicit strata this frame inherits the
+-- ordinary default tier, which can render behind MainMenuBarArtFrame's
+-- own background art - HIGH sits above that unconditionally, not just
+-- during edit mode.
 --
 -- Returns the container, plus button 1's own captured native
 -- GetLeft()/GetTop() (in UIParent-absolute space, same convention as
@@ -1716,18 +1263,11 @@ local function BuildChainAnchoredContainer(frameName, buttons)
 
 	local nativeSpacing = ComputeMajorityGap(lefts, widths)
 
-	-- Round 7 root-cause fix: button 1's captured lefts[1]/tops[1] are in
-	-- ITS OWN effective-scale coordinate space, not literal screen pixels -
-	-- same conversion as Core.lua's CaptureNativeAnchor (see its own
-	-- comment for the full derivation and the live-confirmed ~1.4246x
-	-- scale-mismatch symptom this exact unguarded pattern produced for
-	-- default bar 1). The caller always stores these two return values as
-	-- a UIParent-anchored container's own x/y offset (this container is
-	-- itself a bare CreateFrame(..., UIParent) with no SetScale of its
-	-- own, so its effective scale always equals UIParent's exactly) - so
-	-- converting through real screen pixels here, once, fixes every
-	-- caller (Bag Bar/Micro Menu/Stance Bar) uniformly rather than
-	-- patching each one's own capture site separately.
+	-- button 1's captured lefts[1]/tops[1] are in its own effective-scale
+	-- coordinate space, not literal screen pixels (same conversion as
+	-- Core.lua's CaptureNativeAnchor). Converts through real screen pixels
+	-- here so every caller (Bag Bar/Micro Menu/Stance Bar) gets a
+	-- consistent nativeX/nativeY.
 	local buttonScale = buttons[1]:GetEffectiveScale()
 	local uiParentScale = UIParent:GetEffectiveScale()
 
@@ -1743,43 +1283,30 @@ local function BuildChainAnchoredContainer(frameName, buttons)
 end
 
 -- Re-chain-anchors a Bag Bar/Micro Menu container's buttons from its
--- CURRENT spacing/orientation, and applies its current scale - shared by
--- BTV:ApplyBagBarShape/ApplyMicroMenuShape below (bug-fix batch Fix 4)
--- rather than duplicated, since both elements use the exact same
--- chain-anchoring technique BuildChainAnchoredContainer already set up.
+-- current spacing/orientation, and applies its current scale - shared by
+-- BTV:ApplyBagBarShape/ApplyMicroMenuShape below, since both elements use
+-- the same chain-anchoring technique BuildChainAnchoredContainer sets up.
 --
 -- horizontal (orientation == false, native default): each button's
--- TOPLEFT anchors to the previous button's TOPRIGHT, offset by `spacing`
--- - identical to the original inline logic this replaces, just reading
--- the current cfg.spacing instead of the one-time captured native gap.
+-- TOPLEFT anchors to the previous button's TOPRIGHT, offset by `spacing`.
 --
 -- vertical/orientation-swapped (orientation == true): each button's
 -- TOPLEFT anchors to the previous button's BOTTOMLEFT, offset downward
--- by `spacing` - mirrors Bartender2's own Swap branch.
--- Issue A (bug-fix batch round 2, live-confirmed root cause): this used to
--- chain EVERY enumerated button unconditionally, regardless of IsShown() -
--- GetButtonsByName only ever filtered on the global existing, never on
--- whether Blizzard currently has that button shown. TalentMicroButton is
--- natively hidden below level 10 (real FrameXML's own UpdateMicroButtons,
--- MainMenuBarMicroButtons.lua) while still being a real, existing global -
--- so it was still being anchored INTO the chain and still reserving a
--- full button-width-plus-spacing slot, producing a visible gap right where
--- the (invisible) Talent button "would have been" between Spellbook and
--- QuestLog. Confirmed via the user's own screenshot (gap immediately after
--- the Spellbook icon) matching exactly the Spellbook->Talent->QuestLog
--- chain position. Filtered live (IsShown(), re-checked on every call, not
--- just once at container-build time) rather than at GetButtonsByName/
--- BuildChainAnchoredContainer time, since a button's shown state CAN
--- change mid-session (leveling past 10 unlocks Talent) - see the
--- UpdateMicroButtons hook further below, which re-runs ApplyMicroMenuShape
--- exactly when Blizzard's own code re-evaluates that.
--- (v1.0 polish pass) Shared by ApplyChainAnchoredShape below and
--- EnsureContainerOverlay's own initial anchor - finds the first and last
--- currently-SHOWN button in a chain (a hidden button, e.g. TalentMicroButton
--- below level 10, is parked at the last-shown button's own TOPLEFT per
--- ApplyChainAnchoredShape's own comment, so it must never be picked as
--- either endpoint). Returns first, last (both nil if every button in the
--- chain is currently hidden).
+-- by `spacing`.
+--
+-- Chains only currently-shown buttons, filtered live via IsShown() on
+-- every call rather than cached once at container-build time - a hidden
+-- button (e.g. TalentMicroButton, natively hidden below level 10) must
+-- not reserve a slot in the chain, and shown state can change mid-session
+-- (leveling past 10 unlocks Talent) - see the UpdateMicroButtons hook
+-- further below, which re-runs ApplyMicroMenuShape exactly when Blizzard's
+-- own code re-evaluates that.
+
+-- Finds the first and last currently-shown button in a chain (shared by
+-- ApplyChainAnchoredShape below and EnsureContainerOverlay's own initial
+-- anchor) - a hidden button is parked at the last-shown button's own
+-- TOPLEFT, so it must never be picked as either endpoint. Returns first,
+-- last (both nil if every button in the chain is currently hidden).
 local function GetChainShownEndpoints(container)
 	if not container or not container.chainButtons then
 		return nil, nil
@@ -1802,16 +1329,14 @@ local function GetChainShownEndpoints(container)
 	return first, last
 end
 
--- (v1.0 polish pass, live-tested) A real Button can define
--- GetHitRectInsets() - four values (left, right, top, bottom) trimming its
--- actual clickable/visually-relevant area inward from its own frame edges,
--- entirely independent of the frame's own GetWidth()/GetHeight(). Live-
--- confirmed via diag8: every Micro Menu button reports a 58px-tall frame
--- but a (0, 0, 18, 0) hit-rect inset - only the BOTTOM 40px is real
--- content, the top 18px is a purely decorative "flare" no earlier
--- diagnostic (all of which only ever read GetLeft/Right/Top/Bottom) could
--- have caught. Returns 0 for any frame that doesn't support the API, so
--- every call site here is always safe to use unconditionally.
+-- A real Button can define GetHitRectInsets() - four values (left,
+-- right, top, bottom) trimming its actual clickable/visually-relevant
+-- area inward from its own frame edges, independent of the frame's own
+-- GetWidth()/GetHeight(). Every Micro Menu button reports a 58px-tall
+-- frame but a (0, 0, 18, 0) hit-rect inset - only the bottom 40px is real
+-- content, the top 18px is a decorative flare. Returns 0 for any frame
+-- that doesn't support the API, so every call site here is always safe
+-- to use unconditionally.
 local function GetHitInsets(frame)
 	if not frame or not frame.GetHitRectInsets then
 		return 0, 0, 0, 0
@@ -1822,19 +1347,14 @@ local function GetHitInsets(frame)
 	return left or 0, right or 0, top or 0, bottom or 0
 end
 
--- (v1.0 polish pass, live-tested) GetHitInsets' values are in `frame`'s
--- own local unit system (unaffected by any SetScale - a fixed property of
--- the widget's own declared size, same convention as GetWidth()/
--- GetHeight()). The chain-anchored container's own SetScale (the user's
--- Scale slider) changes `frame`'s real on-screen size without changing
--- that declared value at all, but the OVERLAY (a separate frame parented
--- straight to UIParent, no SetScale of its own) has a fixed effective
--- scale that does NOT track the container's scale. Anchoring the overlay
--- to `frame` with a raw (unconverted) inset value as the SetPoint offset
--- would therefore be wrong by exactly the container's own scale factor
--- once it's anything other than 1 - this converts a value expressed in
--- `frame`'s own local units into the equivalent offset in `overlay`'s own
--- local units, so it stays correct at any scale.
+-- GetHitInsets' values are in `frame`'s own local unit system (a fixed
+-- property of the widget's declared size, unaffected by SetScale). The
+-- chain-anchored container's own SetScale changes `frame`'s on-screen
+-- size without changing that declared value, but the overlay (a separate
+-- frame parented straight to UIParent, no SetScale of its own) has a
+-- fixed effective scale that does not track the container's scale - this
+-- converts a value in `frame`'s local units into the equivalent offset
+-- in `overlay`'s local units, so it stays correct at any scale.
 local function ScaleRatio(frame, overlay)
 	local frameScale = frame and frame.GetEffectiveScale and frame:GetEffectiveScale()
 	local overlayScale = overlay and overlay.GetEffectiveScale and overlay:GetEffectiveScale()
@@ -1884,29 +1404,22 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 		return
 	end
 
-	-- `first`'s own frame TOPLEFT stays exactly at container's TOPLEFT
-	-- (unconditional 0,0 offset, unchanged from before hit-rect insets
-	-- were accounted for anywhere in this function) - deliberately NOT
-	-- hit-rect-trimmed, since `container`'s own saved position
-	-- (BTVanillaDB.*Position, applied via PixelSetPoint elsewhere) was
-	-- originally captured against `first`'s raw FRAME corner
-	-- (BuildChainAnchoredContainer's nativeLeft/nativeTop). Redefining
-	-- what point container's TOPLEFT represents would silently shift
-	-- every existing user's already-saved position. The overlay below has
-	-- no such saved-position dependency, so it gets full trimming on
-	-- every side instead.
+	-- `first`'s frame TOPLEFT must stay at container's TOPLEFT with no
+	-- hit-rect trim - container's saved position (BTVanillaDB.*Position)
+	-- was captured against `first`'s raw frame corner
+	-- (BuildChainAnchoredContainer's nativeLeft/nativeTop), so trimming
+	-- here would shift every existing user's saved position. The overlay
+	-- below has no such dependency, so it gets full trimming on every side.
 	first:ClearAllPoints()
 	PixelSetPoint(first, "TOPLEFT", container, "TOPLEFT", 0, 0)
 
 	-- Main-axis seed (width for horizontal, height for vertical) stays
 	-- `first`'s raw frame size, matching its untrimmed leading edge above.
-	-- Cross-axis seed (the other dimension) has no such position
-	-- constraint, so it's seeded already-trimmed by `first`'s own hit-rect
-	-- inset on that axis - otherwise the loop below's per-button
-	-- `visibleW`/`visibleH` comparisons could never shrink it below
-	-- `first`'s own untrimmed size even when every other button's real
-	-- visible size is smaller (exactly Micro Menu's case: 58 vs the real
-	-- 40).
+	-- Cross-axis seed is seeded already-trimmed by `first`'s own hit-rect
+	-- inset on that axis, so the loop below's visibleW/visibleH
+	-- comparisons can shrink it below `first`'s untrimmed size when other
+	-- buttons' real visible size is smaller (e.g. Micro Menu: 58 vs the
+	-- real 40).
 	local firstLeftSeed, firstRightSeed, firstTopSeed, firstBottomSeed = GetHitInsets(first)
 
 	local totalWidth = widths[firstIndex] or 0
@@ -1968,11 +1481,10 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 
 				prevBtn = btn
 			else
-				-- Hidden - parked at the last VISIBLE button's own TOPLEFT
+				-- Hidden - parked at the last visible button's own TOPLEFT
 				-- (harmless overlap, since a hidden frame renders/receives
 				-- no mouse events either way) rather than left dangling on
-				-- a stale anchor from an earlier layout pass, or - worse -
-				-- left consuming a chain slot the way this bug used to.
+				-- a stale anchor or consuming a chain slot.
 				btn:ClearAllPoints()
 				PixelSetPoint(btn, "TOPLEFT", prevBtn, "TOPLEFT", 0, 0)
 			end
@@ -1997,19 +1509,13 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	PixelSetSize(container, totalWidth, totalHeight)
 	container:SetScale(scale or 1)
 
-	-- (v1.0 polish pass, live-tested) EnsureContainerOverlay's initial
-	-- overlay:SetAllPoints(container) anchor measured out as exactly
-	-- matching `container`'s own bounds in every diagnostic check, but the
-	-- user still saw a visibly oversized edit-mode overlay for Micro Menu
-	-- specifically - diag8 explained why: `container`'s own bounds (and
-	-- the frame-based chaining above, before this pass) never accounted
-	-- for hit-rect insets at all. The overlay has no saved-position
-	-- dependency (unlike `container`'s own TOPLEFT, see above), so it gets
-	-- full trimming on every side - `first`'s own leading (left/top)
-	-- inset AND `prevBtn`'s (the last currently-SHOWN button, tracked
-	-- through the loop above) trailing (right/bottom) inset - re-applied
-	-- every time this function runs (spacing/orientation/scale change, or
-	-- a button's shown state changes, e.g. Talent unlocking).
+	-- The overlay has no saved-position dependency (unlike `container`'s
+	-- own TOPLEFT above), so it gets full trimming on every side -
+	-- `first`'s own leading (left/top) inset and `prevBtn`'s (the last
+	-- currently-shown button, tracked through the loop above) trailing
+	-- (right/bottom) inset - re-applied every time this function runs
+	-- (spacing/orientation/scale change, or a button's shown state
+	-- changing, e.g. Talent unlocking).
 	if container.btvOverlay then
 		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
 		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(prevBtn)
@@ -2023,76 +1529,39 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	end
 end
 
--- Shared overlay helper (feature 3) - drag ownership + right-click-to-
--- settings, exactly mirroring Bar.lua's EnsureBarOverlay boilerplate
--- (TOOLTIP strata for the same filled-button-strata-gap workaround - see
--- below for why TOOLTIP specifically).
--- Parameterized rather than one near-identical copy per caller: only the
--- container frame, the drag start/stop callbacks, the settings-page key to
--- open on right-click, and (Issue 4, bug-fix batch) an optional
--- scroll-to-scale setter differ per caller (Bag Bar/Micro Menu/Key
--- Ring/Latency Bar/Stance Bar all share this one implementation).
+-- Shared overlay helper: drag ownership + right-click-to-settings,
+-- mirroring Bar.lua's EnsureBarOverlay boilerplate (TOOLTIP strata for
+-- the same filled-button-strata-gap workaround). Parameterized by
+-- container frame, drag start/stop callbacks, the settings-page key to
+-- open on right-click, an optional scroll-to-scale setter, and an
+-- optional FrameLevel - shared by Bag Bar/Micro Menu/Key Ring/Latency
+-- Bar/Stance Bar.
 --
--- scaleSetFn (Issue 4): mirrors Button.lua's BTVButtonMixin.OnMouseWheel's
--- step/delta convention (arg1 = scroll delta, positive = up/away) applied
--- to scale instead of buttonSize - the old (since-removed) per-default-bar
--- overlay's own mouse-wheel-resize handler was never carried over to this
--- shared helper when it was written, which is why none of these 5 elements
--- had scroll-to-scale despite dragging already working identically on all
--- of them. Optional parameter still - remains nil for any future caller
--- with no real scale concept - but Key Ring (bug-fix batch round 2, Issue
--- B) now has one too (BTV:SetKeyRingScale/BTVanillaDB.keyRingScale,
--- DefaultBars.lua), so its own call site (BTV:ApplyKeyRingPosition) wires
--- it in exactly like the other 4 elements.
--- Current scale is read directly off `container:GetScale()` rather than a
--- separate getter parameter - every one of the 5 real setters
--- (SetBagBarScale/SetMicroMenuScale/SetStanceBarScale/SetLatencyBarScale/
--- SetKeyRingScale) already calls SetScale on this exact frame as its very
--- last step, so GetScale() always reflects the last applied value with no
--- extra plumbing needed.
+-- scaleSetFn mirrors Button.lua's BTVButtonMixin.OnMouseWheel's
+-- step/delta convention (arg1 = scroll delta, positive = up/away),
+-- applied to scale instead of buttonSize. Current scale is read directly
+-- off `container:GetScale()` rather than a separate getter parameter,
+-- since every scale setter (SetBagBarScale/SetMicroMenuScale/
+-- SetStanceBarScale/SetLatencyBarScale/SetKeyRingScale) already calls
+-- SetScale on this exact frame as its last step.
 --
--- level (Issue 2, bug-fix batch round 5): optional, defaults to 100 - the
--- value every caller used unconditionally before this fix. Bar.lua's own
--- CreateBarFromConfig comment (Issue C) already established, from live
--- testing, that same-strata ties on this client are NOT reliably broken by
--- creation order - only explicit FrameLevel does that reliably. Every
--- default-bar overlay (the old per-default-bar overlay, since removed) AND
--- every one of these 5 chain-anchored containers' own overlays previously shared this
--- exact same TOOLTIP+100 combination, so any pair of them that happened to
--- overlap on screen had an UNDEFINED winner. Key Ring's native default
--- position sits directly against/inside the Bag Bar container's own
--- bounding box (KeyRingButton is anchored to whichever bag-bar button it
--- originally sat beside - see ApplyKeyRingPosition's header comment - and
--- that button now lives inside bagBarContainer, whose own overlay
--- SetAllPoints(bagBarContainer) covers that same screen region) - live-
--- tested to lose that tie while positioned there, confirming the Bag Bar's
--- overlay was winning it. Passing a level strictly greater than 100 for
--- Key Ring's own call site (below) removes the ambiguity outright rather
--- than depending on undefined tie-break behavior.
+-- level defaults to 100. Same-strata frames on this client are NOT
+-- reliably ordered by creation order, only by explicit FrameLevel -
+-- overlays that visually overlap on screen (e.g. Key Ring's native
+-- default position sits against/inside the Bag Bar container's own
+-- bounding box) need distinct levels or the z-order winner is undefined.
 --
--- Overlay is parented to UIParent, NOT `container` (bug-fix batch round
--- 6, Issue 2 continued): dragging at Key Ring's native default position
--- still lost to something even at level 150, while every OTHER chain-
--- anchored container (Bag Bar/Micro Menu/Stance Bar/Page Indicator) is
--- already a direct UIParent child (BuildChainAnchoredContainer's own
--- `CreateFrame("Frame", frameName, UIParent)`) - so THEIR overlays'
--- absolute level numbers were always being compared apples-to-apples
--- (one level of UIParent-child nesting each). KeyRingButton/
--- MainMenuBarPerformanceBarFrame are real native frames, deep inside
--- Blizzard's own FrameXML ancestor chain (NOT a UIParent-direct child) -
--- parenting their overlay TO them (the old `CreateFrame("Frame", nil,
--- container)`) put those two overlays at a different, native-client-
--- controlled nesting depth than every sibling overlay they compete
--- against on screen. SetAllPoints(container) still anchors the overlay
--- to the real frame's own live position/size exactly as before -
--- parenting and anchoring are independent in this client (SetPoint takes
--- a frame reference, not a parent relationship) - so this only changes
--- which ancestor tree the overlay's own absolute FrameLevel is compared
--- within, not where it visually sits. See SetKeyRingEnabled/
--- SetLatencyBarEnabled below for the explicit overlay:Hide() this now
--- requires: with the overlay no longer a child of the real frame, hiding
--- the real frame alone no longer implicitly cascades to hide the overlay
--- too.
+-- Overlay is parented to UIParent, not `container`: Key Ring/Latency Bar
+-- wrap real native frames (KeyRingButton/MainMenuBarPerformanceBarFrame)
+-- deep inside Blizzard's own FrameXML ancestor chain, not UIParent-direct
+-- children - parenting the overlay to them would compare its FrameLevel
+-- within a different ancestor tree than every sibling overlay it competes
+-- against on screen. SetAllPoints(container)/SetPoint anchoring still
+-- tracks the real frame's live position/size regardless of parent.
+-- Because the overlay is no longer a child of the real frame, hiding the
+-- real frame alone no longer implicitly hides the overlay too - see
+-- SetKeyRingEnabled/SetLatencyBarEnabled below for the explicit
+-- overlay:Hide() this requires.
 local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settingsKey, scaleSetFn, level, displayName)
 	if container.btvOverlay then
 		return container.btvOverlay
@@ -2103,30 +1572,27 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	overlay:SetFrameStrata("TOOLTIP")
 	overlay:SetFrameLevel(level or 100)
 
-	-- (v1.0 polish pass) For a chain-anchored container (Bag Bar/Micro
-	-- Menu/Stance Bar - container.chainButtons exists), anchor directly to
-	-- the real first/last currently-shown button instead of SetAllPoints
-	-- (container) - see ApplyChainAnchoredShape's own matching anchor
-	-- (below) for why. This container's OWN size may not have settled yet
-	-- the very first time this runs (built, but ApplyChainAnchoredShape
-	-- might not have run since), so GetChainShownEndpoints gives a correct
-	-- anchor immediately either way; ApplyChainAnchoredShape re-applies the
-	-- exact same anchor on every later spacing/orientation/scale/
+	-- For a chain-anchored container (Bag Bar/Micro Menu/Stance Bar -
+	-- container.chainButtons exists), anchors directly to the real
+	-- first/last currently-shown button instead of SetAllPoints(container)
+	-- - see ApplyChainAnchoredShape's own matching anchor below.
+	-- GetChainShownEndpoints gives a correct anchor even before
+	-- ApplyChainAnchoredShape has ever run; ApplyChainAnchoredShape
+	-- re-applies the same anchor on every later spacing/orientation/scale/
 	-- visibility change. Every other container kind (Key Ring/Latency
 	-- Bar/Exp Bar's wrapped native frames, Page Indicator) has no
-	-- chainButtons and keeps the original SetAllPoints(container) anchor.
+	-- chainButtons and keeps the SetAllPoints(container) anchor.
 	local chainFirst, chainLast = GetChainShownEndpoints(container)
 
 	if chainFirst and chainLast then
-		-- (v1.0 polish pass) Trimmed by each endpoint's own hit-rect inset,
-		-- same reasoning/formula as ApplyChainAnchoredShape's own matching
-		-- overlay anchor below - see GetHitInsets' comment (diag8's Micro
-		-- Menu finding) - converted through ScaleRatio since `overlay` and
-		-- the buttons don't share an effective scale once the container's
-		-- own Scale slider is anything but 1, plus container.overlayTopFudge
-		-- (Micro Menu only - see BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's comment,
-		-- Core.lua) for the small extra sliver GetHitRectInsets alone
-		-- doesn't cover.
+		-- Trimmed by each endpoint's own hit-rect inset, same formula as
+		-- ApplyChainAnchoredShape's own matching overlay anchor below (see
+		-- GetHitInsets' comment above for the Micro Menu case). Converted
+		-- through ScaleRatio since `overlay` and the buttons don't share an
+		-- effective scale once the container's own Scale slider is
+		-- anything but 1, plus container.overlayTopFudge (Micro Menu only
+		-- - see BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's comment, Core.lua) for
+		-- the small extra sliver GetHitRectInsets alone doesn't cover.
 		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(chainFirst)
 		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(chainLast)
 		local firstRatio = ScaleRatio(chainFirst, overlay)
@@ -2144,15 +1610,14 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	tex:SetVertexColor(0.35, 0.65, 1.0, 0.45)
 	tex:SetAllPoints(overlay)
 
-	-- Round 36 (Item 2): hover border + centered element-name label -
-	-- exactly mirrors Bar.lua's own EnsureBarOverlay treatment (see its
-	-- comment for the full reasoning), just against a chain-anchored
-	-- container/single native frame instead of a bar-pool frame.
-	-- displayName is passed explicitly per call site below rather than
-	-- derived from settingsKey, since settingsKey doesn't uniquely identify
-	-- an element here (Key Ring's settingsKey is "bagbar" - it shares Bag
-	-- Bar's settings page - and Page Indicator's is the numeric Main Bar id
-	-- 1, since it has no page of its own).
+	-- Hover border + centered element-name label, mirroring Bar.lua's own
+	-- EnsureBarOverlay treatment, against a chain-anchored container/
+	-- single native frame instead of a bar-pool frame. displayName is
+	-- passed explicitly per call site below rather than derived from
+	-- settingsKey, since settingsKey doesn't uniquely identify an element
+	-- here (Key Ring's settingsKey is "bagbar" - it shares Bag Bar's
+	-- settings page - and Page Indicator's is the numeric Main Bar id 1,
+	-- since it has no page of its own).
 	overlay:SetBackdrop({
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		edgeSize = 8,
@@ -2186,14 +1651,12 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 		end
 	end)
 
-	-- Issue 4 (bug-fix batch): scroll-to-scale, gated the same way
-	-- Button.lua's BTVButtonMixin.OnMouseWheel gates scroll-to-resize for
-	-- custom bars (edit mode required) - this overlay is only ever
-	-- mouse-enabled during that same CanDragDefaultLayout() window anyway
-	-- (ApplyContainerOverlayVisual below), so in practice this handler can
-	-- only ever fire then, but the explicit check keeps this self-
-	-- contained/consistent with the rest of this addon's convention rather
-	-- than relying solely on EnableMouse(false) elsewhere.
+	-- Scroll-to-scale, gated the same way Button.lua's
+	-- BTVButtonMixin.OnMouseWheel gates scroll-to-resize for custom bars
+	-- (edit mode required). This overlay is only ever mouse-enabled during
+	-- that same CanDragDefaultLayout() window (ApplyContainerOverlayVisual
+	-- below), but the explicit check keeps this self-contained rather than
+	-- relying solely on EnableMouse(false) elsewhere.
 	overlay:EnableMouseWheel(true)
 	overlay:SetScript("OnMouseWheel", function()
 		if not scaleSetFn then
@@ -2240,9 +1703,8 @@ local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 	if interactive then
 		overlay:Show()
 
-		-- Round 36 (Item 2): same stale-hover-border reset as Bar.lua's own
-		-- ApplyEditModeVisual - see its comment for why this is needed every
-		-- time an overlay is (re-)shown, not just once at creation.
+		-- Resets the hover border every time the overlay is (re-)shown,
+		-- matching Bar.lua's own ApplyEditModeVisual.
 		overlay:SetBackdropBorderColor(0, 0, 0, 0)
 	else
 		overlay:Hide()
@@ -2331,10 +1793,9 @@ function BTV:SetBagBarEnabled(enabled)
 		else
 			self.bagBarContainer:Hide()
 
-			-- Bug-fix batch round 6: EnsureContainerOverlay's overlay is now
-			-- parented to UIParent, not this container (see its own updated
-			-- comment) - hiding the container no longer implicitly cascades
-			-- to hide the overlay too.
+			-- EnsureContainerOverlay's overlay is parented to UIParent, not
+			-- this container, so hiding the container doesn't cascade to
+			-- hide the overlay too.
 			if self.bagBarContainer.btvOverlay then
 				self.bagBarContainer.btvOverlay:Hide()
 				self.bagBarContainer.btvOverlay:EnableMouse(false)
@@ -2343,12 +1804,11 @@ function BTV:SetBagBarEnabled(enabled)
 	end
 end
 
--- Bug-fix batch Fix 4: re-lays-out the Bag Bar's real buttons from its
--- CURRENT saved spacing/orientation/scale, via the shared
--- ApplyChainAnchoredShape helper above - called by every one of this
--- section's setters below instead of each duplicating the chain-anchor
--- logic. A no-op until CreateBagBarAndMicroMenu has built the container
--- (ApplyChainAnchoredShape's own container.chainButtons nil-check).
+-- Re-lays-out the Bag Bar's real buttons from its current saved
+-- spacing/orientation/scale, via the shared ApplyChainAnchoredShape
+-- helper above. A no-op until CreateBagBarAndMicroMenu has built the
+-- container (ApplyChainAnchoredShape's own container.chainButtons
+-- nil-check).
 function BTV:ApplyBagBarShape()
 	self:EnsureDB()
 
@@ -2542,8 +2002,7 @@ function BTV:SetMicroMenuEnabled(enabled)
 		else
 			self.microMenuContainer:Hide()
 
-			-- Bug-fix batch round 6: same explicit-hide requirement as
-			-- SetBagBarEnabled above.
+			-- Same explicit-hide requirement as SetBagBarEnabled above.
 			if self.microMenuContainer.btvOverlay then
 				self.microMenuContainer.btvOverlay:Hide()
 				self.microMenuContainer.btvOverlay:EnableMouse(false)
@@ -2575,16 +2034,12 @@ function BTV:SetMicroMenuSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- (v1.0 polish pass) Floor is -10, not 0, unlike every other chain-
-	-- anchored container's spacing setter - Micro Menu's real native
-	-- buttons sit edge-to-edge with a MEASURED native gap of 0 (see
-	-- BuildChainAnchoredContainer's ComputeMajorityGap capture), yet still
-	-- show a small visible gap at spacing=0 because the buttons' own
-	-- native art has padding inside their nominal frame bounds that
-	-- spacing alone can't remove - only pulling the frames INTO a slight
-	-- overlap (negative spacing) can compensate for that. 0 (the captured
-	-- native default) is left completely unaffected by this - only the
-	-- floor a user can slide down to changes.
+	-- Floor is -10, not 0, unlike every other chain-anchored container's
+	-- spacing setter: Micro Menu's real native buttons have a measured
+	-- native gap of 0 but still show a small visible gap at spacing=0,
+	-- since the buttons' own native art has padding inside their nominal
+	-- frame bounds that spacing alone can't remove - only a slight overlap
+	-- (negative spacing) compensates for that.
 	if spacing < -10 then
 		spacing = -10
 	end
@@ -2704,10 +2159,9 @@ function BTV:CreateBagBarAndMicroMenu()
 
 			-- Same TOPLEFT/BOTTOMLEFT-of-UIParent convention as Core.lua's
 			-- CaptureNativeAnchor - nativeLeft/nativeTop here are already
-			-- the real-screen-pixel-converted values BuildChainAnchoredContainer
-			-- returns (Round 7 root-cause fix - see its own comment), not a
-			-- raw GetLeft()/GetTop() copy, so no further translation is
-			-- needed here.
+			-- the real-screen-pixel-converted values
+			-- BuildChainAnchoredContainer returns, not a raw
+			-- GetLeft()/GetTop() copy, so no further translation is needed.
 			if not BTVanillaDB.bagBarNativeAnchor then
 				BTVanillaDB.bagBarNativeAnchor = {
 					point = "TOPLEFT",
@@ -2726,10 +2180,10 @@ function BTV:CreateBagBarAndMicroMenu()
 				}
 			end
 
-			-- Permanent pristine spacing snapshot (bug-fix batch Fix 4),
-			-- mirroring bagBarNativeAnchor above exactly - captured ONCE
-			-- here via ComputeMajorityGap (BuildChainAnchoredContainer),
-			-- never re-derived afterward.
+			-- Permanent pristine spacing snapshot, mirroring
+			-- bagBarNativeAnchor above - captured once via
+			-- ComputeMajorityGap (BuildChainAnchoredContainer), never
+			-- re-derived afterward.
 			if not BTVanillaDB.bagBarNativeSpacing then
 				BTVanillaDB.bagBarNativeSpacing = nativeSpacing
 			end
@@ -2739,20 +2193,16 @@ function BTV:CreateBagBarAndMicroMenu()
 			end
 
 			-- Lays out the chain from the (freshly seeded, or previously
-			-- saved) spacing/orientation/scale BEFORE ApplyBagBarPosition
+			-- saved) spacing/orientation/scale before ApplyBagBarPosition
 			-- below, so the container's real size is already correct by
-			-- the time the one-time diagnostic print reads GetWidth()/
-			-- GetHeight().
+			-- the time the print below reads GetWidth()/GetHeight().
 			self:ApplyBagBarShape()
 
 			self:ApplyBagBarPosition()
 			self:SetBagBarEnabled(BTVanillaDB.bagBarEnabled ~= false)
 
-			-- One-time diagnostic (never fires again this session) - lets a
-			-- live tester confirm exactly what native size/spacing was
-			-- captured, mirroring seedDefaultBars' own diagnostic print
-			-- (Core.lua) for the exact same "live-captured, not guessed"
-			-- reason.
+			-- Reports the captured native size/spacing to chat once,
+			-- mirroring seedDefaultBars' own capture print (Core.lua).
 			self:Print(
 				"Bag Bar captured: " .. tostring(container:GetWidth()) ..
 				"x" .. tostring(container:GetHeight()) ..
@@ -2774,14 +2224,12 @@ function BTV:CreateBagBarAndMicroMenu()
 			self.microMenuContainer = container
 			self.microMenuButtons = buttons
 
-			-- (v1.0 polish pass) Extra top-only overlay trim beyond the
-			-- buttons' own real GetHitRectInsets() - see
-			-- BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's own comment (Core.lua).
-			-- Read generically by EnsureContainerOverlay/
-			-- ApplyChainAnchoredShape's overlay anchors via
-			-- container.overlayTopFudge (nil/0 for every other chain-
-			-- anchored container - Bag Bar, Stance Bar - which have no
-			-- equivalent evidence of needing one).
+			-- Extra top-only overlay trim beyond the buttons' own real
+			-- GetHitRectInsets() - see BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's
+			-- own comment (Core.lua). Read generically by
+			-- EnsureContainerOverlay/ApplyChainAnchoredShape's overlay
+			-- anchors via container.overlayTopFudge (nil/0 for every other
+			-- chain-anchored container - Bag Bar, Stance Bar).
 			container.overlayTopFudge = self.MICRO_MENU_OVERLAY_TOP_FUDGE
 
 			if not BTVanillaDB.microMenuNativeAnchor then
@@ -2825,23 +2273,15 @@ function BTV:CreateBagBarAndMicroMenu()
 	end
 end
 
--- Issue A (bug-fix batch round 2): UpdateMicroButtons is real vanilla
--- FrameXML's own global function (MainMenuBarMicroButtons.lua) that decides
--- TalentMicroButton's (and any other conditionally-hidden micro button's)
--- Show()/Hide() state, registered against PLAYER_LEVEL_UP/
--- PLAYER_ENTERING_WORLD/PLAYER_TALENT_UPDATE/etc. in native FrameXML.
--- Hooking THIS function directly - rather than re-registering our own
--- listener on each of those individual native events ourselves - means
--- this addon always reacts at exactly the same moment Blizzard's own code
--- actually changed a button's shown state, regardless of which native
--- event triggered that decision. hooksecurefunc runs AFTER the native
--- handler has already called Show()/Hide() on the real button, so
--- ApplyMicroMenuShape's own IsShown() checks (ApplyChainAnchoredShape
--- above) see the new state immediately. A harmless no-op call if
--- self.microMenuContainer hasn't been built yet this session
--- (ApplyChainAnchoredShape's own container.chainButtons nil-check).
--- Registered once here at file load (top-level), same timing the
--- ChangeActionBarPage hook above this file already relies on.
+-- UpdateMicroButtons is real vanilla FrameXML's own global function
+-- (MainMenuBarMicroButtons.lua) that decides TalentMicroButton's (and any
+-- other conditionally-hidden micro button's) Show()/Hide() state.
+-- Hooking it directly, rather than each individual native event, means
+-- this addon reacts at exactly the moment Blizzard's own code changes a
+-- button's shown state. hooksecurefunc runs after the native handler has
+-- already called Show()/Hide(), so ApplyMicroMenuShape's IsShown() checks
+-- see the new state immediately. No-ops if microMenuContainer hasn't been
+-- built yet this session.
 if hooksecurefunc and UpdateMicroButtons then
 	hooksecurefunc("UpdateMicroButtons", function()
 		BTV:ApplyMicroMenuShape()
@@ -2851,97 +2291,45 @@ end
 -------------------------------------------------------------------------
 -- Stance Bar (chain-anchored container)
 --
--- Migrated from a bespoke ShapeshiftBarFrame-wrapping implementation (the
--- old EnsureStanceBarOverlay/PositionStanceBarOverlay/
--- CaptureStanceBarPositionIfNeeded/HookStanceBarDrag are gone entirely;
--- ApplyStanceBarPosition/StartStanceBarDrag/StopStanceBarDrag/
--- SetStanceBarEnabled are redefined below against the container instead of
--- the real ShapeshiftBarFrame) to the exact same chain-anchored-container
--- technique Bag Bar/Micro Menu use above: real
--- ShapeshiftButton# frames are reparented into our own synthetic container
--- and chain-anchored via ApplyChainAnchoredShape, keeping their native
--- shapeshift-form rendering (icon/cooldown/active-form glow) entirely
--- intact - a custom Button.lua-style replica would have meant
--- reimplementing all of that from the shapeshift-form API from scratch.
+-- Uses the same chain-anchored-container technique as Bag Bar/Micro Menu
+-- above: real ShapeshiftButton# frames are reparented into our own
+-- synthetic container and chain-anchored via ApplyChainAnchoredShape,
+-- keeping their native shapeshift-form rendering (icon/cooldown/
+-- active-form glow) entirely intact.
 --
--- The one real difference from Bag Bar/Micro Menu: the Stance Bar's button
--- COUNT is class/talent-driven (BTV:GetStanceBarButtons' GetNumShapeshiftForms()
--- based enumeration above), not a fixed 5/8, so RebuildStanceBarContainer
+-- Unlike Bag Bar/Micro Menu, the Stance Bar's button count is
+-- class/talent-driven (BTV:GetStanceBarButtons' GetNumShapeshiftForms()
+-- based enumeration above), not a fixed 5/8 - RebuildStanceBarContainer
 -- below re-enumerates and updates the container's chain in place whenever
--- that count can have changed, instead of only ever building once.
+-- that count can change, instead of only ever building once.
 -------------------------------------------------------------------------
 
--- Round 32 fix: the real, permanent vertical clearance real vanilla leaves
--- between whichever default bar (1 or 2) is topmost and the Stance Bar's
--- own real native ShapeshiftBarFrame - captured ONCE, here, while
--- ShapeshiftBarFrame is still queryable at its true native position. This
--- addon only ever reparents its BUTTONS (ShapeshiftButton1-N, into our own
--- container, below) - the ShapeshiftBarFrame frame itself is never touched/
--- moved, so it keeps reporting its real native GetBottom() for as long as
--- we read it here, at container-build time.
---
--- Live-confirmed (round 32 diagnostic session, real numbers): with bar 2
--- (Action Bar 1) enabled, ShapeshiftBarFrame:GetBottom() = 98.0000040,
--- bar 2's own nativeAnchor.y = 93.0000017 - a fixed ~5-unit gap, NOT the
--- row-to-row spacing between two IDENTICALLY-SIZED standard bars (the
--- Stance Bar's own footprint is a different size, so it needs its own gap
--- constant - see GetStanceBarBaselineY's own comment below for the full
--- derivation and verification). Same real-screen-pixel GetEffectiveScale()
--- round-trip conversion Core.lua's CaptureNativeAnchor uses for any cross-frame native
--- position read - applied here defensively even though this round's
--- diagnostic happened to show both frames at the same 0.9 effective scale,
--- since this addon's established convention is to never skip that
--- conversion for a cross-frame measurement just because two samples agreed.
+-- Captures the real, permanent vertical clearance vanilla leaves between
+-- whichever default bar (1 or 2) is topmost and the Stance Bar's own real
+-- native ShapeshiftBarFrame - captured once, while ShapeshiftBarFrame is
+-- still queryable at its true native position. This addon only ever
+-- reparents its buttons (ShapeshiftButton1-N, into our own container,
+-- below); the ShapeshiftBarFrame frame itself is never moved, so it keeps
+-- reporting its real native GetBottom() for as long as we read it here.
 --
 -- referenceY is whichever of bar 1/bar 2's own nativeAnchor.y
--- ShapeshiftBarFrame is CURRENTLY sitting above - bar 2 if TrustyBars' own
--- cfg2.enabled is true at this exact moment, else bar 1 (same selection
--- rule GetStanceBarBaselineY itself uses below). The resulting gap is
--- stored as a single state-independent constant either way - real vanilla
--- leaves the same fixed clearance above whichever bar is topmost, it isn't
--- a different constant per state.
+-- ShapeshiftBarFrame is currently sitting above - bar 2 if cfg2.enabled
+-- is true at this exact moment, else bar 1 (same selection rule
+-- GetStanceBarBaselineY itself uses below). The gap is stored as a single
+-- state-independent constant, since vanilla leaves the same fixed
+-- clearance above whichever bar is topmost.
 --
 -- Lazy-capture-once, guarded on BTVanillaDB.stanceBarNativeGap already
--- being present - same idiom as stanceBarNativeAnchor/stanceBarNativeSpacing
--- just above/below this function. CreateStanceBarContainer's own
--- `if self.stanceBarContainer then return end` guard only blocks
--- re-running THIS SESSION (self.stanceBarContainer is a runtime field,
--- always nil at a fresh login) - so an existing save with no
--- stanceBarNativeGap field yet (every save that predates this fix) simply
--- captures it fresh on its very next login, with no separate one-time
--- marker/reseed needed.
+-- being present - same idiom as stanceBarNativeAnchor/stanceBarNativeSpacing.
 --
--- Round 33 fix: this used to be a local function only ever invoked from
--- inside CreateStanceBarContainer, itself only ever called (the first,
--- and only-once-per-session, successful time) from RunLoginSequence
--- AFTER BTV:CreateFixedSlotDefaultBars() had already run. That ordering
--- was the actual corruption root cause: CreateFixedSlotDefaultBars
--- permanently Hide()s bar 2's real MultiBarBottomLeftButton1-12 frames,
--- and this file's own SetDefaultBarEnabled comment above (Issue 3, round
--- 14) already documents, as an established vanilla 1.12.1 FrameXML fact,
--- that MultiActionBarFrame.lua's ShapeshiftBar_UpdatePosition() runs as a
--- side effect whenever MultiBarBottomLeft's buttons' shown state changes,
--- reflowing ShapeshiftBarFrame's own real anchor. So by the time this
--- capture ran, ShapeshiftBarFrame had ALREADY been reflowed by that native
--- side effect into a collapsed/unanchored state (GetBottom() reading back
--- exactly 0 - live-confirmed, see the corrupted stanceBarNativeGap report:
--- -40.000000547098, exactly 0 minus bar 1's own nativeAnchor.y), not its
--- true native "resting above MultiBarBottomLeft" position - and this
--- happened on EVERY login, unconditionally, regardless of forms/timing,
--- since CreateFixedSlotDefaultBars always precedes CreateStanceBarContainer
--- in RunLoginSequence's fixed call order.
---
--- Fixed by promoting this to its own BTV method, callable directly, and
--- having Core.lua's RunLoginSequence call it BEFORE
--- BTV:CreateFixedSlotDefaultBars() runs - this measurement needs nothing
--- from GetStanceBarButtons()/forms at all (it only reads
--- ShapeshiftBarFrame itself plus BTVanillaDB.defaultBars' already-captured
--- nativeAnchor.y), so there is no reason it should ever have depended on
--- being called from inside the forms-gated CreateStanceBarContainer path.
--- The call from CreateStanceBarContainer (below) is kept too, purely as a
--- harmless no-op safety net for any future call path - the guard at the
--- top of this function makes a second call from later in the same login
--- always a no-op once the early call already succeeded.
+-- Must run before BTV:CreateFixedSlotDefaultBars() (Core.lua's
+-- RunLoginSequence calls it first) - CreateFixedSlotDefaultBars
+-- permanently hides bar 2's real MultiBarBottomLeftButton1-12 frames,
+-- which triggers vanilla FrameXML's own ShapeshiftBar_UpdatePosition()
+-- side effect and collapses ShapeshiftBarFrame's real anchor before this
+-- capture can read its true native position. The call from
+-- CreateStanceBarContainer (below) is kept as a harmless no-op safety net
+-- for any path that reaches here without the early call having run.
 function BTV:CaptureStanceBarNativeGap()
 	if BTVanillaDB.stanceBarNativeGap then
 		return
@@ -2984,20 +2372,14 @@ function BTV:CaptureStanceBarNativeGap()
 
 	local gap = screenBottom - referenceY
 
-	-- Round 33 defensive sanity check: a real inter-row gap on this
-	-- addon's own default-bar cluster is never negative (that would mean
-	-- the Stance Bar sits BELOW its reference bar's top edge, i.e.
-	-- overlapping it) and never anywhere near a full button's size (the
-	-- live-confirmed real value is ~5 - see GetStanceBarBaselineY's own
-	-- round-32 comment below - so this addon's own BUTTON_SIZE constant
-	-- is a generous, structurally-justified upper bound rather than an
-	-- arbitrary guess). A value outside this range means the read above
-	-- hit exactly the ShapeshiftBarFrame-already-reflowed corruption this
-	-- round fixed (or some other future timing hazard) - never persist a
-	-- bad read, so a good EARLIER capture (or a good LATER one, since the
-	-- guard above only blocks once a value is actually stored) is never
+	-- A real inter-row gap here is never negative (that would mean the
+	-- Stance Bar overlaps its reference bar's top edge) and never
+	-- anywhere near a full button's size (the real value is ~5 - see
+	-- GetStanceBarBaselineY's own comment below). A value outside this
+	-- range means the read above hit a corrupted/unreflowed frame - never
+	-- persist a bad read, so an earlier or later good capture is never
 	-- overwritten, and GetStanceBarBaselineY's own `or 5` fallback covers
-	-- the gap (pun intended) until a good capture lands.
+	-- the gap until a good capture lands.
 	if gap <= 0 or gap >= self.BUTTON_SIZE then
 		self:Print(
 			"WARNING: Stance Bar native gap capture produced an implausible " ..
@@ -3033,12 +2415,10 @@ function BTV:CreateStanceBarContainer()
 		return
 	end
 
-	-- Round 33: the REAL capture now happens earlier, from Core.lua's
-	-- RunLoginSequence, before BTV:CreateFixedSlotDefaultBars() ever runs
-	-- (see BTV:CaptureStanceBarNativeGap's own comment above for why that
-	-- ordering matters) - this call is just a harmless no-op safety net
-	-- (guarded on BTVanillaDB.stanceBarNativeGap already being set) for
-	-- any path that could reach here without that early call having run.
+	-- The real capture happens earlier, from Core.lua's RunLoginSequence,
+	-- before CreateFixedSlotDefaultBars() runs (see
+	-- CaptureStanceBarNativeGap's own comment) - this call is a harmless
+	-- no-op safety net, guarded on stanceBarNativeGap already being set.
 	self:CaptureStanceBarNativeGap()
 
 	SortButtonsByNativeLeft(buttons)
@@ -3223,8 +2603,7 @@ function BTV:SetStanceBarEnabled(enabled)
 		else
 			self.stanceBarContainer:Hide()
 
-			-- Bug-fix batch round 6: same explicit-hide requirement as
-			-- SetBagBarEnabled above.
+			-- Same explicit-hide requirement as SetBagBarEnabled above.
 			if self.stanceBarContainer.btvOverlay then
 				self.stanceBarContainer.btvOverlay:Hide()
 				self.stanceBarContainer.btvOverlay:EnableMouse(false)
@@ -3233,38 +2612,25 @@ function BTV:SetStanceBarEnabled(enabled)
 	end
 end
 
--- Round 30 fix: the objectively-correct ABSOLUTE Stance Bar top-edge Y
--- (UIParent-bottom-left-origin, y increases upward - see Core.lua's
--- CaptureNativeAnchor comment) for a given bar-2 enabled state, computed
--- fresh from live-captured native baselines every time - NEVER derived from
+-- Computes the absolute Stance Bar top-edge Y (UIParent-bottom-left
+-- origin, y increases upward - see Core.lua's CaptureNativeAnchor
+-- comment) for a given bar-2 enabled state, computed fresh from
+-- live-captured native baselines every time - never derived from
 -- whatever BTVanillaDB.stanceBarPosition.y currently holds.
 --
--- Round 32 fix: round 30's formula (referenceBar.top + 1x/2x the real,
--- live-captured row-to-row vertical spacing between bar 1/Main and bar 2/
--- Bottom Left) turned out wrong - live-confirmed via a fresh diagnostic dump
--- it overshot by a clean 16 units in the bar-2-enabled case (146.0 computed
--- vs 130.0 actual, the real still-native ShapeshiftBarFrame's own GetTop()).
--- Root cause: that standard-bar-row spacing is the right constant only for
--- stacking two IDENTICALLY-SIZED standard bars, but the Stance Bar's own
--- footprint isn't the same size as a standard bar row - reusing rowHeight as
--- its clearance was the wrong tool for this specific measurement.
+-- The Stance Bar's own footprint isn't the same size as a standard bar
+-- row, so a standard row-to-row spacing constant is the wrong clearance
+-- here. The correct relationship: SBF.bottom - referenceBar.top is a
+-- fixed native gap constant (~5, captured once as
+-- BTVanillaDB.stanceBarNativeGap - see CaptureStanceBarNativeGap above)
+-- between the reference bar's top edge and the Stance Bar's own bottom
+-- edge; SBF.top - SBF.bottom is the Stance Bar's own native occupied
+-- height, read live from self.stanceBarContainer:GetHeight() so this
+-- stays correct if the user scales the Stance Bar. So:
+-- baselineY = referenceBar.top + gap + height.
 --
--- The correct relationship, decomposed from that same diagnostic's real
--- numbers (bar2 enabled): SBF.bottom - bar2.top = 98.0000040 - 93.0000017
--- ~= 5 - a fixed native gap CONSTANT between the reference bar's top edge
--- and the Stance Bar's own bottom edge (captured once as
--- BTVanillaDB.stanceBarNativeGap - see CaptureStanceBarNativeGap above).
--- SBF.top - SBF.bottom = 130.0000062 - 98.0000040 ~= 32 - the Stance Bar's
--- own native occupied height, which this codebase's own container reaches
--- too once built (self.stanceBarContainer:GetHeight(), read LIVE rather
--- than hardcoded, so this stays correct if the user scales the Stance Bar
--- via its own Settings page). Verification: bar2.top + gap + SBF_height =
--- 93.0000017 + 5 + 32 = 130.0000017 ~= 130.00000615485 (SBF's real
--- GetTop()) - matches within floating-point noise.
---
--- referenceY is bar 2's own nativeAnchor.y if bar 2 is enabled, else bar
--- 1's - same reference-bar selection round 30 already used, only the
--- CLEARANCE term (gap + container height, not rowHeight) changed.
+-- referenceY is bar 2's own nativeAnchor.y if bar 2 is enabled, else
+-- bar 1's.
 function BTV:GetStanceBarBaselineY(bar2Enabled)
 	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
 	local cfg1 = defaults and defaults[1]
@@ -3286,42 +2652,28 @@ function BTV:GetStanceBarBaselineY(bar2Enabled)
 		return nil
 	end
 
-	-- Literal 5 fallback only for the near-impossible case the lazy
-	-- capture above never ran (e.g. ShapeshiftBarFrame missing on some
-	-- other client build) - see CaptureStanceBarNativeGap's own comment for
-	-- why every normal login (existing save or fresh) captures the real
-	-- value instead of ever needing to fall back to this.
+	-- Falls back to a literal 5 only if the lazy capture above never ran
+	-- (e.g. ShapeshiftBarFrame missing on some other client build) - every
+	-- normal login captures the real value instead.
 	local gap = BTVanillaDB.stanceBarNativeGap or 5
 
 	return referenceY + gap + container:GetHeight()
 end
 
--- Issue 3 (round 14): replicates real vanilla's ShapeshiftBar_UpdatePosition
--- side effect against the Stance Bar's own synthetic container instead of
--- the (now purely internal, no-longer-visually-relevant) real
--- ShapeshiftBarFrame - see SetDefaultBarEnabled's own comment above for why
--- the native call stopped doing anything useful post-migration.
+-- Replicates real vanilla's ShapeshiftBar_UpdatePosition side effect
+-- against the Stance Bar's own synthetic container, since the native call
+-- against the real (now purely internal) ShapeshiftBarFrame no longer has
+-- any visual effect post-migration.
 --
--- Round 30 fix: this used to apply a symmetric +/- delta to whatever
--- BTVanillaDB.stanceBarPosition.y already held, relying on "each enable is
--- undone by exactly one later disable of equal, opposite magnitude" to stay
--- in sync - live-confirmed broken, since that only ever preserves whatever
--- baseline was already stored, even if that baseline was wrong to begin with
--- (see GetStanceBarBaselineY's own comment above). Now an absolute,
--- self-correcting recompute instead: pos.y is always overwritten with
--- GetStanceBarBaselineY's fresh result for the CURRENT bar2Enabled state, so
--- calling this can never accumulate drift and always lands on the
--- objectively correct value regardless of what was previously stored. Only
--- x is left untouched here - horizontal alignment was never part of this
--- vertical-stacking mechanism and has no equivalent bad-capture symptom.
+-- Always an absolute, self-correcting recompute: pos.y is overwritten
+-- with GetStanceBarBaselineY's fresh result for the current bar2Enabled
+-- state, so this can never accumulate drift. Only x is left untouched -
+-- horizontal alignment is not part of this vertical-stacking mechanism.
 --
--- Only ever called while useDefaultLayout ~= false (SetDefaultBarEnabled's
--- own gate, mirroring the pre-migration implementation's identical gate, and
--- Core.lua's RunLoginSequence, which now also calls this once every login/
--- reload against bar 2's current state - see its own comment there) - once
--- the user has switched the Stance Bar to manual positioning
--- (CanDragDefaultLayout() == true), this must never fight their own dragged
--- position.
+-- Only called while useDefaultLayout ~= false (SetDefaultBarEnabled's own
+-- gate, and Core.lua's RunLoginSequence) - once the user has switched the
+-- Stance Bar to manual positioning, this must never fight their own
+-- dragged position.
 function BTV:ReflowStanceBarForBar2Toggle(bar2Enabled)
 	local pos = BTVanillaDB.stanceBarPosition
 	local container = self.stanceBarContainer
@@ -3423,8 +2775,7 @@ end
 -- Settings.lua's Stance Bar page reset flow calls this alongside
 -- ResetStanceBarPosition (simpleBarPageConfigs["stance"].reset) - restores
 -- spacing/scale/orientation to their native baseline, mirroring
--- ResetBagBarLayout exactly. Renamed from the old ResetStanceBarScale
--- (Scale-only) now that Spacing/Orientation are real, saved fields too.
+-- ResetBagBarLayout.
 function BTV:ResetStanceBarLayout()
 	self:EnsureDB()
 
@@ -3471,15 +2822,9 @@ end
 
 -- UPDATE_SHAPESHIFT_FORMS is real vanilla 1.12.1's own FrameXML event
 -- (stock ShapeshiftBar.lua registers it and calls ShapeshiftBar_Update()
--- in response) - it fires whenever the player's available stance/form set
+-- in response) - fires whenever the player's available stance/form set
 -- changes, e.g. a talent respec unlocking a new form, or a zone/buff
--- granting/removing one. UNVERIFIED specifically on this modded client
--- (SuperWoW/nampower/ClassicAPI/UnitXP_SP3 don't touch this event, but it
--- hasn't been live-confirmed to still fire exactly like stock 1.12.1 here)
--- - if a live test ever shows it doesn't fire, RebuildStanceBarContainer
--- can also be called manually via a slash command as a fallback, but no
--- such fallback is wired up preemptively per this addon's "don't guess,
--- verify" rule.
+-- granting/removing one.
 local stanceFormEventFrame = CreateFrame("Frame", "BTVanillaStanceFormEventFrame")
 stanceFormEventFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
 stanceFormEventFrame:SetScript("OnEvent", function()
@@ -3496,30 +2841,25 @@ stanceFormEventFrame:SetScript("OnEvent", function()
 end)
 
 -------------------------------------------------------------------------
--- Key Ring (bug-fix batch Fix 2)
+-- Key Ring
 --
--- KeyRingButton is confirmed live to exist as a real global frame on this
--- client (not present in true vanilla 1.12.0, but present here) -
--- previously completely unmanaged: it stays anchored to whichever real
--- bag button it was natively anchored to (SetPoint targets a FRAME, not a
--- parent, so reparenting that bag button into the Bag Bar's own synthetic
--- container above doesn't change what KeyRingButton itself is anchored
--- to), so it visually "rides along" behind/underneath the Bag Bar
--- container - a stray floating button never independently managed.
+-- KeyRingButton is confirmed to exist as a real global frame on this
+-- client (not present in true vanilla 1.12.0, but present here).
+-- SetPoint targets a frame, not a parent, so reparenting a bag button
+-- into the Bag Bar's own synthetic container doesn't change what
+-- KeyRingButton is anchored to - without independent management it would
+-- visually ride along behind/underneath the Bag Bar container.
 --
--- Deliberately NOT added to BAG_BAR_BUTTON_NAMES/the Bag Bar's own chain
--- - the user wants it independently toggleable and independently
--- positionable, not just another chained member. It's also a single real
--- native button, not a container we build, so (unlike Bag Bar/Micro Menu
--- above) it's repositioned directly via PixelSetPoint on itself - the
--- exact same "one real Blizzard frame, no chain-anchoring needed"
--- treatment ApplyStanceBarPosition already uses for ShapeshiftBarFrame.
+-- Deliberately not added to BAG_BAR_BUTTON_NAMES/the Bag Bar's own
+-- chain - independently toggleable and independently positionable, not
+-- just another chained member. It's a single real native button, not a
+-- container we build, so it's repositioned directly via PixelSetPoint on
+-- itself, the same "one real Blizzard frame, no chain-anchoring needed"
+-- treatment ApplyStanceBarPosition uses for ShapeshiftBarFrame.
 --
--- Every function below defensively no-ops if KeyRingButton doesn't exist
--- on some other client build - matches how every other optional-native-
--- element accessor in this file already degrades (GetDefaultBarButtons/
--- GetStanceBarButtons' "stop/skip on missing frame" tolerance,
--- CreateBagBarAndMicroMenu's own per-element existence check).
+-- Every function below no-ops if KeyRingButton doesn't exist on some
+-- other client build, matching every other optional-native-element
+-- accessor in this file.
 -------------------------------------------------------------------------
 
 BTV.KEYRING_BUTTON_NAME = "KeyRingButton"
@@ -3573,25 +2913,15 @@ end
 
 -- Applies BTVanillaDB.keyRingPosition to the real KeyRingButton, and
 -- ensures its drag/right-click overlay exists - mirrors
--- ApplyBagBarPosition's structure exactly, reusing EnsureContainerOverlay
--- directly against KeyRingButton itself (that helper is generic over any
--- frame with its own .btvOverlay cache, not specific to the synthetic
--- containers Bag Bar/Micro Menu build - a single real button works
--- exactly the same way).
--- Issue 2 (bug-fix batch round 4): EnsureContainerOverlay is now called
--- unconditionally whenever `frame` exists, NOT only when the native
--- position capture also happened to succeed this call. The old
--- `if not pos or not frame then return end` guard meant a login-time call
--- where CaptureKeyRingPositionIfNeeded's GetLeft()/GetTop() read (real
--- native frame, possibly not yet fully laid out at PLAYER_LOGIN) failed to
--- resolve a value would bail out BEFORE ever building the drag/right-click
--- overlay at all - leaving Key Ring undraggable in Edit Layout mode until
--- some later, unrelated call happened to re-invoke this function (e.g. via
--- Settings.lua) once the frame's position had stabilized. Building the
--- overlay is independent of whether a saved/native position is available
--- yet - it's a no-op frame that just needs `frame` itself to exist, which
--- it reliably does at login (a real always-present FrameXML global) - so
--- it's no longer gated on `pos`.
+-- ApplyBagBarPosition's structure, reusing EnsureContainerOverlay
+-- directly against KeyRingButton itself (generic over any frame with its
+-- own .btvOverlay cache, not specific to a synthetic container).
+--
+-- EnsureContainerOverlay is called unconditionally whenever `frame`
+-- exists, not only when the native position capture also succeeded -
+-- building the overlay only needs `frame` itself to exist (a real
+-- always-present FrameXML global), independent of whether a saved/native
+-- position is available yet.
 function BTV:ApplyKeyRingPosition()
 	self:CaptureKeyRingPositionIfNeeded()
 
@@ -3601,23 +2931,13 @@ function BTV:ApplyKeyRingPosition()
 		return
 	end
 
-	-- Round 34 fix: unlike Bag Bar/Micro Menu/Stance Bar/Page Indicator
-	-- (all built on BuildChainAnchoredContainer, which already gives its
-	-- synthetic container an explicit "HIGH" strata), KeyRingButton is a
-	-- single real native Blizzard frame repositioned in place - it never
-	-- received any explicit strata of its own at all, so it was left
-	-- sitting at whatever this client's plain-Frame default is (most
-	-- likely "MEDIUM" - see Bar.lua's CreateBarFromConfig/Button.lua's
-	-- BTVButtonMixin:Init, which needed the exact same explicit-"HIGH"
-	-- treatment this round for the same underlying reason, and
-	-- docs/01-Environment-Capability-Analysis.md's round-34 entry for why
-	-- this is still an inference rather than a live-confirmed fact), only
-	-- ever rendering above MainMenuBarArtFrame by coincidence of the art
-	-- frame's own level happening to stay below it. Fixed the same way as
-	-- every other element in this file that needs to permanently out-rank
-	-- the art frame: an explicit "HIGH" strata on the real frame itself, applied
-	-- on every call (cheap/idempotent) rather than only once at login, so
-	-- nothing can ever silently reset it back to a lower tier.
+	-- Unlike Bag Bar/Micro Menu/Stance Bar/Page Indicator (all built on
+	-- BuildChainAnchoredContainer, which already gives its synthetic
+	-- container an explicit "HIGH" strata), KeyRingButton is a single real
+	-- native Blizzard frame with no explicit strata of its own - it only
+	-- rendered above MainMenuBarArtFrame by coincidence. Sets an explicit
+	-- "HIGH" strata on every call (cheap/idempotent) so nothing can
+	-- silently reset it back to a lower tier.
 	frame:SetFrameStrata("HIGH")
 
 	local pos = BTVanillaDB.keyRingPosition
@@ -3634,24 +2954,18 @@ function BTV:ApplyKeyRingPosition()
 		)
 	end
 
-	-- scaleSetFn wired (bug-fix batch round 2, Issue B): Key Ring now has a
-	-- real scale concept (BTVanillaDB.keyRingScale/BTV:SetKeyRingScale
-	-- below), mirroring the other 4 shared-overlay elements exactly - see
-	-- SetKeyRingScale's own comment for why this was previously nil.
-	--
-	-- level = 150 (Issue 2, bug-fix batch round 5): strictly above the 100
-	-- every other default-bar/chain-anchored-container overlay uses (see
-	-- EnsureContainerOverlay's own updated comment) - Key Ring's native
-	-- default position overlaps the Bag Bar container's own overlay, and
-	-- this guarantees Key Ring's drag/right-click/scroll surface always
-	-- wins that overlap regardless of creation order.
+	-- level = 150, strictly above the 100 every other default-bar/
+	-- chain-anchored-container overlay uses (see EnsureContainerOverlay's
+	-- own comment) - Key Ring's native default position overlaps the Bag
+	-- Bar container's own overlay, so this guarantees Key Ring's drag/
+	-- right-click/scroll surface always wins that overlap.
 	EnsureContainerOverlay(frame, self.StartKeyRingDrag, self.StopKeyRingDrag, "bagbar", self.SetKeyRingScale, 150, "Key Ring")
 end
 
 -- Settings.lua's Bag Bar page "Show Key Ring" checkbox writes through
--- this - independent of the Bag Bar's own enable flag, per the task spec
--- (the checkbox lives ON the Bag Bar page, but this element moves/shows/
--- hides independently of the Bag Bar container itself).
+-- this - independent of the Bag Bar's own enable flag (the checkbox
+-- lives on the Bag Bar page, but this element moves/shows/hides
+-- independently of the Bag Bar container itself).
 function BTV:SetKeyRingEnabled(enabled)
 	self:EnsureDB()
 
@@ -3667,13 +2981,12 @@ function BTV:SetKeyRingEnabled(enabled)
 		else
 			frame:Hide()
 
-			-- Bug-fix batch round 6: EnsureContainerOverlay's overlay is now
-			-- parented to UIParent, not `frame` (see its own updated
-			-- comment) - hiding the real frame no longer implicitly cascades
-			-- to hide the overlay too, so this now must be done explicitly
-			-- or a disabled-but-still-in-edit-mode Key Ring would leave a
-			-- dangling, still-interactable drag/scroll hitbox floating where
-			-- the (now invisible) button used to be.
+			-- EnsureContainerOverlay's overlay is parented to UIParent, not
+			-- `frame`, so hiding the real frame doesn't implicitly hide the
+			-- overlay too - done explicitly here or a disabled-but-still-
+			-- in-edit-mode Key Ring would leave a dangling, interactable
+			-- drag/scroll hitbox floating where the (now invisible) button
+			-- used to be.
 			if frame.btvOverlay then
 				frame.btvOverlay:Hide()
 				frame.btvOverlay:EnableMouse(false)
@@ -3710,12 +3023,12 @@ function BTV:ResetKeyRingPosition()
 		self:ApplyKeyRingPosition()
 	end
 
-	-- Scale (bug-fix batch round 2, Issue B): folded into this same reset
-	-- entry point rather than a separate ResetKeyRingScale - every existing
-	-- caller of ResetKeyRingPosition (Settings.lua's bagbar page reset
-	-- button and its "Use Default Blizzard Layout" re-enable flow) expects
-	-- one call to fully restore Key Ring to its native/default state,
-	-- mirroring ResetLatencyBarLayout's own position+scale bundling.
+	-- Scale is folded into this same reset entry point rather than a
+	-- separate ResetKeyRingScale - every caller of ResetKeyRingPosition
+	-- (Settings.lua's bagbar page reset button and its "Use Default
+	-- Blizzard Layout" re-enable flow) expects one call to fully restore
+	-- Key Ring to its native/default state, mirroring
+	-- ResetLatencyBarLayout's own position+scale bundling.
 	self:SetKeyRingScale(1)
 end
 
@@ -3781,7 +3094,7 @@ function BTV:StopKeyRingDrag()
 end
 
 -------------------------------------------------------------------------
--- Latency Bar (bug-fix batch Fix 3)
+-- Latency Bar
 --
 -- MainMenuBarPerformanceBarFrame - confirmed real vanilla 1.12.1 frame
 -- name - is a single self-contained frame (background texture + a hover-
@@ -3838,11 +3151,10 @@ end
 
 -- Applies BTVanillaDB.latencyBarPosition to the real frame, and ensures
 -- its drag/right-click overlay exists - mirrors BTV:ApplyKeyRingPosition
--- above exactly, just against MainMenuBarPerformanceBarFrame instead of
--- KeyRingButton (EnsureContainerOverlay is equally generic over either).
--- Issue 2 (bug-fix batch round 4): same "always build the overlay, only
--- conditionally apply the captured position" restructuring as
--- ApplyKeyRingPosition above, for the same reason.
+-- above, just against MainMenuBarPerformanceBarFrame instead of
+-- KeyRingButton (EnsureContainerOverlay is equally generic over either),
+-- including the same "always build the overlay, only conditionally apply
+-- the captured position" structure.
 function BTV:ApplyLatencyBarPosition()
 	self:CaptureLatencyBarPositionIfNeeded()
 
@@ -3898,11 +3210,7 @@ function BTV:SetLatencyBarEnabled(enabled)
 		else
 			frame:Hide()
 
-			-- Bug-fix batch round 6: same explicit-hide requirement as
-			-- SetKeyRingEnabled above, now that EnsureContainerOverlay's
-			-- overlay is parented to UIParent instead of `frame` (see its
-			-- own updated comment) and no longer auto-hides via parent
-			-- cascade.
+			-- Same explicit-hide requirement as SetKeyRingEnabled above.
 			if frame.btvOverlay then
 				frame.btvOverlay:Hide()
 				frame.btvOverlay:EnableMouse(false)
@@ -3998,47 +3306,38 @@ function BTV:StopLatencyBarDrag()
 end
 
 -------------------------------------------------------------------------
--- Experience Bar (round 16 part 2, Part A)
+-- Experience Bar
 --
--- MainMenuExpBar - the well-established real vanilla 1.12.1 FrameXML name
--- for the player's XP bar (a StatusBar) - is structurally the same KIND of
--- element as MainMenuBarPerformanceBarFrame above: a single self-contained
--- real Blizzard frame whose own child regions/frames (MainMenuBarOverlayFrame
--- - itself owning the native "XP current / max" FontString, see
--- BTV:GetNativeExpOverlayText further below -, ExhaustionLevelFillBar/
--- ExhaustionTick/ExhaustionTickGlow for the "rested" shaded portion) are all
--- anchored RELATIVE TO IT, not
+-- MainMenuExpBar - the real vanilla 1.12.1 FrameXML name for the
+-- player's XP bar (a StatusBar) - is structurally the same kind of
+-- element as MainMenuBarPerformanceBarFrame above: a single self-
+-- contained real Blizzard frame whose own child regions/frames
+-- (MainMenuBarOverlayFrame - itself owning the native "XP current / max"
+-- FontString, see BTV:GetNativeExpOverlayText further below -,
+-- ExhaustionLevelFillBar/ExhaustionTick/ExhaustionTickGlow for the
+-- "rested" shaded portion) are all anchored relative to it, not
 -- independently to UIParent - so repositioning/scaling this one frame
 -- carries its whole native visual along, exactly like the Latency Bar.
--- MainMenuExpBar/MainMenuBarOverlayFrame/ExhaustionLevelFillBar are all now
--- live-confirmed present on this client (rounds 19-21's own diagnostic
--- sessions, referenced by name below) - unlike the Page Indicator section
--- further below, this is no longer an open UNCONFIRMED-name question.
--- Every accessor is still defensively nil-checked via getglobal regardless,
--- so a name that ever turns out wrong on some other client build just means
--- this container never builds (degrades exactly like a failed Bag Bar/Micro
+--
+-- Every accessor is defensively nil-checked via getglobal, so a name
+-- that ever turns out wrong on some other client build just means this
+-- container never builds (degrades exactly like a failed Bag Bar/Micro
 -- Menu discovery), never a hard error.
 --
 -- Movable/scalable via the same single-real-frame EnsureContainerOverlay
--- treatment as the Latency Bar/Key Ring, ALWAYS - independent of
--- BTVanillaDB.betterExpBarEnabled (Part B's text overlay, further below):
--- this container's own position/scale is unaffected by whether that text
--- is on or off, per this feature's own spec.
+-- treatment as the Latency Bar/Key Ring, always - independent of
+-- BTVanillaDB.betterExpBarEnabled (the text overlay further below): this
+-- container's own position/scale is unaffected by whether that text is
+-- on or off.
 -------------------------------------------------------------------------
 
 BTV.EXP_BAR_FRAME_NAME = "MainMenuExpBar"
 
--- Round 21 fix: the native percent-of-level "XP current / max" label that
--- duplicates/overlaps BTV:ApplyBetterExpBarVisual's own text overlay is NOT
--- a frame named MainMenuExpText - the user live-confirmed via
--- `/run print(MainMenuExpText, getglobal("MainMenuExpText"))` that this
--- global does not exist at all on this client, meaning rounds 17-18's
--- entire hide/restore mechanism against it silently did nothing for two
--- full rounds (the actual duplication bug this was meant to fix). The
--- user's own follow-up region enumeration found the real source instead:
--- MainMenuBarOverlayFrame - a real child frame of MainMenuExpBar - owns a
--- FontString region directly (confirmed live: `overlay 1 XP 1962 / 2800`)
--- that Blizzard's own FrameXML uses to draw this exact label. See
+-- The native percent-of-level "XP current / max" label that
+-- duplicates/overlaps BTV:ApplyBetterExpBarVisual's own text overlay
+-- lives on a FontString region owned directly by MainMenuBarOverlayFrame
+-- (a real child frame of MainMenuExpBar), not a separately-named global -
+-- there is no MainMenuExpText global on this client. See
 -- BTV:GetNativeExpOverlayText below, which resolves and caches that
 -- FontString region (found by GetObjectType(), never a hardcoded region
 -- index - GetRegions() ordering is that frame's own internal creation
@@ -4077,32 +3376,22 @@ function BTV:GetNativeExpOverlayText()
 	return nil
 end
 
--- Round 17 item 3: real vanilla FrameXML name for the native "how far the
--- rested bonus would carry the player" blue overlay - a region directly on
--- MainMenuExpBar. Round 19 fix: live-confirmed via the user's own /run
--- diagnostics (GetObjectType()) that this is a Texture, NOT a StatusBar -
--- its color comes from a solid-color fill (GetTexture() returns "Solid
--- Texture"), not a file-based bar texture. SetStatusBarColor/
--- GetStatusBarColor (StatusBar-only methods) therefore never had any
--- effect on it - this was the confirmed root cause of the non-functional
--- rested-XP color picker. SetVertexColor/GetVertexColor (the correct
--- Texture-region API) is used instead below. Every accessor that uses this
--- name is still defensively nil/method-checked via getglobal, so a wrong/
--- missing name just means the rested-color picker silently has nothing to
--- apply to, never a hard error.
+-- Real vanilla FrameXML name for the native "how far the rested bonus
+-- would carry the player" blue overlay - a region directly on
+-- MainMenuExpBar. It's a Texture with a solid-color fill (GetTexture()
+-- returns "Solid Texture"), not a StatusBar, so SetVertexColor/
+-- GetVertexColor (not SetStatusBarColor/GetStatusBarColor) is the
+-- correct color API for it. Every accessor that uses this name is
+-- defensively nil/method-checked via getglobal, so a wrong/missing name
+-- just means the rested-color picker silently has nothing to apply to.
 BTV.EXP_RESTED_FRAME_NAME = "ExhaustionLevelFillBar"
 
 -- Mirrors CaptureLatencyBarPositionIfNeeded/CaptureKeyRingPositionIfNeeded
--- structurally, but - unlike those two (real vanilla SIBLINGS of
--- MainMenuBarArtFrame, not MainMenuBar descendants, which have never shown
--- this symptom) - ADDS the real-screen-pixel GetEffectiveScale conversion
--- Core.lua's CaptureNativeAnchor uses for ActionButton1: MainMenuExpBar is
--- part of that same MainMenuBar cluster, which live-testing already proved
--- CAN have a different effective scale than UIParent (a ~1.4246x live-
--- confirmed mismatch - see CaptureNativeAnchor's own comment for the full
--- derivation). Reusing that exact conversion here guards this element
--- against the same class of bug rather than reintroducing the old
--- unconverted capture for a MainMenuBar-family frame.
+-- structurally, but adds the real-screen-pixel GetEffectiveScale
+-- conversion Core.lua's CaptureNativeAnchor uses: MainMenuExpBar is part
+-- of the MainMenuBar cluster, which can have a different effective scale
+-- than UIParent, so an unconverted capture would be wrong by that scale
+-- factor.
 function BTV:CaptureExpBarPositionIfNeeded()
 	self:EnsureDB()
 
@@ -4155,75 +3444,41 @@ function BTV:CaptureExpBarPositionIfNeeded()
 	end
 end
 
--- Round 17 item added a permanent flat-black EnsureExpBarBottomCap overlay
--- here, on the theory that MainMenuExpBar has no bottom-edge art of its own
--- once dragged away from MainMenuBarArtFrame's one fixed native position.
--- Round 19 REMOVED it: the user's live region enumeration on MainMenuExpBar
--- confirmed MainMenuXPBarTexture0-3 (the race-themed border/end-cap art,
--- e.g. "Interface\MainMenuBar\UI-MainMenuBar-Dwarf") are real Texture
--- REGIONS owned directly BY MainMenuExpBar itself, not by MainMenuBarArtFrame
--- - regions always render relative to and move/scale with their owning
--- frame automatically, so this native art already correctly follows
--- MainMenuExpBar to wherever this container repositions/rescales it.
+-- MainMenuXPBarTexture0-3 (the native race-themed border/end-cap art) are
+-- real Texture regions owned directly by MainMenuExpBar, not
+-- MainMenuBarArtFrame - they already follow MainMenuExpBar automatically
+-- when this container repositions/rescales it.
 --
--- Round 20 found the real bug the flat cap had accidentally been masking:
--- a live GetPoint()/GetWidth()/GetHeight() dump of MainMenuXPBarTexture0-3
--- showed each piece anchors its own "BOTTOM" point to MainMenuExpBar's
--- "BOTTOM" point at y=+3 - so each piece's vertical span is y=+3 (its own
--- bottom edge) to y=+13 (its own top edge), relative to MainMenuExpBar's
--- TRUE bottom edge at y=0. That leaves the real y=0-to-+3 strip of the
--- frame permanently uncovered by ANY native texture - a thin gap that was
--- only ever invisible because MainMenuBarArtFrame's own art used to sit
--- directly beneath it at the bar's one fixed native screen position.
+-- Those pieces anchor their own "BOTTOM" point to MainMenuExpBar's
+-- "BOTTOM" point at y=+3, leaving the real y=0-to-+3 strip of the frame
+-- permanently uncovered by any native texture - only ever invisible
+-- because MainMenuBarArtFrame's own art used to sit directly beneath it
+-- at the bar's one fixed native screen position.
 --
--- Round 20's fix (EnsureExpBarBottomBorderExtension, REMOVED round 22) had
--- tried to clone MainMenuXPBarTexture0-3 downward, copying their real
--- GetTexCoord() sub-rectangle of the shared "UI-MainMenuBar-Dwarf" atlas
--- file. Live testing showed this rendering as an unintended crop of that
--- shared atlas image - described by the user as looking like "another
--- whole experience bar" duplicated below the real one - most likely
--- because the tex-coord copy silently failed or didn't mean what this
--- addon assumed for an atlas-packed texture. Round 22 replaced it with a
--- simple, universal, custom-built gradient strip instead (not tied to any
--- race's specific border art).
---
--- Round 27 retried the native-clone technique a second time (gradient strip
--- removed outright for that retry), on the theory that drawing on the wrong
--- layer and a silently-failed GetTexCoord() call were round 20's real root
--- causes.
---
--- Round 29: the user live-tested round 27's retry and confirmed it rendered
--- "completely distorted" - visibly worse than BOTH the original gradient
--- AND round 20's own "duplicate bar" failure. Per explicit owner direction
--- this reverts to the gradient strip below, and the native-clone technique
--- (cloning MainMenuXPBarTexture0-3's texture/GetTexCoord()) is now
--- abandoned outright for this element - two independent live-tested
--- failures (round 20, round 27) is enough evidence that atlas-cloning
--- doesn't work as this addon assumes on this client; do not retry a third
--- time without materially new information.
+-- Covered by a custom-built gradient strip below rather than cloning the
+-- native border texture - cloning MainMenuXPBarTexture0-3's
+-- texture/GetTexCoord() has failed twice (rendered as a duplicated bar,
+-- then as visibly distorted); do not retry that technique without
+-- materially new information.
 local function EnsureExpBarBottomBorderStrip(frame)
 	if frame.btvBottomBorderStrip then
 		return frame.btvBottomBorderStrip
 	end
 
-	-- "OVERLAY": must render on top of the bar's own StatusBar fill (round
-	-- 23 item 2's own confirmed-correct reasoning for this element,
-	-- unchanged by this revert) - the bar's native fill texture layer sits
-	-- below OVERLAY, so drawing here keeps the strip visible over a full
-	-- or near-full bar instead of being painted over by the fill.
+	-- "OVERLAY": must render on top of the bar's own StatusBar fill - the
+	-- bar's native fill texture layer sits below OVERLAY, so drawing here
+	-- keeps the strip visible over a full or near-full bar instead of
+	-- being painted over by the fill.
 	local strip = frame:CreateTexture(nil, "OVERLAY")
 	strip:SetTexture("Interface\\Buttons\\WHITE8X8")
 
 	-- BOTTOMLEFT/BOTTOMRIGHT dual anchor: pins the strip to exactly the
 	-- bar's own current width and bottom edge, auto-tracking any width
 	-- change (grid/layout edits) or BTV:SetExpBarScale rescale without
-	-- this function needing to be re-run on every such change. A fixed
-	-- height with only the bottom two corners anchored grows the texture
-	-- upward from the bar's true bottom edge (y=0) - 4 units safely
-	-- overshoots the confirmed 3-unit-tall y=0-to-+3 native gap (round 20's
-	-- own GetPoint()/GetWidth()/GetHeight() dump of MainMenuXPBarTexture0-3,
-	-- still the correct measurement - this revert only changes HOW the gap
-	-- is covered, not the gap's own confirmed size/location).
+	-- this function needing to be re-run. A fixed height with only the
+	-- bottom two corners anchored grows the texture upward from the bar's
+	-- true bottom edge (y=0) - 4 units safely overshoots the 3-unit-tall
+	-- y=0-to-+3 native gap.
 	strip:SetPoint("BOTTOMLEFT", frame, "BOTTOMLEFT", 0, 0)
 	strip:SetPoint("BOTTOMRIGHT", frame, "BOTTOMRIGHT", 0, 0)
 	strip:SetHeight(4)
@@ -4304,18 +3559,14 @@ function BTV:SetExpBarEnabled(enabled)
 		if enabled then
 			frame:Show()
 
-			-- Round 25 item 2: reverses the disable-branch's explicit
+			-- Reverses the disable-branch's explicit
 			-- frame.btvTextOverlay:Hide() below - unlike frame.btvOverlay
-			-- (an edit-mode-only overlay, whose own visibility is otherwise
-			-- entirely re-derived from ApplyContainerOverlayVisual on the
-			-- next edit-mode sweep regardless of what this branch does),
-			-- the text overlay is NOT edit-mode-gated - nothing else in
-			-- this file would ever re-Show it on its own, so it must be
-			-- re-shown here explicitly or the text would stay invisible
-			-- forever after a disable/re-enable cycle even though its own
-			-- FontString child's Show/Hide state (ApplyBetterExpBarVisual)
-			-- is unaffected by any of this - a Show()'d child inside a
-			-- still-Hidden parent still doesn't render.
+			-- (an edit-mode-only overlay, re-derived from
+			-- ApplyContainerOverlayVisual on the next edit-mode sweep
+			-- regardless), the text overlay is not edit-mode-gated -
+			-- nothing else in this file would ever re-Show it on its own,
+			-- so it must be re-shown here explicitly or the text would
+			-- stay invisible forever after a disable/re-enable cycle.
 			if frame.btvTextOverlay then
 				frame.btvTextOverlay:Show()
 			end
@@ -4331,13 +3582,12 @@ function BTV:SetExpBarEnabled(enabled)
 				frame.btvOverlay:EnableMouse(false)
 			end
 
-			-- Round 25 item 2: same cascade problem, same fix, for the
-			-- "Better Experience Bar" text's own overlay frame
-			-- (EnsureExpBarTextOverlay, further below) - it's ALSO parented
-			-- to UIParent (not `frame`) for the exact same HIGH-strata
-			-- reason EnsureContainerOverlay's overlay is, so without this it
-			-- would keep floating on screen at MainMenuExpBar's last tracked
-			-- position even after the Experience Bar itself is disabled.
+			-- Same cascade problem, same fix, for the "Better Experience
+			-- Bar" text's own overlay frame (EnsureExpBarTextOverlay,
+			-- further below) - it's also parented to UIParent (not
+			-- `frame`), so without this it would keep floating on screen
+			-- at MainMenuExpBar's last tracked position even after the
+			-- Experience Bar itself is disabled.
 			if frame.btvTextOverlay then
 				frame.btvTextOverlay:Hide()
 			end
@@ -4432,7 +3682,7 @@ function BTV:StopExpBarDrag()
 end
 
 -------------------------------------------------------------------------
--- Bar-fill colors (round 17 item 3; fixed round 19)
+-- Bar-fill colors
 --
 -- MainMenuExpBar's own StatusBar fill (the earned-XP progress, a purple/
 -- violet in real vanilla) and ExhaustionLevelFillBar's own solid-color-fill
@@ -4445,12 +3695,11 @@ end
 -- EnsureDB, since neither GetStatusBarColor() nor GetVertexColor() returns
 -- meaningful values until these frames actually exist.
 --
--- Round 19 fix: ExhaustionLevelFillBar is confirmed live (GetObjectType())
--- to be a Texture region, not a StatusBar - see EXP_RESTED_FRAME_NAME's own
--- comment above for the full finding. Every read/write against it below
--- uses SetVertexColor/GetVertexColor accordingly; MainMenuExpBar itself is
--- untouched (already confirmed working via SetStatusBarColor/
--- GetStatusBarColor, since it IS a real StatusBar).
+-- ExhaustionLevelFillBar is a Texture region, not a StatusBar - see
+-- EXP_RESTED_FRAME_NAME's own comment above. Every read/write against it
+-- below uses SetVertexColor/GetVertexColor accordingly; MainMenuExpBar
+-- itself uses SetStatusBarColor/GetStatusBarColor, since it is a real
+-- StatusBar.
 -------------------------------------------------------------------------
 
 function BTV:CaptureExpBarColorsIfNeeded()
@@ -4464,11 +3713,8 @@ function BTV:CaptureExpBarColorsIfNeeded()
 			r, g, b = frame:GetStatusBarColor()
 		end
 
-		-- Fallback: a reasonable vanilla-matching purple/violet, only ever
-		-- used if the live frame isn't available yet at capture time - see
-		-- this feature's own task report flagging that the true native
-		-- default should still be confirmed via a live GetStatusBarColor()
-		-- check.
+		-- Fallback: a reasonable vanilla-matching purple/violet, only used
+		-- if the live frame isn't available yet at capture time.
 		BTVanillaDB.expBarColorEarned = {
 			r = r or 0.58,
 			g = g or 0.0,
@@ -4510,45 +3756,23 @@ function BTV:CaptureExpBarColorsIfNeeded()
 	end
 end
 
--- Round 18 Bug 1 fix (CRITICAL REGRESSION): this used to be called
--- unconditionally from Core.lua's login sequence and unconditionally
--- applied whatever was captured/fell back to, regardless of
--- BTVanillaDB.betterExpBarEnabled - meaning EVERY user's native XP bar got
--- recolored on every login, even with the "Better Experience Bar" feature
--- fully off (the default). Live-confirmed symptom: the native translucent
--- rested-XP overlay went completely invisible for a tester who never
--- touched this feature at all. CaptureExpBarColorsIfNeeded is still called
--- unconditionally (it only READS the live frames to populate
--- BTVanillaDB.expBarColorEarned/Rested for the Settings page's swatch
--- preview - see Settings.lua's RefreshSimpleBarPage comment - it never
--- writes to the frame itself, so it's harmless regardless of the toggle).
+-- CaptureExpBarColorsIfNeeded is always called unconditionally - it only
+-- reads the live frames to populate BTVanillaDB.expBarColorEarned/Rested
+-- for the Settings page's swatch preview, never writes to the frame
+-- itself, so it's harmless regardless of the toggle.
 --
--- Round 22 item 4 fix (bug): the "when the feature is off, never touch
--- the frame at all" gate above used to be a plain early-return, which
--- correctly kept a FRESH login native (never applying a custom color
--- before the user ever opts in), but did NOT correctly handle turning the
--- feature back OFF mid-session after a custom color had already been
--- applied - the plain return simply left whatever was last applied in
--- place, so the bar stayed custom-colored even with the feature
--- unchecked. Fixed by making the off-branch an explicit REVERT to the
+-- When the feature is off, this explicitly reverts both frames to their
 -- captured native baseline (BTVanillaDB.expBarNativeColorEarned/
--- expBarNativeColorRested, the same permanent pristine snapshot
--- BTV:ResetExpBarColors already uses) via the same SetStatusBarColor/
--- SetVertexColor calls used in the on-branch below, rather than a no-op -
--- this is a stronger invariant than "never touch it" ("always exactly
--- native when off," which also correctly covers this revert case) and
--- degrades to the exact same harmless behavior on a fresh login (setting
--- the frame to the same native value CaptureExpBarColorsIfNeeded just
--- read off it a line above - a visual no-op, same reasoning as
--- BTV:ApplyLatencyBarPosition's own "first call simply reasserts the
--- frame exactly where it already natively is" comment, Core.lua). Called
--- from: Core.lua's login sequence, the color-picker's live-preview
--- func/cancelFunc (SetExpBarColorEarned/SetExpBarColorRested), the
--- "Reset Colors to Default" button (ResetExpBarColors), and the "Enable
--- Better Experience Bar" checkbox's own OnClick (Settings.lua) - every one
--- of those is safe to call unconditionally, since this function itself is
--- the single choke point that decides whether anything actually happens
--- and which color it ends up applying.
+-- expBarNativeColorRested) rather than leaving them untouched, so
+-- turning the feature off mid-session after a custom color was applied
+-- actually restores the native color rather than just skipping future
+-- changes.
+--
+-- Called from Core.lua's login sequence, the color-picker's live-preview
+-- func/cancelFunc, the "Reset Colors to Default" button, and the "Enable
+-- Better Experience Bar" checkbox's OnClick - safe to call
+-- unconditionally from all of them, since this function is the single
+-- choke point deciding whether anything happens and which color applies.
 function BTV:ApplyExpBarColors()
 	self:CaptureExpBarColorsIfNeeded()
 
@@ -4569,11 +3793,9 @@ function BTV:ApplyExpBarColors()
 			restedFrame:SetVertexColor(nativeRested.r, nativeRested.g, nativeRested.b)
 		end
 
-		-- Round 23 item 1: our own custom rested-XP overlay (below) reuses
-		-- this exact same expBarColorRested field, and must be kept in sync
-		-- with every color change/revert this function handles - see that
-		-- function's own header comment for why it exists alongside the
-		-- (still native, still recolored here) ExhaustionLevelFillBar.
+		-- The custom rested-XP overlay (below) reuses this same
+		-- expBarColorRested field, and must be kept in sync with every
+		-- color change/revert this function handles.
 		self:ApplyExpBarRestedOverlay()
 
 		return
@@ -4641,19 +3863,17 @@ function BTV:ResetExpBarColors()
 end
 
 -------------------------------------------------------------------------
--- Custom rested-XP overlay (round 23 item 1)
+-- Custom rested-XP overlay
 --
--- Replaces reliance on ExhaustionLevelFillBar's own native WIDTH for the
--- visible rested-XP indicator - BTV:ApplyExpBarColors above still recolors
--- that native Texture (harmless, left in place) but live testing found its
+-- Replaces reliance on ExhaustionLevelFillBar's own native width for the
+-- visible rested-XP indicator - BTV:ApplyExpBarColors above still
+-- recolors that native Texture (harmless, left in place) but its
 -- width - computed entirely by native Blizzard code this addon has no
--- access to - degenerates to ~8 units wide specifically whenever
--- UnitXP("player") + GetXPExhaustion() exceeds UnitXPMax("player"), a
--- routine state (a large banked rested pool) live-confirmed via the user's
--- own values: UnitXP=1962, UnitXPMax=2800, GetXPExhaustion()=3150 (sum
--- 5112, far over max) rendering an ~8-unit-wide native element. Since the
--- WIDTH itself is native-computed, this can't be fixed by recoloring - a
--- separate custom Texture region is drawn on top instead.
+-- access to - degenerates to ~8 units wide whenever
+-- UnitXP("player") + GetXPExhaustion() exceeds UnitXPMax("player") (a
+-- large banked rested pool). Since the width itself is native-computed,
+-- this can't be fixed by recoloring - a separate custom Texture region
+-- is drawn on top instead.
 --
 -- Formula ported verbatim from BEB/BEB.lua's own
 -- BEB.UpdateElement("BEBRestedXpBar")/"BEBXpBar" branches (read directly,
@@ -4662,21 +3882,15 @@ end
 -- already handles the exceeds-max case correctly (fills the entire bar
 -- remainder instead of the native element's broken ~8-unit width).
 --
--- Gated on BOTH BTVanillaDB.betterExpBarEnabled AND GetRestState() == 1
--- (real vanilla API; confirmed via BEB/TextVars.lua's own "$rst"/"$res"
--- entries - 1 means "currently resting," e.g. in a city/inn, gaining the
--- rested bonus) - matching BEB's own BEBRestedXpBar branch exactly, so
+-- Gated on both BTVanillaDB.betterExpBarEnabled and GetRestState() == 1
+-- (real vanilla API - 1 means "currently resting," e.g. in a city/inn,
+-- gaining the rested bonus), matching BEB's own BEBRestedXpBar branch, so
 -- this overlay only ever shows in the same circumstances BEB's reference
 -- implementation would show its own. When the feature is off this stays
--- hidden and the bar looks 100% native, per this feature's own spec - the
--- native ExhaustionLevelFillBar element itself is untouched by this
--- section (see BTV:ApplyExpBarColors above, unchanged).
+-- hidden and the bar looks fully native - the native ExhaustionLevelFillBar
+-- element itself is untouched by this section (see BTV:ApplyExpBarColors
+-- above).
 --
--- Round 25 item 1 added a boundary tick marker (EnsureExpBarRestedTick,
--- further below) at the exact x-coordinate this overlay's own width
--- calculation already resolves as its right edge - see that function's own
--- header comment for why this is deliberately a simple procedural marker
--- rather than a port of BEB's own multi-level-crossing tick logic/art.
 -------------------------------------------------------------------------
 
 local function EnsureExpBarRestedOverlay(frame)
@@ -4684,12 +3898,10 @@ local function EnsureExpBarRestedOverlay(frame)
 		return frame.btvRestedOverlay
 	end
 
-	-- "ARTWORK": above whatever layer MainMenuExpBar's own native StatusBar
-	-- fill texture renders on (the exact "renders above the fill" reasoning
-	-- behind EnsureExpBarBottomBorderStrip's own round 23 item 2 fix, just
-	-- one tier lower so BTV:ApplyBetterExpBarVisual's own text FontString -
-	-- created on "OVERLAY" further below - always stays on top of this
-	-- overlay's fill instead of being obscured by it).
+	-- "ARTWORK": renders above MainMenuExpBar's own native StatusBar fill
+	-- texture, one tier below "OVERLAY" so BTV:ApplyBetterExpBarVisual's
+	-- own text FontString (created on "OVERLAY" further below) always
+	-- stays on top of this overlay's fill instead of being obscured by it.
 	local tex = frame:CreateTexture(nil, "ARTWORK")
 	tex:SetTexture("Interface\\Buttons\\WHITE8X8")
 
@@ -4698,40 +3910,31 @@ local function EnsureExpBarRestedOverlay(frame)
 	return tex
 end
 
--- Round 26: rested-XP boundary tick - full BEB parity, replacing round 25
--- item 1's simplified procedural marker outright (removed - the two
--- WHITE8X8-based textures/comments that used to live here are gone, not
--- kept as dead/parallel code). Per explicit owner direction this now ports
--- BOTH BEB's own custom art (BEB/BEB-ExhaustionTicks.tga and
--- BEB/BEB-ExhaustionTicksGlow.tga, copied verbatim into this addon's own
--- Textures/ folder - see BEB_TICK_TEXTURE/BEB_TICK_GLOW_TEXTURE below) AND
--- its real multi-level-crossing position/texcoord logic (BTV:
--- ApplyExpBarRestedOverlay's tick block further below, ported from
--- BEB/BEB.lua's own BEB.UpdateElement "BEBRestedXpTick"/
--- "BEBRestedXpTickGlow" branches, read directly from that file) - not a
--- simplified stand-in.
+-- Rested-XP boundary tick: ports both BEB's own custom art
+-- (BEB/BEB-ExhaustionTicks.tga and BEB/BEB-ExhaustionTicksGlow.tga,
+-- copied verbatim into this addon's own Textures/ folder - see
+-- BEB_TICK_TEXTURE/BEB_TICK_GLOW_TEXTURE below) and its real multi-
+-- level-crossing position/texcoord logic (the tick block in
+-- BTV:ApplyExpBarRestedOverlay further below, ported from BEB/BEB.lua's
+-- own BEB.UpdateElement "BEBRestedXpTick"/"BEBRestedXpTickGlow" branches).
 --
--- BEB.TexturePath (BEB/BEB.lua) resolves its own texture names against
--- "Interface\AddOns\BEB\Textures\" - confirming the Textures/ subfolder
--- copies (not the duplicate root-level .tga files also present in BEB/)
--- are the ones BEB's own code path actually loads, which is why those are
--- the ones copied here too.
+-- BEB.TexturePath resolves its own texture names against
+-- "Interface\AddOns\BEB\Textures\" - the Textures/ subfolder copies (not
+-- the duplicate root-level .tga files also present in BEB/) are the ones
+-- BEB's own code path actually loads, which is why those are the ones
+-- copied here too.
 --
--- Both are real Texture regions (not full child Frames the way BEB's own
--- BEBRestedXpTick/BEBRestedXpTickGlow are - BEB.SetupElement's frame-level
--- based ordering has no equivalent need here, a plain Texture works fine
--- since both are already parented to `frame`/MainMenuExpBar) using draw
--- layers to reproduce BEB's own real frame-level ordering: BEB's defaults
--- (BEB/BEB.lua Initialize, "< 0.82" migration) set
--- BEBCharSettings.BEBRestedXpTick.level = 9 and
--- BEBRestedXpTickGlow.level = 10, both "HIGH" strata - i.e. the glow
--- renders ON TOP of the tick, not behind it. "ARTWORK" (tick) below
--- "OVERLAY" (glow) reproduces that same relative order.
+-- Both are plain Texture regions (not child Frames the way BEB's own
+-- BEBRestedXpTick/BEBRestedXpTickGlow are - both are already parented to
+-- `frame`/MainMenuExpBar, so no frame-level ordering is needed) using
+-- draw layers to reproduce BEB's own frame-level ordering: the glow
+-- renders on top of the tick. "ARTWORK" (tick) below "OVERLAY" (glow)
+-- reproduces that same relative order.
+
 -- BEB/BEB.lua's own BEB.XpPerLvl table, ported verbatim (same literal
 -- values, same index-by-level meaning: index N is the XP required to go
--- from level N to level N+1) - read directly from BEB/BEB.lua rather than
--- retyped from memory, since BTV:ApplyExpBarRestedOverlay's own ported
--- tick-position formula below indexes this exactly the way BEB's own
+-- from level N to level N+1) - BTV:ApplyExpBarRestedOverlay's own tick-
+-- position formula below indexes this the same way BEB's own
 -- BEB.UpdateElement("BEBRestedXpTick") does.
 BTV.XP_PER_LEVEL = {
 	400, 900, 1400, 2100, 2800, 3600, 4400, 5400, 6500, 7600,
@@ -4742,14 +3945,10 @@ BTV.XP_PER_LEVEL = {
 	153900, 160400, 167100, 173900, 180800, 187900, 195000, 202300, 209800, 217400,
 }
 
--- Round 27 fix 1: the addon's real installed folder name is "BTVanilla"
--- (confirmed live - GetAddOnMetadata("TrustyBars", "Title") returns nil,
--- and the actual .toc in this repo is BTVanilla.toc, matching every
--- "[BTVanilla]" chat prefix this addon has ever printed) - "TrustyBars" is
--- only the local dev repo/project folder's own name, never the in-game
--- AddOns folder these SetTexture paths need to resolve against. The
--- Textures/ subfolder itself is correctly named/located on disk already;
--- only this path STRING was wrong.
+-- The addon's real installed folder name is "BTVanilla" (the .toc in
+-- this repo is BTVanilla.toc), not "TrustyBars" (only the dev repo/
+-- project folder's own name) - these SetTexture paths must resolve
+-- against the in-game AddOns folder name.
 local BEB_TICK_TEXTURE = "Interface\\AddOns\\BTVanilla\\Textures\\BEB-ExhaustionTicks"
 local BEB_TICK_GLOW_TEXTURE = "Interface\\AddOns\\BTVanilla\\Textures\\BEB-ExhaustionTicksGlow"
 
@@ -4788,35 +3987,27 @@ local function EnsureExpBarRestedTick(frame)
 	return tick, glow
 end
 
--- Round 29 item 2: rested-XP tick glow pulse. BEB's own source (BEB/BEB.lua,
--- read directly, in full) has NO scripted fade/alpha-animation logic
--- anywhere for BEBRestedXpTickGlow - the "pulsing" the user observes on real
--- BEB isn't something BEB itself scripts, so this can't be ported from BEB's
--- code the way the tick/glow textures and position formula above were. This
--- is a fresh, standard vanilla-era looping alpha animation instead, driven
--- by C_Timer.NewTicker - the established periodic-update convention already
--- used in this codebase (Button.lua's rangeTicker, HoverBind.lua's
--- hoverBindTintTicker) - rather than a hand-rolled OnUpdate polling frame.
--- Only the glow's alpha is animated; the base tick texture itself is left
--- alone (stays at constant, non-animated visibility, per this feature's own
--- spec) - MainMenuExpBar is a single native frame with a single glow
--- texture, so one file-local ticker (not a per-button pool) is all this
--- ever needs.
+-- Rested-XP tick glow pulse: BEB's own source has no scripted
+-- fade/alpha-animation logic for BEBRestedXpTickGlow, so this is a fresh,
+-- standard vanilla-era looping alpha animation instead, driven by
+-- C_Timer.NewTicker (the same periodic-update convention used elsewhere
+-- in this codebase - Button.lua's rangeTicker, HoverBind.lua's
+-- hoverBindTintTicker) rather than a hand-rolled OnUpdate polling frame.
+-- Only the glow's alpha is animated; the base tick texture stays at
+-- constant visibility. MainMenuExpBar is a single native frame with a
+-- single glow texture, so one file-local ticker is all this needs.
 local EXP_BAR_RESTED_GLOW_PULSE_INTERVAL = 0.05
 local EXP_BAR_RESTED_GLOW_PULSE_LOW_ALPHA = 0.35
 local EXP_BAR_RESTED_GLOW_PULSE_HIGH_ALPHA = 1.0
 
--- Round 31 item 2: full fade-in/fade-out cycle, seconds - "roughly 1-2
--- seconds" per the user's own original description, now customizable via
--- Settings.lua's Experience Bar page Pulse Interval slider
+-- Full fade-in/fade-out cycle, seconds - customizable via Settings.lua's
+-- Experience Bar page Pulse Interval slider
 -- (BTVanillaDB.expBarGlowPulseInterval, BTV:SetExpBarGlowPulseInterval
--- below). This constant is now ONLY the fallback for a save file that
--- predates that field (Core.lua's EnsureDB seeds the DB field with this
--- exact same literal, so the fallback is otherwise never exercised) - the
--- ticker callback below reads the DB field fresh on every 0.05s tick rather
--- than baking a period into a closure upvalue at ticker-start time, so the
--- slider can change the running animation's speed live without needing to
--- Cancel()/restart the ticker.
+-- below). This constant is only the fallback for a save file that
+-- predates that field. The ticker callback below reads the DB field
+-- fresh on every tick rather than baking a period into a closure upvalue
+-- at ticker-start time, so the slider can change the running animation's
+-- speed live without needing to Cancel()/restart the ticker.
 local EXP_BAR_RESTED_GLOW_PULSE_PERIOD_DEFAULT = 1.5
 
 local expBarRestedGlowPulseTicker
@@ -4847,15 +4038,11 @@ local function StartExpBarRestedGlowPulse(glow)
 	expBarRestedGlowPulseTicker = C_Timer.NewTicker(EXP_BAR_RESTED_GLOW_PULSE_INTERVAL, function()
 		local elapsed = GetTime() - expBarRestedGlowPulseStartTime
 
-		-- Standard sine-wave time-based oscillation (Lua 5.0 confirms
-		-- math.sin/math.pi both present - the "no % operator" and other
-		-- Lua 5.0 gaps this codebase works around don't extend to the
-		-- standard math library). t sweeps 0..1..0 once per `period`
-		-- seconds - read fresh every tick (not captured once at ticker
-		-- start) so the Settings.lua slider's live writes to
+		-- Standard sine-wave time-based oscillation. t sweeps 0..1..0 once
+		-- per `period` seconds - read fresh every tick (not captured once
+		-- at ticker start) so the Settings.lua slider's live writes to
 		-- BTVanillaDB.expBarGlowPulseInterval take effect on the very next
-		-- tick, same round-31-item-2 reasoning as this section's own header
-		-- comment above.
+		-- tick.
 		local period = (BTVanillaDB and BTVanillaDB.expBarGlowPulseInterval)
 			or EXP_BAR_RESTED_GLOW_PULSE_PERIOD_DEFAULT
 
@@ -4867,12 +4054,11 @@ local function StartExpBarRestedGlowPulse(glow)
 	end)
 end
 
--- Called from: BTV:ApplyExpBarColors (color changes/reverts),
+-- Called from BTV:ApplyExpBarColors (color changes/reverts),
 -- BTV:ApplyBetterExpBarVisual (feature toggled on/off), and the
--- betterExpBarEventFrame OnEvent handler further below (PLAYER_XP_UPDATE/
--- UPDATE_EXHAUSTION/PLAYER_LEVEL_UP/PLAYER_UPDATE_RESTING) - every one of
--- those is safe to call unconditionally, mirroring BTV:ApplyExpBarColors'
--- own "single choke point" precedent (that function's header comment).
+-- betterExpBarEventFrame OnEvent handler further below - safe to call
+-- unconditionally from all of them, the same "single choke point" pattern
+-- as BTV:ApplyExpBarColors.
 function BTV:ApplyExpBarRestedOverlay()
 	self:EnsureDB()
 
@@ -4983,16 +4169,13 @@ function BTV:ApplyExpBarRestedOverlay()
 	tex:SetHeight(frame:GetHeight())
 	tex:Show()
 
-	-- Round 26: BEB parity - the tick's own position is NOT derived from the
-	-- rested-overlay fill's boundaryX above (that was round 25 item 1's own
-	-- simplification, now replaced). BEB/BEB.lua's own
-	-- BEB.UpdateElement("BEBRestedXpTick") computes an entirely independent
-	-- position formula that can represent progress INTO the next (or
-	-- next-next) level's own XP requirement, expressed as a fraction of the
-	-- SAME bar width - ported verbatim below, reusing this function's own
-	-- already-computed `scale`/`barWidth` (BEB.BEBScale/BEB.BEBMainWidth
-	-- equivalents) and `xp`/`exhaustion`/`xpMax` rather than recomputing any
-	-- of those independently.
+	-- The tick's own position is not derived from the rested-overlay
+	-- fill's boundaryX above. BEB/BEB.lua's own
+	-- BEB.UpdateElement("BEBRestedXpTick") computes an independent
+	-- position formula that can represent progress into the next (or
+	-- next-next) level's own XP requirement, expressed as a fraction of
+	-- the same bar width - ported verbatim below, reusing this function's
+	-- own already-computed scale/barWidth and xp/exhaustion/xpMax.
 	local level = UnitLevel and UnitLevel("player")
 
 	if not level or level < 1 or not BTV.XP_PER_LEVEL[1] then
@@ -5098,14 +4281,12 @@ function BTV:ApplyExpBarRestedOverlay()
 	-- which are already guaranteed true at this point in this function
 	-- (the early-return above already requires GetRestState() == 1, and
 	-- restState is always 1/2/3 here, never BEB's own "0" meaning hidden).
-	-- IsResting() (distinct from GetRestState()) reports whether the player
-	-- is CURRENTLY standing in a rest area (inn/city) right now, so this is
-	-- the one remaining real distinction: a player who banked rest XP but
-	-- has since left the inn keeps GetRestState() == 1 (the tick itself
-	-- stays visible) while IsResting() drops to nil/0 (the glow highlight
-	-- turns off) - confirmed real vanilla API per this addon's environment
-	-- doc (IsResting/GetRestState already confirmed reusable via BEB's own
-	-- proven usage on this client).
+	-- IsResting() (distinct from GetRestState()) reports whether the
+	-- player is currently standing in a rest area (inn/city) right now,
+	-- so this is the one remaining real distinction: a player who banked
+	-- rest XP but has since left the inn keeps GetRestState() == 1 (the
+	-- tick itself stays visible) while IsResting() drops to nil/0 (the
+	-- glow highlight turns off).
 	if IsResting and IsResting() == 1 then
 		glow:Show()
 		StartExpBarRestedGlowPulse(glow)
@@ -5116,8 +4297,7 @@ function BTV:ApplyExpBarRestedOverlay()
 end
 
 -------------------------------------------------------------------------
--- "Better Experience Bar" text overlay (round 16 part 2, Part B; heavily
--- expanded round 17 items 1/2/4)
+-- "Better Experience Bar" text overlay
 --
 -- Modeled on the BEB reference addon (BEB/TextVars.lua's own "$plv"/"$pdl"/
 -- "$prt"/"$rxp" variable formulas) rather than copied 1:1 - a single
@@ -5134,98 +4314,63 @@ end
 --
 -- Entirely independent of the Experience Bar container above
 -- (BTV:ApplyExpBarPosition/SetExpBarScale) - this text automatically
--- follows MainMenuExpBar's position/scale with no separate tracking needed
--- (see EnsureExpBarTextOverlay's own comment for exactly how, and why it's
--- no longer a plain region ON MainMenuExpBar itself).
+-- follows MainMenuExpBar's position/scale with no separate tracking
+-- needed (see EnsureExpBarTextOverlay's own comment for how).
 --
--- Round 25 item 2 fix: this FontString used to be created directly ON
--- MainMenuExpBar (`frame:CreateFontString(...)`) - a region of that frame,
--- which meant it inherited MainMenuExpBar's own cross-frame ordering
--- against MainMenuBarArtFrame (frame LEVEL governs ordering BETWEEN
--- frames; a region's own draw layer only orders regions WITHIN the same
--- frame - it has no say over a different frame's art rendering on top of
--- it). MainMenuExpBar is confirmed to sit at strata "MEDIUM" level 2 (see
--- ApplyBlizzardArtVisibility's own round-24 comment), strictly BELOW
--- MainMenuBarArtFrame's now-explicit level 5 within that same tier - so
--- this text was structurally unable to out-rank the art while it remained
--- a region of the bar itself, live-confirmed by the user (the fill/border
--- masking is correct, but the text got swallowed by the same art too, even
--- though only the FILL is supposed to be capped by native art - the text
--- is new information this addon adds, which should always stay legible).
--- Fixed by moving the FontString onto its own dedicated overlay FRAME
--- (EnsureExpBarTextOverlay below) at "HIGH" strata - this file's own
--- established Bag Bar/Micro Menu container precedent
--- (BuildChainAnchoredContainer's `SetFrameStrata("HIGH")`) for "must always
--- render above the art frame's MEDIUM tier" - which is a strictly more
--- robust separation than chasing another explicit frame LEVEL number
--- within the same MEDIUM tier the way MainMenuBarArtFrame's own round-24
--- fix does for the bar's fill/border (which, unlike this text, genuinely
--- does need to stay capped in that same MEDIUM tier).
+-- The FontString lives on its own dedicated overlay frame
+-- (EnsureExpBarTextOverlay below) at "HIGH" strata, rather than directly
+-- on MainMenuExpBar - a region's own draw layer only orders regions
+-- within the same frame, it has no say over a different frame's art
+-- (MainMenuBarArtFrame) rendering on top of it. MainMenuExpBar sits at
+-- strata "MEDIUM" level 2, strictly below MainMenuBarArtFrame's level 5
+-- within that same tier, so a region of the bar itself was structurally
+-- unable to out-rank the art. A dedicated "HIGH"-strata overlay frame
+-- (the same technique BuildChainAnchoredContainer uses for Bag Bar/Micro
+-- Menu) sidesteps that outright, rather than chasing another explicit
+-- frame level within the same MEDIUM tier.
 -------------------------------------------------------------------------
 
--- Round 25 item 2: dedicated overlay frame the "Better Experience Bar"
--- text FontString is now created on, instead of directly on MainMenuExpBar
--- - see this section's own header comment above for the full reasoning.
+-- Dedicated overlay frame the "Better Experience Bar" text FontString is
+-- created on - see this section's own header comment above.
 -- SetAllPoints(frame) means this overlay always exactly tracks
--- MainMenuExpBar's own position/size (wherever the Experience Bar
--- container above repositions/rescales it), the same "one real frame,
--- SetAllPoints-tracked" technique EnsureContainerOverlay already uses
--- elsewhere in this file for edit-mode drag overlays - unlike that overlay
+-- MainMenuExpBar's own position/size, the same "one real frame,
+-- SetAllPoints-tracked" technique EnsureContainerOverlay uses elsewhere
+-- in this file for edit-mode drag overlays - unlike that overlay
 -- (transient, edit-mode-only), this one has no texture of its own, only
 -- the text FontString as a child, whose own Show/Hide
--- (BTV:ApplyBetterExpBarVisual/UpdateBetterExpBarText) is what actually
--- controls the text's visibility session-to-session.
+-- (BTV:ApplyBetterExpBarVisual/UpdateBetterExpBarText) controls the
+-- text's visibility.
 --
--- This overlay's OWN Show/Hide only matters for one specific edge case:
--- EnsureContainerOverlay's own overlay is created already Hidden (its own
--- `overlay:Hide()` at the end) specifically so a freshly-created edit-mode
--- overlay is never accidentally visible before ApplyEditModeVisual/
--- ApplyContainerOverlayVisual first runs - mirrored here the same way,
--- keyed off the CURRENT BTVanillaDB.expBarEnabled rather than
--- unconditionally hidden: Core.lua's login sequence calls
--- BTV:SetExpBarEnabled BEFORE BTV:ApplyBetterExpBarVisual (the only call
--- site that lazily creates this overlay), so if the Experience Bar starts
--- disabled, SetExpBarEnabled's own frame.btvTextOverlay:Hide() call runs
--- against a still-nil field and can't do anything - this overlay would
--- otherwise default to CreateFrame's normal "shown" state and the text
--- would float on screen at MainMenuExpBar's last position even though the
--- bar itself is disabled. Reading the live flag here at creation time
--- (rather than a fixed Hide()) means whichever state is actually current
--- wins, matching what SetExpBarEnabled would have already set had this
--- overlay existed yet.
+-- This overlay's own Show/Hide only matters for one edge case: if the
+-- Experience Bar starts disabled, SetExpBarEnabled's own
+-- frame.btvTextOverlay:Hide() call runs before this overlay exists yet
+-- (it's created lazily by BTV:ApplyBetterExpBarVisual) and can't do
+-- anything - reading the live BTVanillaDB.expBarEnabled flag here at
+-- creation time avoids the text floating on screen at MainMenuExpBar's
+-- last position while the bar itself starts disabled.
 local function EnsureExpBarTextOverlay(frame)
 	if frame.btvTextOverlay then
 		return frame.btvTextOverlay
 	end
 
-	-- Round 27 fix 2: parented to `frame` (MainMenuExpBar) itself, not
-	-- UIParent. Live-confirmed scale-chain mismatch: this overlay's own
-	-- GetWidth()/GetHeight() (921.6 x 11.7) came out to exactly a 0.9x
-	-- ratio of MainMenuExpBar's (1024 x 13.0) despite SetAllPoints
-	-- visually aligning them and both frames reporting the same
-	-- GetEffectiveScale() - GetWidth()/GetHeight() report a frame's SIZE
-	-- in its OWN local coordinate units, and that only numerically matches
-	-- another frame's when both share the identical scale ancestry chain,
-	-- which UIParent-parented did not (MainMenuExpBar sits under
-	-- MainMenuBar/etc instead). Parenting directly to MainMenuExpBar puts
-	-- this overlay in the IDENTICAL ancestry, eliminating the mismatch
-	-- structurally (and, as a side effect, fixing the "text slightly off-
-	-- centered" symptom, since a container genuinely smaller than the bar
-	-- centers its contents around the wrong point).
+	-- Parented to `frame` (MainMenuExpBar) itself, not UIParent:
+	-- GetWidth()/GetHeight() report a frame's size in its own local
+	-- coordinate units, which only numerically matches another frame's
+	-- when both share the identical scale ancestry chain - UIParent-
+	-- parented did not (MainMenuExpBar sits under MainMenuBar/etc
+	-- instead), producing a scale-chain mismatch and an off-center text
+	-- overlay. Parenting directly to MainMenuExpBar puts this overlay in
+	-- the identical ancestry, eliminating the mismatch structurally.
 	--
-	-- This does NOT reintroduce the original art-masking bug this overlay
-	-- was created to escape (round 25 item 2, see this section's header
-	-- comment): frame STRATA/LEVEL for a real child FRAME (as opposed to a
-	-- REGION like a Texture/FontString) are independent of the parent's
-	-- own strata/level - rendering order is governed by the CHILD's own
-	-- explicit values. Confirmed by MainMenuBarOverlayFrame (real native
-	-- child of MainMenuExpBar, see docs/01-Environment-Capability-
-	-- Analysis.md's round 21 findings) successfully drawing its own XP
-	-- text FontString on top of the bar's art despite being parented to
-	-- the very frame that art sits on - the same principle this overlay
-	-- now relies on. SetFrameStrata("HIGH") below is unchanged - it was
-	-- already correct, only the PARENT (this CreateFrame's 3rd arg)
-	-- changes.
+	-- This does not reintroduce the art-masking problem this overlay
+	-- exists to avoid (see this section's header comment): strata/level
+	-- for a real child frame (unlike a region like a Texture/FontString)
+	-- is independent of the parent's own strata/level - rendering order
+	-- is governed by the child's own explicit values.
+	-- MainMenuBarOverlayFrame (a real native child of MainMenuExpBar)
+	-- already draws its own XP text FontString on top of the bar's art
+	-- despite being parented to the very frame that art sits on, the same
+	-- principle this overlay relies on.
 	local overlay = CreateFrame("Frame", "BTVanillaExpBarTextOverlay", frame)
 
 	overlay:SetFrameStrata("HIGH")
@@ -5252,8 +4397,8 @@ local function ExpBarRound(n)
 	return math.floor(n + 0.5)
 end
 
--- Round 17 items 2/4: assembles only the currently-enabled segments into
--- one space-joined line. Each segment is already self-labeled ("Lvl 2",
+-- Assembles only the currently-enabled segments into one space-joined
+-- line. Each segment is already self-labeled ("Lvl 2",
 -- "26/900", "3%", "Rested: 3%", "27 Rested Xp"), so a plain space join
 -- never needs separator/punctuation logic for whichever subset happens to
 -- be off - no double-spaces or dangling separators regardless of which
@@ -5309,32 +4454,18 @@ local function ComputeBetterExpBarText()
 	return table.concat(segments, " ")
 end
 
--- Round 18 Bug 3 fix: a plain reversed Hide() call (round 17 item 1's
--- original fix, reasserted on every PLAYER_XP_UPDATE/UPDATE_EXHAUSTION/
--- PLAYER_LEVEL_UP) was live-confirmed to NOT stick - the native overlay
--- label kept showing regardless. This means Blizzard's native XP bar code
--- re-Shows this FontString on some OTHER trigger these three events don't
--- cover - most likely an OnUpdate script (XP bar text commonly refreshes
--- every frame rather than only on discrete events), which would silently
--- undo a same-frame Hide() no matter which events we listen to.
---
--- Fixed using this codebase's own established precedent for exactly this
--- class of problem (a permanently-re-shown native element) - see the 48
--- real default-bar buttons and BonusActionBarFrame, both neutered via a
--- `Show = function() end` override. Unlike those two (permanent,
--- one-way), this one must be REVERSIBLE - the native label needs to come
--- back the instant the user disables the setting - so the real Show
--- method is captured exactly once, lazily, here in
--- BTV:ApplyBetterExpBarVisual (not at file-load time, since
--- MainMenuBarOverlayFrame's FontString region may not exist yet that
--- early), and restored verbatim when the feature is turned back off.
---
--- Round 21 fix: this used to be captured/applied against a global named
--- MainMenuExpText, which the user live-confirmed does not exist at all on
--- this client - see EXP_OVERLAY_FRAME_NAME's own comment above for the
--- full finding. Retargeted to BTV:GetNativeExpOverlayText's resolved
--- FontString region; the reversible Show-neutering technique itself is
--- unchanged, only the target reference is corrected.
+-- A plain Hide() call (reasserted on every PLAYER_XP_UPDATE/
+-- UPDATE_EXHAUSTION/PLAYER_LEVEL_UP) does not stick - Blizzard's native
+-- XP bar code re-Shows this FontString on some other trigger these three
+-- events don't cover (most likely an OnUpdate script). Neutering Show()
+-- itself, the same technique used for the 48 real default-bar buttons
+-- and BonusActionBarFrame, fixes it - but unlike those two (permanent),
+-- this one must be reversible: the native label needs to come back the
+-- instant the user disables the setting, so the real Show method is
+-- captured exactly once, lazily, in BTV:ApplyBetterExpBarVisual (not at
+-- file-load time, since MainMenuBarOverlayFrame's FontString region may
+-- not exist yet that early) and restored verbatim when the feature is
+-- turned back off.
 local realExpOverlayTextShow
 
 local function UpdateBetterExpBarText()
@@ -5344,11 +4475,9 @@ local function UpdateBetterExpBarText()
 		text:SetText(ComputeBetterExpBarText())
 	end
 
-	-- Round 18 Bug 3 fix: Show() itself is now neutered while the feature
-	-- is on (see BTV:ApplyBetterExpBarVisual below), so this Hide() call is
-	-- largely defense-in-depth at this point rather than the actual fix -
-	-- kept because it's harmless and matches the original round 17 item 1
-	-- reassert-on-every-update idiom.
+	-- Show() itself is neutered while the feature is on (see
+	-- BTV:ApplyBetterExpBarVisual below), so this Hide() call is mostly
+	-- defense-in-depth at this point - kept because it's harmless.
 	local nativeText = BTV:GetNativeExpOverlayText()
 
 	if nativeText and BTVanillaDB.betterExpBarEnabled then
@@ -5356,11 +4485,10 @@ local function UpdateBetterExpBarText()
 	end
 end
 
--- Round 23 item 1: shared OnEvent handler for betterExpBarEventFrame below -
--- refreshes both the text overlay AND the custom rested-XP overlay
+-- Shared OnEvent handler for betterExpBarEventFrame below - refreshes
+-- both the text overlay and the custom rested-XP overlay
 -- (BTV:ApplyExpBarRestedOverlay) on the same event set, since both are
--- gated on the same BTVanillaDB.betterExpBarEnabled toggle and both need to
--- stay live as XP/exhaustion/resting state changes.
+-- gated on the same BTVanillaDB.betterExpBarEnabled toggle.
 local function BetterExpBarOnEvent()
 	UpdateBetterExpBarText()
 	BTV:ApplyExpBarRestedOverlay()
@@ -5374,24 +4502,19 @@ local betterExpBarEventFrame
 -- Creates (once)/shows/hides/live-updates the text overlay per
 -- BTVanillaDB.betterExpBarEnabled - called from Core.lua's login sequence
 -- and from the Experience Bar's own settings page (Settings.lua,
--- simpleBarPageConfigs["expbar"] - relocated off the General tab in round
--- 17 item 5).
--- Round 22 item 2: unlike Button.lua's hotkey/count text (whose
--- NATIVE_HOTKEY_FONT/NATIVE_COUNT_FONT are captured off a REAL FontString
--- created unconditionally at every button's Init, since every button
--- always exists from login onward - see Core.lua's EnsureDB comment on
--- hotkeyFontSize/countFontSize), this overlay is deliberately never
--- created until "Enable Better Experience Bar" is turned on for the first
--- time (see the early-return below) - so there may be no live FontString
--- to sample a size from yet the first time Settings.lua's Experience Bar
--- page itself needs a value to show. GameFontNormalSmall is the same real
--- vanilla FrameXML global Font OBJECT this overlay's own
--- CreateFontString(..., "GameFontNormalSmall") call below always inherits
--- from - Font objects support GetFont() directly, with no FontString
--- instance required - so it's read once here, lazily, from wherever a
--- size is first needed (this function, or Settings.lua's
--- RefreshSimpleBarPage) rather than only after this overlay's own first
--- creation.
+-- simpleBarPageConfigs["expbar"]).
+--
+-- Unlike Button.lua's hotkey/count text (captured off a real FontString
+-- that always exists from every button's Init), this overlay is
+-- deliberately never created until "Enable Better Experience Bar" is
+-- turned on for the first time (see the early-return below) - so there
+-- may be no live FontString to sample a size from yet the first time
+-- Settings.lua's Experience Bar page needs a value to show.
+-- GameFontNormalSmall is the same real vanilla FrameXML global Font
+-- object this overlay's own CreateFontString(..., "GameFontNormalSmall")
+-- call below always inherits from - Font objects support GetFont()
+-- directly, with no FontString instance required - so it's read once
+-- here, lazily, from wherever a size is first needed.
 function BTV:CaptureNativeExpBarFontIfNeeded()
 	if self.NATIVE_EXPBAR_FONT then
 		return self.NATIVE_EXPBAR_FONT
@@ -5421,23 +4544,18 @@ function BTV:ApplyBetterExpBarVisual()
 		return
 	end
 
-	-- Round 21 fix: resolved via BTV:GetNativeExpOverlayText (the real
-	-- MainMenuBarOverlayFrame FontString region) instead of the old,
-	-- nonexistent MainMenuExpText global - see EXP_OVERLAY_FRAME_NAME's own
-	-- comment above for the full finding.
+	-- Resolved via BTV:GetNativeExpOverlayText (the real
+	-- MainMenuBarOverlayFrame FontString region).
 	local nativeText = self:GetNativeExpOverlayText()
 
-	-- Round 22 item 2: captured unconditionally here (not inside the
-	-- enabled-only branch further below) so BTV.NATIVE_EXPBAR_FONT is
-	-- populated on every login regardless of whether the feature itself is
-	-- currently on.
+	-- Captured unconditionally here (not inside the enabled-only branch
+	-- further below) so BTV.NATIVE_EXPBAR_FONT is populated on every
+	-- login regardless of whether the feature itself is currently on.
 	self:CaptureNativeExpBarFontIfNeeded()
 
-	-- Capture the real Show method exactly once, lazily, the first time
-	-- this runs after MainMenuBarOverlayFrame's FontString region actually
-	-- exists - see this feature's own header comment above
-	-- realExpOverlayTextShow's declaration for why this must happen before
-	-- it's ever neutered below.
+	-- Captures the real Show method exactly once, lazily, the first time
+	-- this runs after MainMenuBarOverlayFrame's FontString region
+	-- actually exists - must happen before it's ever neutered below.
 	if nativeText and not realExpOverlayTextShow then
 		realExpOverlayTextShow = nativeText.Show
 	end
@@ -5447,10 +4565,10 @@ function BTV:ApplyBetterExpBarVisual()
 			self.betterExpBarText:Hide()
 		end
 
-		-- Round 17 item 1 / Round 18 Bug 3 fix: reversible restore - undo
-		-- the Show() neutering below (if it was ever applied this session)
-		-- before calling Show(), so real vanilla's own label comes straight
-		-- back rather than silently no-oping against its own neutered method.
+		-- Reversible restore: undo the Show() neutering below (if it was
+		-- ever applied this session) before calling Show(), so real
+		-- vanilla's own label comes straight back rather than silently
+		-- no-oping against its own neutered method.
 		if nativeText then
 			if realExpOverlayTextShow then
 				nativeText.Show = realExpOverlayTextShow
@@ -5459,22 +4577,20 @@ function BTV:ApplyBetterExpBarVisual()
 			nativeText:Show()
 		end
 
-		-- Round 23 item 1: hides the custom rested-XP overlay too - it's
-		-- gated on this same BTVanillaDB.betterExpBarEnabled toggle (see its
-		-- own header comment), so turning the feature off must hide it
-		-- immediately rather than leaving it showing until the next XP/
-		-- resting-state event happens to fire.
+		-- Hides the custom rested-XP overlay too - it's gated on this same
+		-- BTVanillaDB.betterExpBarEnabled toggle, so turning the feature
+		-- off must hide it immediately rather than leaving it showing
+		-- until the next XP/resting-state event happens to fire.
 		self:ApplyExpBarRestedOverlay()
 
 		return
 	end
 
 	if nativeText then
-		-- Round 18 Bug 3 fix: neuter Show() itself (not just call Hide())
-		-- so no native OnUpdate/event handler can re-show this label out
-		-- from under us, regardless of what triggers it - a plain Hide()
-		-- alone (round 17's fix) was confirmed NOT to stick. Reversed above
-		-- the moment betterExpBarEnabled goes back to false.
+		-- Neuters Show() itself (not just calling Hide()) so no native
+		-- OnUpdate/event handler can re-show this label out from under us
+		-- - a plain Hide() alone doesn't stick. Reversed above the moment
+		-- betterExpBarEnabled goes back to false.
 		if realExpOverlayTextShow then
 			nativeText.Show = function() end
 		end
@@ -5483,14 +4599,13 @@ function BTV:ApplyBetterExpBarVisual()
 	end
 
 	if not self.betterExpBarText then
-		-- Round 25 item 2: created on the dedicated text-overlay frame
+		-- Created on the dedicated text-overlay frame
 		-- (EnsureExpBarTextOverlay above), not on `frame` (MainMenuExpBar)
 		-- itself - see this section's own header comment for why. The
-		-- overlay SetAllPoints(frame), so anchoring CENTER to the overlay's
-		-- own CENTER at a plain 0,0 offset lands this exactly in the middle
-		-- of the bar both horizontally and vertically, same as anchoring to
-		-- `frame` directly would have - the overlay's bounds are identical
-		-- to the bar's own.
+		-- overlay SetAllPoints(frame), so anchoring CENTER to the
+		-- overlay's own CENTER at a plain 0,0 offset lands this exactly
+		-- in the middle of the bar, same as anchoring to `frame` directly
+		-- would have.
 		local textOverlay = EnsureExpBarTextOverlay(frame)
 		local text = textOverlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -5498,17 +4613,16 @@ function BTV:ApplyBetterExpBarVisual()
 
 		-- OUTLINE flag keeps this readable regardless of whatever's
 		-- underneath it (the earned-XP fill vs. the rested-bonus fill can
-		-- now be any user-chosen color - round 17 item 3 - without needing
-		-- to sample/react to the bar's current fill color).
+		-- be any user-chosen color, without needing to sample/react to
+		-- the bar's current fill color).
 		local fontPath, fontSize = text:GetFont()
 
-		-- Round 22 item 2: starts ONE SIZE SMALLER than GameFontNormalSmall's
-		-- own native default (BTV.NATIVE_EXPBAR_FONT, captured above this
-		-- function's own early-return so it's already available here) per
-		-- this feature's own spec, until BTVanillaDB.expBarFontSize holds a
-		-- real saved value (stays nil until the user moves Settings.lua's
-		-- Experience Bar page Font Size slider - same lazy-default idiom as
-		-- BTVanillaDB.hotkeyFontSize/countFontSize, Core.lua's EnsureDB).
+		-- Starts one size smaller than GameFontNormalSmall's own native
+		-- default (BTV.NATIVE_EXPBAR_FONT, captured above) until
+		-- BTVanillaDB.expBarFontSize holds a real saved value (stays nil
+		-- until the user moves Settings.lua's Experience Bar page Font
+		-- Size slider - same lazy-default idiom as
+		-- BTVanillaDB.hotkeyFontSize/countFontSize).
 		local applySize = BTVanillaDB.expBarFontSize
 
 		if not applySize and self.NATIVE_EXPBAR_FONT then
@@ -5519,12 +4633,11 @@ function BTV:ApplyBetterExpBarVisual()
 			text:SetFont(fontPath, applySize or fontSize, "OUTLINE")
 		end
 
-		-- Round 22 item 3: BTVanillaDB.expBarTextColor (default gold,
-		-- Core.lua's EnsureDB) - unlike expBarColorEarned/Rested above, this
-		-- has no native vanilla equivalent to preserve/revert to (it's this
-		-- addon's own FontString, not a native region), so a straight
-		-- default is seeded unconditionally rather than lazily captured
-		-- from a live frame.
+		-- BTVanillaDB.expBarTextColor (default gold, Core.lua's EnsureDB)
+		-- has no native vanilla equivalent to preserve/revert to (it's
+		-- this addon's own FontString, not a native region), so a
+		-- straight default is seeded unconditionally rather than lazily
+		-- captured from a live frame.
 		local textColor = BTVanillaDB.expBarTextColor
 
 		if textColor then
@@ -5536,23 +4649,19 @@ function BTV:ApplyBetterExpBarVisual()
 		if not betterExpBarEventFrame then
 			betterExpBarEventFrame = CreateFrame("Frame", "BTVanillaBetterExpBarEventFrame")
 
-			-- Round 17 item 4: PLAYER_LEVEL_UP added alongside BEB's own
-			-- "$pdl"/"$prt" event list ("$plv"'s own event list covers this
-			-- one) so the new Level segment stays live too. All three kept
-			-- unconditionally registered regardless of which of the 5
-			-- segment toggles are currently on - simpler and safer than
-			-- churning registration on every checkbox click.
+			-- All events are kept unconditionally registered regardless of
+			-- which of the 5 segment toggles are currently on - simpler
+			-- and safer than churning registration on every checkbox click.
 			betterExpBarEventFrame:RegisterEvent("PLAYER_XP_UPDATE")
 			betterExpBarEventFrame:RegisterEvent("UPDATE_EXHAUSTION")
 			betterExpBarEventFrame:RegisterEvent("PLAYER_LEVEL_UP")
 
-			-- Round 23 item 1: PLAYER_UPDATE_RESTING added alongside the
-			-- three pre-existing events above - the real vanilla event that
-			-- fires when the player's resting state itself changes (entering/
-			-- leaving an inn or city), confirmed via BEB/TextVars.lua's own
-			-- "$res" entry - needed so BTV:ApplyExpBarRestedOverlay's
-			-- GetRestState() gate re-evaluates the instant resting starts/
-			-- stops, not just on the next XP/exhaustion change.
+			-- PLAYER_UPDATE_RESTING is the real vanilla event that fires
+			-- when the player's resting state itself changes (entering/
+			-- leaving an inn or city) - needed so
+			-- BTV:ApplyExpBarRestedOverlay's GetRestState() gate
+			-- re-evaluates the instant resting starts/stops, not just on
+			-- the next XP/exhaustion change.
 			betterExpBarEventFrame:RegisterEvent("PLAYER_UPDATE_RESTING")
 
 			betterExpBarEventFrame:SetScript("OnEvent", BetterExpBarOnEvent)
@@ -5562,10 +4671,10 @@ function BTV:ApplyBetterExpBarVisual()
 	self.betterExpBarText:Show()
 	UpdateBetterExpBarText()
 
-	-- Round 23 item 1: shows/refreshes the custom rested-XP overlay the
-	-- instant the feature is turned on, rather than waiting for the next
+	-- Shows/refreshes the custom rested-XP overlay the instant the
+	-- feature is turned on, rather than waiting for the next
 	-- PLAYER_XP_UPDATE/UPDATE_EXHAUSTION/PLAYER_LEVEL_UP/PLAYER_UPDATE_RESTING
-	-- event - mirrors UpdateBetterExpBarText's own call just above.
+	-- event.
 	self:ApplyExpBarRestedOverlay()
 end
 
@@ -5588,17 +4697,16 @@ function BTV:SetExpBarFontSize(size)
 	end
 end
 
--- Round 31 item 2: Settings.lua's Experience Bar page Pulse Interval slider
--- calls this directly on every OnValueChanged - mirrors SetExpBarFontSize's
--- round-then-write template just above, except rounded to 1 decimal place
--- (the slider's own 0.1 step) instead of a whole number, and clamped to the
--- slider's own 0.5-5.0 range so a stray direct-write (e.g. hand-edited
--- SavedVariables) can't hand the sine formula above a zero/negative period.
--- Writing BTVanillaDB.expBarGlowPulseInterval here is already sufficient to
--- reach the running animation - StartExpBarRestedGlowPulse's own ticker
--- callback reads this same field fresh every 0.05s tick (see its own
--- comment), so there is no separate "push to the live animation" step
--- needed and no need to Cancel()/restart the ticker.
+-- Settings.lua's Experience Bar page Pulse Interval slider calls this
+-- directly on every OnValueChanged - mirrors SetExpBarFontSize's
+-- round-then-write template above, except rounded to 1 decimal place
+-- (the slider's own 0.1 step), and clamped to the slider's own 0.5-5.0
+-- range so a stray direct-write can't hand the sine formula above a
+-- zero/negative period. Writing BTVanillaDB.expBarGlowPulseInterval here
+-- is already sufficient to reach the running animation -
+-- StartExpBarRestedGlowPulse's own ticker callback reads this same field
+-- fresh every tick, so no separate "push to the live animation" step is
+-- needed.
 function BTV:SetExpBarGlowPulseInterval(interval)
 	self:EnsureDB()
 
@@ -5689,8 +4797,7 @@ function BTV:GetStanceBarButtons()
 end
 
 -------------------------------------------------------------------------
--- Default-layout / stance-bar edit-mode overlay refresh (Issue 3,
--- bug-fix batch)
+-- Default-layout / stance-bar edit-mode overlay refresh
 --
 -- Mirrors Bar.lua's ApplyEditModeVisual for custom bars, but gated on
 -- BTV:CanDragDefaultLayout() (edit mode
@@ -5706,13 +4813,12 @@ end
 function BTV:ApplyDefaultLayoutEditVisual()
 	local show = self:CanDragDefaultLayout()
 
-	-- (v1.0 polish pass) Default bars 1-5 no longer have their own
-	-- bar-level overlay loop here - they share Bar.lua's EnsureBarOverlay/
-	-- ApplyEditModeVisual with every other bar, which already handles
-	-- their show/hide and mouse-enable gating (including the
-	-- useDefaultLayout == false requirement via isDefaultBar1to5's canEdit
-	-- check there). This function now only drives the chain-anchored
-	-- containers and native-wrapped elements below.
+	-- Default bars 1-5 have no bar-level overlay loop here - they share
+	-- Bar.lua's EnsureBarOverlay/ApplyEditModeVisual with every other
+	-- bar, which already handles their show/hide and mouse-enable gating
+	-- (including the useDefaultLayout == false requirement via
+	-- isDefaultBar1to5's canEdit check there). This function only drives
+	-- the chain-anchored containers and native-wrapped elements below.
 
 	-- Stance Bar / Bag Bar / Micro Menu - all three are now the same kind
 	-- of TrustyBars-owned chain-anchored container (BuildChainAnchoredContainer/
@@ -5724,17 +4830,17 @@ function BTV:ApplyDefaultLayoutEditVisual()
 	ApplyContainerOverlayVisual(self.bagBarContainer, BTVanillaDB.bagBarEnabled, show)
 	ApplyContainerOverlayVisual(self.microMenuContainer, BTVanillaDB.microMenuEnabled, show)
 
-	-- Key Ring / Latency Bar (bug-fix batch Fixes 2/3) - same generic
-	-- ApplyContainerOverlayVisual treatment as Bag Bar/Micro Menu above;
-	-- EnsureContainerOverlay is equally generic over a single real button/
-	-- frame as it is over a synthetic container, so no separate helper is
-	-- needed here. Looked up by name each call (rather than cached) since
-	-- this only runs on edit-mode/useDefaultLayout toggles, not per frame.
+	-- Key Ring / Latency Bar - same generic ApplyContainerOverlayVisual
+	-- treatment as Bag Bar/Micro Menu above; EnsureContainerOverlay is
+	-- equally generic over a single real button/frame as it is over a
+	-- synthetic container, so no separate helper is needed here. Looked
+	-- up by name each call (rather than cached) since this only runs on
+	-- edit-mode/useDefaultLayout toggles, not per frame.
 	ApplyContainerOverlayVisual(getglobal(self.KEYRING_BUTTON_NAME), BTVanillaDB.keyRingEnabled, show)
 	ApplyContainerOverlayVisual(getglobal(self.LATENCY_BAR_FRAME_NAME), BTVanillaDB.latencyBarEnabled, show)
 
-	-- Experience Bar (round 16 part 2, Part A) - same generic
-	-- ApplyContainerOverlayVisual treatment as Key Ring/Latency Bar above.
+	-- Experience Bar - same generic ApplyContainerOverlayVisual treatment
+	-- as Key Ring/Latency Bar above.
 	ApplyContainerOverlayVisual(getglobal(self.EXP_BAR_FRAME_NAME), BTVanillaDB.expBarEnabled, show)
 
 	-- Page Indicator (Part 4) - same generic ApplyContainerOverlayVisual
@@ -5749,76 +4855,57 @@ function BTV:ApplyDefaultLayoutEditVisual()
 end
 
 -------------------------------------------------------------------------
--- Page Indicator (chain-anchored container) - Stance/Page Bar Assignment
--- feature, Part 4
+-- Page Indicator (chain-anchored container)
 --
 -- Wraps the Main Bar's native page-turn arrows/page-number FontString the
--- exact same way Bag Bar/Micro Menu/Stance Bar wrap their own real
--- Blizzard frames above (BuildChainAnchoredContainer/
--- ApplyChainAnchoredShape/EnsureContainerOverlay) - a real vanilla
--- FontString (MainMenuBarPageNumber) supports GetLeft/GetTop/GetWidth/
--- GetHeight/SetParent/IsShown/SetPoint exactly like a Frame/Button region
--- does, so it slots into that same generic machinery - EXCEPT
--- GetEffectiveScale, which it does NOT support (live-confirmed root cause
--- of a login-breaking crash - see PixelSetPoint's own comment above for
--- the fix: PixelUtil.SetPoint calls GetEffectiveScale on both its region
--- and relativeTo arguments, so PixelSetPoint now falls back to plain
--- SetPoint whenever either side of a chain-anchor is a FontString/Texture
--- lacking that method).
+-- same way Bag Bar/Micro Menu/Stance Bar wrap their own real Blizzard
+-- frames above (BuildChainAnchoredContainer/ApplyChainAnchoredShape/
+-- EnsureContainerOverlay) - a real vanilla FontString
+-- (MainMenuBarPageNumber) supports GetLeft/GetTop/GetWidth/GetHeight/
+-- SetParent/IsShown/SetPoint exactly like a Frame/Button region does, so
+-- it slots into that same generic machinery, except GetEffectiveScale,
+-- which it does not support - see PixelSetPoint's own comment above for
+-- the fallback to plain SetPoint whenever either side of a chain-anchor
+-- is a FontString/Texture lacking that method.
 --
--- UNCONFIRMED frame names on this specific modded client: ActionBarUpButton/
--- ActionBarDownButton/MainMenuBarPageNumber are the well-established real
--- vanilla 1.12.1 FrameXML names (MainMenuBar.xml) for these three elements,
--- but - unlike every other frame name this file already relies on
--- (ActionButton#, MultiBarBottomLeftButton#, KeyRingButton,
--- MainMenuBarPerformanceBarFrame, etc, all previously live-confirmed
--- present on this client) - these three have NOT yet been live-confirmed
--- here. CreatePageIndicatorContainer below requires ALL three names to
--- resolve (stricter than GetButtonsByName's own generic "skip whatever's
+-- ActionBarUpButton/ActionBarDownButton/MainMenuBarPageNumber are the
+-- real vanilla 1.12.1 FrameXML names for these three elements, but -
+-- unlike every other frame name this file relies on - these three have
+-- not been live-confirmed on this specific modded client.
+-- CreatePageIndicatorContainer below requires all three names to resolve
+-- (stricter than GetButtonsByName's own generic "skip whatever's
 -- missing" tolerance - a partial 1- or 2-element page indicator would be
 -- visually broken, not a healthy smaller variant) - a wrong/missing name
--- here just silently never builds this container (degrades exactly like a
--- failed Bag Bar/Micro Menu discovery already does) rather than erroring -
--- but this should still be re-checked live (e.g.
--- `/run print(ActionBarUpButton, ActionBarDownButton, MainMenuBarPageNumber)`)
--- before relying on this feature actually rendering anything.
+-- here just silently never builds this container, the same as a failed
+-- Bag Bar/Micro Menu discovery.
 --
 -- Position + Scale only (no Spacing/Orientation slider, unlike Bag Bar/
--- Micro Menu/Stance Bar) - per the feature's own scope. Orientation is
--- fixed vertical here (the native up/down arrows + page number are a
--- vertical stack, not the left-to-right chains those three elements are),
--- and spacing is fixed at 0 rather than auto-captured: BuildChainAnchoredContainer's
--- own ComputeMajorityGap only ever measures a HORIZONTAL gap (lefts/
--- widths) - reusing it here would produce a nonsensical vertical spacing
--- value, and this element deliberately has no user-facing Spacing control
--- to expose/correct that number through anyway, so the 3 elements are
--- simply laid out edge-to-edge instead of at their true native gap. Purely
--- a cosmetic simplification (the whole container is still fully
--- draggable/scalable to compensate) given this element's deliberately
--- narrow scope.
+-- Micro Menu/Stance Bar). Orientation is fixed vertical here (the native
+-- up/down arrows + page number are a vertical stack, not the left-to-
+-- right chains those three elements are), and spacing is fixed at 0
+-- rather than auto-captured: BuildChainAnchoredContainer's own
+-- ComputeMajorityGap only measures a horizontal gap (lefts/widths), so
+-- the 3 elements are simply laid out edge-to-edge instead of at their
+-- true native gap - a cosmetic simplification, the whole container is
+-- still fully draggable/scalable to compensate.
 -------------------------------------------------------------------------
 
 BTV.PAGE_INDICATOR_UP_NAME = "ActionBarUpButton"
 BTV.PAGE_INDICATOR_DOWN_NAME = "ActionBarDownButton"
 BTV.PAGE_INDICATOR_TEXT_NAME = "MainMenuBarPageNumber"
 
--- Issue 3 (bug-fix batch round 4): this container is NOT a single row/
--- column of same-size, same-type elements chained edge-to-edge - it's two
--- stacked arrow buttons PLUS a text label that needs to sit to their
--- RIGHT, vertically centered against the pair, not "next in the chain"
--- underneath them. BuildChainAnchoredContainer/ApplyChainAnchoredShape
--- (the generic engine Bag Bar/Micro Menu/Stance Bar all correctly use) has
--- no way to express that - forcing this element through it (the previous
--- implementation) chained all three in one vertical run with zero real
--- spacing, which is why the page number rendered at the bottom-left of the
--- container instead of centered-right, and why the up/down gap didn't
--- match Blizzard's own. This container now has its own dedicated,
--- purpose-built layout (CreatePageIndicatorContainer/
--- ApplyPageIndicatorShape below) instead. Its OWN external position/scale/
--- enable behavior (ApplyPageIndicatorPosition/SetPageIndicatorScale/
+-- This container is not a single row/column of same-size, same-type
+-- elements chained edge-to-edge - it's two stacked arrow buttons plus a
+-- text label that needs to sit to their right, vertically centered
+-- against the pair, not "next in the chain" underneath them.
+-- BuildChainAnchoredContainer/ApplyChainAnchoredShape (the generic
+-- engine Bag Bar/Micro Menu/Stance Bar all use) has no way to express
+-- that, so this container has its own dedicated, purpose-built layout
+-- (CreatePageIndicatorContainer/ApplyPageIndicatorShape below) instead.
+-- Its own external position/scale/enable behavior
+-- (ApplyPageIndicatorPosition/SetPageIndicatorScale/
 -- ApplyPageIndicatorVisibility, EnsureContainerOverlay-based drag) is
--- entirely unchanged - only the internal up/down/text arrangement is
--- rewritten here.
+-- unchanged - only the internal up/down/text arrangement is custom.
 function BTV:CreatePageIndicatorContainer()
 	self:EnsureDB()
 
@@ -5838,30 +4925,21 @@ function BTV:CreatePageIndicatorContainer()
 		return
 	end
 
-	-- Round 7 root-cause fix: read each element's REAL native anchor point
-	-- (GetPoint(1) - a real Region method every one of these three
-	-- supports, including the FontString, unlike GetEffectiveScale - see
-	-- PixelSetPoint's own comment above) BEFORE reparenting/moving
-	-- anything. SetParent never rewrites another frame's OWN anchor
+	-- Reads each element's real native anchor point (GetPoint(1) - a real
+	-- Region method every one of these three supports, including the
+	-- FontString, unlike GetEffectiveScale) before reparenting/moving
+	-- anything. SetParent never rewrites another frame's own anchor
 	-- points - it only changes rendering ownership/strata inheritance -
 	-- so if Down and/or the page-number text are natively anchored
 	-- directly to Up (or to each other) rather than to some frame outside
 	-- this trio, that anchor is already exactly correct and needs no
-	-- reconstruction at all: it keeps resolving relative to that same Up/
-	-- Down frame object regardless of what that object's own parent
-	-- becomes. This replaces the old absolute-pixel-gap measurement +
-	-- hardcoded PAGE_INDICATOR_GAP_REDUCTION/TEXT_OFFSET_X/Y nudge
-	-- constants entirely - those were reconstructing a relative layout
-	-- from absolute screen coordinates (exactly the same fragile pattern
-	-- Issue 1's CaptureNativeAnchor bug came from), when Blizzard's own
-	-- FrameXML anchor already encodes that relationship correctly.
+	-- reconstruction: it keeps resolving relative to that same Up/Down
+	-- frame object regardless of what that object's own parent becomes.
 	local upPoint, upRelTo, upRelPoint, upX, upY = up:GetPoint(1)
 	local downPoint, downRelTo, downRelPoint, downX, downY = down:GetPoint(1)
 	local textPoint, textRelTo, textRelPoint, textX, textY = text:GetPoint(1)
 
-	-- Diagnostic (fires once, at first build) so the real native topology
-	-- on this client build is visible in chat rather than assumed - see
-	-- this function's own report for what a live tester should look for.
+	-- Reports the real native anchor topology to chat once, at first build.
 	self:Print(
 		"Page Indicator native anchors - Up: " .. tostring(upPoint) .. " of " ..
 		tostring(upRelTo and upRelTo:GetName() or "?") .. " " .. tostring(upRelPoint) ..
@@ -5876,7 +4954,7 @@ function BTV:CreatePageIndicatorContainer()
 
 	-- The container's own TOPLEFT is defined to equal Up's real native
 	-- TOPLEFT (GetLeft()/GetTop()), converted through real screen pixels
-	-- via each frame's own GetEffectiveScale - identical fix/reasoning as
+	-- via each frame's own GetEffectiveScale, the same conversion as
 	-- Core.lua's CaptureNativeAnchor (this container, like every default
 	-- bar, is anchored directly to UIParent, and is a bare
 	-- CreateFrame(..., UIParent) with no SetScale of its own, so its
@@ -5901,16 +4979,13 @@ function BTV:CreatePageIndicatorContainer()
 	-- Down/Text's relationship to Up (or to each other) - read from the
 	-- captured GetPoint() data above, not assumed. If a captured
 	-- relativeTo isn't one of the other two elements in this trio (e.g.
-	-- natively anchored straight to MainMenuBarArtFrame instead), fall
+	-- natively anchored straight to MainMenuBarArtFrame instead), falls
 	-- back to reproducing the exact same real on-screen delta from Up's
-	-- own native corner, measured while every one of these three frames is
-	-- still at its true, un-reparented Blizzard position - mathematically
-	-- the same "translate to be relative to the container instead" the
-	-- task calls for, since Up becomes the container's own (0,0) anchor
-	-- root below. This delta is a same-family (Up/Down/Text all share one
-	-- native ancestor chain) measurement, so no GetEffectiveScale
-	-- correction is needed for it, unlike the UIParent-crossing nativeLeft/
-	-- nativeTop above.
+	-- own native corner, measured while every one of these three frames
+	-- is still at its true, un-reparented Blizzard position. This delta
+	-- is a same-family (Up/Down/Text all share one native ancestor chain)
+	-- measurement, so no GetEffectiveScale correction is needed for it,
+	-- unlike the UIParent-crossing nativeLeft/nativeTop above.
 	self.pageIndicatorDownFollowsUp = (downRelTo == up)
 	self.pageIndicatorTextFollowsUp = (textRelTo == up)
 	self.pageIndicatorTextFollowsDown = (textRelTo == down)
@@ -5971,13 +5046,11 @@ function BTV:CreatePageIndicatorContainer()
 	)
 end
 
--- Round 7 root-cause fix: no more absolute-pixel-gap measurement or
--- hardcoded pixel nudges. Up is always reanchored to the container's own
--- TOPLEFT (it has to be - it's the one frame this addon's own drag/
--- position system moves the whole container by). Down and the page-number
--- text are each handled per the real native relationship
--- CreatePageIndicatorContainer captured via GetPoint() BEFORE anything was
--- reparented:
+-- Up is always reanchored to the container's own TOPLEFT (it has to be -
+-- it's the one frame this addon's own drag/position system moves the
+-- whole container by). Down and the page-number text are each handled
+-- per the real native relationship CreatePageIndicatorContainer captured
+-- via GetPoint() before anything was reparented:
 --   - If natively anchored directly to Up (or, for Text, to Down) -
 --     SetParent never rewrote that anchor, so it's already exactly
 --     correct and is left completely untouched here.
@@ -6126,16 +5199,10 @@ function BTV:SetPageIndicatorScale(scale)
 	end
 end
 
--- Issue 4 (bug-fix batch round 5): "Use Default Blizzard Layout"'s reset
--- cascade (Settings.lua's useDefaultLayout checkbox handler) previously
--- reset every other chain-anchored container (Bag Bar/Micro Menu/Stance
--- Bar/Latency Bar/Key Ring) plus default bars 2-5, but never this one -
--- it was simply never added to that list when this container shipped.
 -- Mirrors ResetKeyRingPosition's exact structure: restore position from
 -- the permanent mainBarPageIndicatorNativeAnchor snapshot (captured once
--- in CreatePageIndicatorContainer, never re-derived - same "capture, don't
--- guess" rule as every other element's nativeAnchor), then reset scale to
--- 1 via the existing setter.
+-- in CreatePageIndicatorContainer, never re-derived), then reset scale
+-- to 1 via the existing setter.
 function BTV:ResetPageIndicatorLayout()
 	self:EnsureDB()
 
@@ -6212,61 +5279,32 @@ function BTV:StopPageIndicatorDrag()
 end
 
 -------------------------------------------------------------------------
--- Position reassert after combat / looting (round 16, Latency Bar drift
--- fix)
+-- Position reassert after combat / looting
 --
--- Live-reported bug: MainMenuBarPerformanceBarFrame (Latency Bar) visibly
--- changes position after combat ends or after looting a mob. Root cause,
--- confirmed by reading every Apply*Position/Apply*Shape function above:
--- every one of these six elements (Bag Bar/Micro Menu/Stance Bar/Key Ring/
--- Latency Bar/Page Indicator) only ever applies its saved position/shape
--- ONCE - at container-build time (RunLoginSequence, Core.lua) or in direct
--- response to a user action (drag stop, a Settings slider, "Reset to
--- Blizzard Default"). Nothing re-asserts it afterward on its own - unlike
--- Bar.lua's ApplyBarShape, which was already fixed in an earlier round to
--- reassert frame level on every shape-affecting call, this whole family of
--- elements has never had an equivalent safety net against something else
--- moving them later.
---
--- Latency Bar and Key Ring are the most exposed to this specific class of
--- bug: both wrap a SINGLE real native Blizzard frame directly (see
--- CaptureLatencyBarPositionIfNeeded/ApplyLatencyBarPosition and
--- CaptureKeyRingPositionIfNeeded/ApplyKeyRingPosition above), never
--- reparented into a container of our own - so if any native FrameXML code
--- path on this client ever calls SetPoint/ClearAllPoints on that exact
--- frame for its own reasons, our own last-applied position is silently
--- discarded with nothing to notice or correct it. Bag Bar/Micro Menu/
--- Stance Bar/Page Indicator's own container frames ARE synthetic
--- (BuildChainAnchoredContainer's CreateFrame("Frame", ..., UIParent)) that
--- Blizzard's FrameXML has no knowledge of and therefore never repositions
--- directly, but the individual real buttons reparented INTO them are still
--- real native frames a native code path could in principle re-anchor -
+-- MainMenuBarPerformanceBarFrame (Latency Bar) and KeyRingButton wrap a
+-- single real native Blizzard frame directly, never reparented into a
+-- container of our own - so if any native FrameXML code path calls
+-- SetPoint/ClearAllPoints on that frame for its own reasons, our own
+-- last-applied position is silently discarded with nothing to notice or
+-- correct it. Bag Bar/Micro Menu/Stance Bar/Page Indicator's own
+-- container frames are synthetic and never repositioned by Blizzard
+-- directly, but the individual real buttons reparented into them are
+-- still real native frames a native code path could re-anchor -
 -- reasserting each container's own ApplyChainAnchoredShape alongside its
--- position closes that same class of gap for those four too, in case the
--- same underlying mechanism ever reaches them (not yet reported by the
--- user for any of them, but the architecture is shared, so the same fix is
--- applied uniformly rather than patched for Latency Bar alone).
+-- position closes the same class of gap for those four too.
 --
--- Deliberately does NOT track down the exact native call path that moves
--- MainMenuBarPerformanceBarFrame - that would need a live client check
--- (see the environment doc's §5w for a throwaway diagnostic script), and
--- isn't actually necessary for a correct fix: every Apply* call below is
--- already idempotent and safely no-ops if that element was never built
--- this session (see each function's own nil-guards), so simply re-running
--- them is safe regardless of what actually caused the drift. Triggered on
--- the two events the user's own report describes reproducing the symptom
--- with - PLAYER_REGEN_ENABLED (leaving combat, confirmed firing correctly
--- on this client - doc §5h) and LOOT_CLOSED (the loot window closing, real
--- vanilla's own well-established "looting this corpse is finished" event -
--- chosen over CHAT_MSG_LOOT, which fires once per looted item and would
--- mean reasserting far more often than needed, and over LOOT_OPENED, which
--- fires too early - before looting has actually happened).
+-- Every Apply* call below is idempotent and safely no-ops if that
+-- element was never built this session, so simply re-running them is
+-- safe regardless of what actually caused the drift. Triggered on
+-- PLAYER_REGEN_ENABLED (leaving combat) and LOOT_CLOSED (the loot window
+-- closing) - chosen over CHAT_MSG_LOOT, which fires once per looted item
+-- and would mean reasserting far more often than needed, and over
+-- LOOT_OPENED, which fires too early, before looting has happened.
 --
--- Default bars 1-5 are deliberately NOT included here: their real Blizzard
--- button frames are permanently hidden and Show()-neutered at login
+-- Default bars 1-5 are not included here: their real Blizzard button
+-- frames are permanently hidden and Show()-neutered at login
 -- (CreateFixedSlotDefaultBars above), so native FrameXML code can no
--- longer make them visibly move at all - this class of bug structurally
--- cannot reach them.
+-- longer make them visibly move at all.
 -------------------------------------------------------------------------
 
 local function ReassertNativeElementPositions()
@@ -6283,14 +5321,9 @@ local function ReassertNativeElementPositions()
 
 	BTV:ApplyLatencyBarPosition()
 
-	-- Experience Bar (round 16 part 2, Part A): same single-native-frame
-	-- risk class as the Latency Bar/Key Ring above (MainMenuExpBar isn't
-	-- reparented into a TrustyBars-owned container, unlike Bag Bar/Micro
-	-- Menu/Stance Bar/Page Indicator) - reasserted here for the same
-	-- reason, even though this specific symptom hasn't been reported for
-	-- it yet (see this section's own header comment on why the fix is
-	-- applied uniformly across the whole family rather than patched per
-	-- element as each one gets reported).
+	-- Experience Bar: same single-native-frame risk class as the Latency
+	-- Bar/Key Ring above (MainMenuExpBar isn't reparented into a
+	-- TrustyBars-owned container) - reasserted here for the same reason.
 	BTV:ApplyExpBarPosition()
 
 	BTV:ApplyPageIndicatorPosition()
