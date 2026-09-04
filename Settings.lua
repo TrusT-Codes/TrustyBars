@@ -602,29 +602,50 @@ end
 -- `requiredContentHeight` (the page's real, possibly-taller-than-visible
 -- content height, as already measured by ApplySettingsHeightFromCandidates
 -- below), sizes the scrollFrame itself to the clamped `viewportHeight`,
--- resets scroll to the top, and shows/hides the scrollbar depending on
+-- restores scroll to `preserveScroll` (clamped to the new range) instead of
+-- always snapping to the top, and shows/hides the scrollbar depending on
 -- whether there's actually anything to scroll. Called every time a page's
 -- content changes, so scrolling turns on/off automatically as content
 -- grows/shrinks - no per-page special-casing needed.
-function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, viewportHeight)
+-- preserveScroll (optional): the scroll offset to restore, in the SAME
+-- units as GetVerticalScroll()/SetMinMaxValues (pixels) - the caller reads
+-- this via scrollFrame:GetVerticalScroll() BEFORE doing anything that would
+-- reset it (see ApplySettingsHeightFromCandidates, which itself resets
+-- scroll to 0 to get accurate GetTop()/GetBottom() reads while measuring).
+-- Omitted/nil means "start at the top", same as the old unconditional
+-- behavior - every caller that doesn't care about preserving position
+-- (e.g. a brand new page being shown for the first time) can just leave
+-- this out.
+function BTV:UpdateScrollFrame(scrollFrame, scrollChild, requiredContentHeight, viewportHeight, preserveScroll)
 	scrollChild:SetWidth(scrollFrame:GetWidth())
 	scrollChild:SetHeight(requiredContentHeight)
 
 	scrollFrame:SetScrollChild(scrollChild)
 	scrollFrame:SetHeight(viewportHeight)
-	scrollFrame:SetVerticalScroll(0)
 
 	local scrollBar = scrollFrame.scrollBar
 
+	local maxScroll = requiredContentHeight - viewportHeight
+
+	if maxScroll < 0 then
+		maxScroll = 0
+	end
+
+	local targetScroll = preserveScroll or 0
+
+	if targetScroll > maxScroll then
+		targetScroll = maxScroll
+	end
+
+	if targetScroll < 0 then
+		targetScroll = 0
+	end
+
+	scrollFrame:SetVerticalScroll(targetScroll)
+
 	if scrollBar then
-		local maxScroll = requiredContentHeight - viewportHeight
-
-		if maxScroll < 0 then
-			maxScroll = 0
-		end
-
 		scrollBar:SetMinMaxValues(0, maxScroll)
-		scrollBar:SetValue(0)
+		scrollBar:SetValue(targetScroll)
 
 		if maxScroll > 0 then
 			scrollBar:Show()
@@ -4719,6 +4740,16 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		return nil
 	end
 
+	-- Captured before either scroll position gets reset below, so the
+	-- BTV:UpdateScrollFrame calls at the bottom of this function can
+	-- restore the user's actual scroll position (clamped to whatever the
+	-- new content size allows) instead of always snapping back to the top
+	-- on every re-fit - e.g. toggling a General-tab checkbox that reveals/
+	-- hides a slider used to reset scroll to the top every time.
+	local previousContentScroll = scrollFrame:GetVerticalScroll()
+	local previousListScroll = listCandidateList and settingsFrame.listPanel
+		and settingsFrame.listPanel:GetVerticalScroll()
+
 	-- Both scroll positions have to be reset to the top BEFORE measuring:
 	-- GetTop()/GetBottom() read real SCREEN positions that shift with the
 	-- current scroll offset, so a previously-scrolled view would otherwise
@@ -4793,7 +4824,8 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		scrollFrame,
 		scrollChildPanel,
 		contentHeight,
-		viewportHeight
+		viewportHeight,
+		previousContentScroll
 	)
 
 	if listCandidateList and settingsFrame.listPanel and settingsFrame.listContent then
@@ -4801,7 +4833,8 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 			settingsFrame.listPanel,
 			settingsFrame.listContent,
 			listContentHeight,
-			viewportHeight
+			viewportHeight,
+			previousListScroll
 		)
 	elseif settingsFrame.listPanel then
 		settingsFrame.listPanel:SetHeight(viewportHeight)

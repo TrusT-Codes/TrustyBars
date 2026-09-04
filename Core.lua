@@ -3604,13 +3604,35 @@ function BTV:DiagMainBarAssignmentRows()
 		if not dropdown then
 			self:Print("row " .. i .. ": no .dropdown field")
 		else
+			local dropdownParent = dropdown:GetParent()
+			local nativeText = getglobal(dropdown:GetName() .. "Text")
+
 			self:Print(
-				"row " .. i .. " dropdown=" .. tostring(dropdown:GetName()) ..
+				"row " .. i .. " identity=" .. tostring(dropdown) ..
+				" name=" .. tostring(dropdown:GetName()) ..
 				" shown=" .. tostring(dropdown:IsShown()) ..
-				" w=" .. tostring(dropdown:GetWidth()) .. " h=" .. tostring(dropdown:GetHeight()) ..
-				" selected=" .. tostring(dropdown:GetSelected()) ..
+				" w=" .. tostring(dropdown:GetWidth()) .. " h=" .. tostring(dropdown:GetHeight())
+			)
+
+			self:Print(
+				"  row identity=" .. tostring(row) ..
+				" row:GetParent()=" .. tostring(row:GetParent() and row:GetParent():GetName()) ..
+				" row:IsShown()=" .. tostring(row:IsShown())
+			)
+
+			self:Print(
+				"  dropdown:GetParent()=" .. tostring(dropdownParent) ..
+				" (should equal row identity above) name=" .. tostring(dropdownParent and dropdownParent:GetName()) ..
+				" parentShown=" .. tostring(dropdownParent and dropdownParent:IsShown())
+			)
+
+			self:Print(
+				"  selected=" .. tostring(dropdown:GetSelected()) ..
+				" selectedDisplayText=" .. tostring(dropdown.selectedDisplayText) ..
+				" nativeText=" .. tostring(nativeText and nativeText:GetText()) ..
 				" hasOnSelect=" .. tostring(dropdown.onSelect ~= nil) ..
-				" optionsCount=" .. tostring(dropdown.options and table.getn(dropdown.options))
+				" optionsCount=" .. tostring(dropdown.options and table.getn(dropdown.options)) ..
+				" generation=" .. tostring(dropdown.generation)
 			)
 		end
 	end
@@ -3691,6 +3713,78 @@ function BTV:DiagScrollbarReserves()
 	self:Print("--- diag18 end ---")
 end
 
+-- "diag20" (UI redesign branch): dumps General panel layout/scroll state -
+-- reported that toggling the global Spacing/ButtonSize checkboxes off makes
+-- the controls below them disappear until the General page is fully
+-- reloaded (switching away and back). Run once right after the controls
+-- appear to have vanished, then again after navigating away/back to compare
+-- against the "fixed" state.
+function BTV:DiagGeneralPanelLayout()
+	self:Print("--- diag20: General panel layout ---")
+
+	local f = getglobal("BTVanillaSettingsFrame")
+
+	if not f or not f.generalPanel or not f.generalScrollFrame then
+		self:Print("General panel not built yet - open Settings > General first")
+		self:Print("--- diag20 end ---")
+		return
+	end
+
+	local panel = f.generalPanel
+	local scrollFrame = f.generalScrollFrame
+
+	self:Print(
+		"panel h=" .. tostring(panel:GetHeight()) ..
+		" top=" .. tostring(panel:GetTop()) ..
+		" bottom=" .. tostring(panel:GetBottom())
+	)
+
+	self:Print(
+		"scrollFrame h=" .. tostring(scrollFrame:GetHeight()) ..
+		" verticalScroll=" .. tostring(scrollFrame:GetVerticalScroll()) ..
+		" needsScrollbar=" .. tostring(scrollFrame.needsScrollbar)
+	)
+
+	if scrollFrame.scrollBar then
+		local minV, maxV = scrollFrame.scrollBar:GetMinMaxValues()
+
+		self:Print(
+			"scrollBar shown=" .. tostring(scrollFrame.scrollBar:IsShown()) ..
+			" min=" .. tostring(minV) .. " max=" .. tostring(maxV) ..
+			" value=" .. tostring(scrollFrame.scrollBar:GetValue())
+		)
+	end
+
+	local names = {
+		"modernBorderStyleCheckbox", "modernBorderStyleDescription",
+		"globalSpacingCheckbox", "globalSpacingSlider", "globalSpacingValueText",
+		"globalButtonSizeCheckbox", "globalButtonSizeSlider", "globalButtonSizeValueText",
+		"bypassBar2DepCheckbox",
+		"tintWholeButtonCheckbox", "disableBlizzardArtCheckbox",
+		"mainBarPaginationCheckbox", "mainBarStanceSwapCheckbox",
+	}
+
+	local i
+
+	for i = 1, table.getn(names) do
+		local key = names[i]
+		local frame = panel[key]
+
+		if frame then
+			self:Print(
+				key .. ": shown=" .. tostring(frame:IsShown()) ..
+				" top=" .. tostring(frame:GetTop()) ..
+				" bottom=" .. tostring(frame:GetBottom()) ..
+				" left=" .. tostring(frame:GetLeft())
+			)
+		else
+			self:Print(key .. ": <nil>")
+		end
+	end
+
+	self:Print("--- diag20 end ---")
+end
+
 -- "recapture" (Round 11): on-demand, deterministic alternative to the
 -- account-wide one-shot markers in EnsureDB above - see
 -- BTV:RecaptureDefaultBarNativeAnchors's own comment for why an automatic
@@ -3746,6 +3840,8 @@ SlashCmdList["BTVANILLA"] = function(msg)
 		BTV:DiagMainBarAssignmentRows()
 	elseif msg == "diag18" then
 		BTV:DiagScrollbarReserves()
+	elseif msg == "diag20" then
+		BTV:DiagGeneralPanelLayout()
 	else
 		BTV:ToggleMainMenu()
 	end
