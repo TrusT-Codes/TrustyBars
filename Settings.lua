@@ -4820,6 +4820,25 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		viewportHeight = maxViewportHeight
 	end
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22 showed every candidate's own shown/bottom
+	-- state was sane and correctly populated at measurement time, so the
+	-- bug isn't in WHICH candidates get measured - this prints the actual
+	-- computed numbers (reference top, raw depth, and every height this
+	-- function derives from it) so the next repro shows exactly where a
+	-- wrong value first appears. Remove once root-caused.
+	BTV:Print(
+		"diag23: referenceTop=" .. tostring(scrollChildPanel:GetTop()) ..
+		" contentDepth=" .. tostring(contentDepth) ..
+		" measuredContentHeight=" .. tostring(measuredContentHeight) ..
+		" sharedRequirement=" .. tostring(sharedRequirement) ..
+		" minContentHeight=" .. tostring(minContentHeight) ..
+		" contentHeight=" .. tostring(contentHeight) ..
+		" viewportHeight=" .. tostring(viewportHeight) ..
+		" maxViewportHeight=" .. tostring(maxViewportHeight) ..
+		" previousContentScroll=" .. tostring(previousContentScroll)
+	)
+
 	BTV:UpdateScrollFrame(
 		scrollFrame,
 		scrollChildPanel,
