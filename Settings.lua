@@ -1202,9 +1202,10 @@ function BTV:GetOrCreateBarPage(barId)
 		settingsFrame.contentPanel
 	)
 
-	page:SetAllPoints(
-		settingsFrame.contentPanel
-	)
+	-- Anchored through ApplyPageBannerReserve (rather than SetAllPoints) so
+	-- the page can slide down to open up the profile-lock banner's band
+	-- only while that banner is actually shown - starts unlocked/flush.
+	BTV:ApplyPageBannerReserve(page, false)
 
 	page.barId = barId
 	page.isDefault = isDefault
@@ -1221,9 +1222,12 @@ function BTV:GetOrCreateBarPage(barId)
 		"GameFontNormalLarge"
 	)
 
+	-- Anchored to contentPanel, not `page` - the title has to stay put
+	-- while the page slides down to open the banner's band beneath it
+	-- (BTV:ApplyPageBannerReserve).
 	title:SetPoint(
 		"TOPLEFT",
-		page,
+		settingsFrame.contentPanel,
 		"TOPLEFT",
 		INDENT_SECTION,
 		-14
@@ -1257,10 +1261,12 @@ function BTV:GetOrCreateBarPage(barId)
 	-- spacing instead of hunting through every control's SetPoint.
 	-------------------------------------------------------------------------
 
-	-- Both roots are pushed down by the profile-lock warning banner's
-	-- reserved band (PROFILE_LOCK_BANNER_HEIGHT), which sits between the
-	-- title and here regardless of whether it's currently shown.
-	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+	-- No banner reserve baked in here any more - the whole page slides down
+	-- by PROFILE_LOCK_BANNER_HEIGHT only while the banner is actually shown
+	-- (BTV:ApplyPageBannerReserve, called from ApplyProfileLockGating), so
+	-- an unlocked page's first control sits directly under its title
+	-- instead of below a permanently reserved empty band.
+	local contentTopOffset = 0
 
 	local checkboxY = -44 + contentTopOffset
 
@@ -2351,8 +2357,13 @@ local PROFILE_LOCK_MESSAGE_LAYOUT =
 function BTV:CreateProfileLockWarning(page)
 	local banner = CreateFrame("Frame", nil, page)
 
-	banner:SetPoint("TOPLEFT", page, "TOPLEFT", 0, PROFILE_LOCK_BANNER_TOP)
-	banner:SetPoint("TOPRIGHT", page, "TOPRIGHT", 0, PROFILE_LOCK_BANNER_TOP)
+	-- PARENTED to `page` (so it hides/shows along with it) but ANCHORED to
+	-- contentPanel - `page` itself now slides DOWN by this banner's height
+	-- only while the banner is actually shown (BTV:ApplyPageBannerReserve),
+	-- and the banner has to stay put in the band that opens up rather than
+	-- sliding down with it.
+	banner:SetPoint("TOPLEFT", settingsFrame.contentPanel, "TOPLEFT", 0, PROFILE_LOCK_BANNER_TOP)
+	banner:SetPoint("TOPRIGHT", settingsFrame.contentPanel, "TOPRIGHT", 0, PROFILE_LOCK_BANNER_TOP)
 	banner:SetHeight(PROFILE_LOCK_BANNER_HEIGHT)
 	banner:SetFrameLevel(page:GetFrameLevel() + 5)
 
@@ -2380,6 +2391,44 @@ function BTV:CreateProfileLockWarning(page)
 	banner:Hide()
 
 	return banner
+end
+
+-- Opens up (or collapses) the band the profile-lock banner occupies, by
+-- sliding the whole `page` down by the banner's height only while it's
+-- actually shown - so a page with no banner doesn't leave a large empty
+-- gap between its title and its first control. Same "only reserve the
+-- space when the thing is actually visible" reflow the General tab's own
+-- Global Spacing/ButtonSize sliders use (BTV:ReflowGeneralOverrideSliders).
+--
+-- Works by moving `page` rather than re-anchoring each control on it:
+-- every real control is anchored to `page` with a fixed Y, so they all
+-- follow it together. The two things that must NOT move - the page title
+-- and the banner itself - are anchored to contentPanel instead (see
+-- BTV:CreateProfileLockWarning above and each page builder's own title).
+function BTV:ApplyPageBannerReserve(page, locked)
+	if not page or not settingsFrame or not settingsFrame.contentPanel then
+		return
+	end
+
+	local reserve = 0
+
+	if locked then
+		-- The banner's REAL height, not PROFILE_LOCK_BANNER_HEIGHT: its
+		-- height is recomputed from however many lines its message actually
+		-- wraps to (SetProfileLockBannerMessage, called just before this
+		-- from ApplyProfileLockGating), which can exceed that constant.
+		-- Falls back to the constant if it hasn't been measured yet.
+		reserve = (page.profileLockWarning and page.profileLockWarning:GetHeight())
+			or PROFILE_LOCK_BANNER_HEIGHT
+
+		if reserve < PROFILE_LOCK_BANNER_HEIGHT then
+			reserve = PROFILE_LOCK_BANNER_HEIGHT
+		end
+	end
+
+	page:ClearAllPoints()
+	page:SetPoint("TOPLEFT", settingsFrame.contentPanel, "TOPLEFT", 0, -reserve)
+	page:SetPoint("BOTTOMRIGHT", settingsFrame.contentPanel, "BOTTOMRIGHT", 0, 0)
 end
 
 -- Sets the banner's message and resizes the banner to fit however many
@@ -2468,6 +2517,10 @@ function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
 			)
 		end
 	end
+
+	-- Opens up the banner's band only while it's actually shown, instead
+	-- of every page permanently reserving it.
+	BTV:ApplyPageBannerReserve(page, locked)
 
 	-- Numbered default bars (1-5) keep enable/disable available even
 	-- while everything else locks - every other page (extra bars 6-9,
@@ -2822,7 +2875,8 @@ local function CreateSimpleBarPage(key)
 		settingsFrame.contentPanel
 	)
 
-	page:SetAllPoints(settingsFrame.contentPanel)
+	-- Same banner-reserve handling as GetOrCreateBarPage above.
+	BTV:ApplyPageBannerReserve(page, false)
 
 	page.barId = key
 	page.isDefault = true
@@ -2835,9 +2889,11 @@ local function CreateSimpleBarPage(key)
 		"GameFontNormalLarge"
 	)
 
+	-- Anchored to contentPanel, not `page` - stays put while the page
+	-- slides down for the banner (BTV:ApplyPageBannerReserve).
 	title:SetPoint(
 		"TOPLEFT",
-		page,
+		settingsFrame.contentPanel,
 		"TOPLEFT",
 		INDENT_SECTION,
 		-14
@@ -2845,9 +2901,9 @@ local function CreateSimpleBarPage(key)
 
 	title:SetText(config.title .. " Settings (Default)")
 
-	-- Pushed down by the profile-lock warning banner's reserved band, same
-	-- as GetOrCreateBarPage's contentTopOffset above.
-	local contentTopOffset = -PROFILE_LOCK_BANNER_HEIGHT
+	-- No unconditional banner reserve - see GetOrCreateBarPage's own
+	-- contentTopOffset comment.
+	local contentTopOffset = 0
 	local enableCheckboxY = -44 + contentTopOffset
 
 	local topY = -46 + contentTopOffset
