@@ -4767,11 +4767,79 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Bisection round 1 (UI redesign branch, General-panel disappearing-
-	-- items investigation): diag24 and diag25 removed for this round,
-	-- diag22 and diag23 (below) kept exactly as in the known-working
-	-- a04afec commit - testing whether diag22+diag23 alone are sufficient
-	-- to keep the bug from reproducing.
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22's own reads happened BEFORE the
+	-- SetVerticalScroll(0) resets above (it lives in a separate function,
+	-- FitSettingsWindowToGeneralView, called before this one) - invalidating
+	-- direct comparison against diag23's referenceTop, since a candidate's
+	-- GetBottom() shifts with scroll position. This dumps the SAME
+	-- candidateList's shown/bottom state AT THE EXACT POINT
+	-- MeasureDeepestExtent itself is about to read it (i.e. after the
+	-- scroll reset, same snapshot the real computation uses), so it can be
+	-- trusted against referenceTop directly. Remove once root-caused.
+	local diagReferenceTop = scrollChildPanel:GetTop()
+
+	BTV:Print("diag24: referenceTop=" .. tostring(diagReferenceTop) .. " n=" .. tostring(table.getn(candidateList)))
+
+	local diagJ
+
+	for diagJ = 1, table.getn(candidateList) do
+		local diagFrame = candidateList[diagJ]
+
+		BTV:Print(
+			"diag24: candidate " .. diagJ ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		)
+	end
+
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22/diag24 showed candidates from hotkeyValueText
+	-- onward drifting by up to ~114px between fits sharing the IDENTICAL
+	-- toggle state, even though none of that chain (hotkeyTitle ->
+	-- hotkeySlider -> hotkeyValueText -> countTitle -> countSlider ->
+	-- countValueText -> snapToAdjacentCheckbox -> snapToAdjacentDescription
+	-- -> modernBorderStyleCheckbox) is ever re-anchored after panel
+	-- creation (confirmed by grepping every :SetPoint call on these
+	-- frames) - yet mainBarStanceSwapDescription, the fixed anchor this
+	-- whole chain hangs off, measures a perfectly CONSTANT depth every
+	-- time. Dumping this chain with real labels (diag22/24 show most of
+	-- these as anonymous "name=nil") at the SAME post-scroll-reset moment
+	-- diag24 uses, to find exactly which link's depth stops matching its
+	-- predecessor's. Only meaningful for the General view (nil-guarded
+	-- for Bars/Profiles, whose panel has none of these fields).
+	-- Remove once root-caused.
+	if scrollChildPanel.hotkeyTitle then
+		local diag25Names = {
+			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
+			"countTitle", "countSlider", "countValueText", "countResetButton",
+			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
+			"modernBorderStyleCheckbox",
+		}
+
+		BTV:Print("diag25: static-chain trace, referenceTop=" .. tostring(diagReferenceTop))
+
+		local diagK
+
+		for diagK = 1, table.getn(diag25Names) do
+			local key = diag25Names[diagK]
+			local frame = scrollChildPanel[key]
+
+			if frame then
+				local bottom = frame:GetBottom()
+
+				BTV:Print(
+					"diag25: " .. key ..
+					" shown=" .. tostring(frame:IsShown()) ..
+					" bottom=" .. tostring(bottom) ..
+					" depth=" .. tostring(bottom and (diagReferenceTop - bottom))
+				)
+			else
+				BTV:Print("diag25: " .. key .. " <nil>")
+			end
+		end
+	end
 
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
@@ -4827,24 +4895,11 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		viewportHeight = maxViewportHeight
 	end
 
-	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation): diag22 showed every candidate's own shown/bottom
-	-- state was sane and correctly populated at measurement time, so the
-	-- bug isn't in WHICH candidates get measured - this prints the actual
-	-- computed numbers (reference top, raw depth, and every height this
-	-- function derives from it) so the next repro shows exactly where a
-	-- wrong value first appears. Remove once root-caused.
-	BTV:Print(
-		"diag23: referenceTop=" .. tostring(scrollChildPanel:GetTop()) ..
-		" contentDepth=" .. tostring(contentDepth) ..
-		" measuredContentHeight=" .. tostring(measuredContentHeight) ..
-		" sharedRequirement=" .. tostring(sharedRequirement) ..
-		" minContentHeight=" .. tostring(minContentHeight) ..
-		" contentHeight=" .. tostring(contentHeight) ..
-		" viewportHeight=" .. tostring(viewportHeight) ..
-		" maxViewportHeight=" .. tostring(maxViewportHeight) ..
-		" previousContentScroll=" .. tostring(previousContentScroll)
-	)
+	-- Bisection round 2 (UI redesign branch, General-panel disappearing-
+	-- items investigation): diag23 removed for this round (diag22 also
+	-- removed, below), diag24+diag25 kept exactly as in the known-working
+	-- a04afec commit - round 1 (diag22+diag23 only, no diag24/diag25)
+	-- still reproduced the bug, so testing the flip: diag24+diag25 alone.
 
 	BTV:UpdateScrollFrame(
 		scrollFrame,
@@ -5055,33 +5110,6 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
-
-	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation): diag20 showed the measured content height matching
-	-- modernBorderStyleDescription's own depth exactly - i.e. every
-	-- candidate from globalSpacingCheckbox onward got skipped by
-	-- MeasureDeepestExtent - but diag20 is a manually-typed slash command
-	-- run AFTER the fact, so it can't tell "those candidates really were
-	-- skipped at measurement time" apart from "the deferred Fit just
-	-- hadn't run yet when diag20 was typed, and this is stale data from
-	-- an earlier fit". Printing straight from inside this function
-	-- (n and each candidate's own IsShown()/GetBottom() at the exact
-	-- moment it actually runs) removes that timing ambiguity entirely.
-	-- Remove once root-caused.
-	BTV:Print("diag22: FitSettingsWindowToGeneralView candidates n=" .. tostring(n))
-
-	local diagI
-
-	for diagI = 1, n do
-		local diagFrame = candidates[diagI]
-
-		BTV:Print(
-			"diag22: candidate " .. diagI ..
-			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
-			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
-			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
-		)
-	end
 
 	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
 end
