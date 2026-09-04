@@ -5264,18 +5264,6 @@ local function CreateExtraBarAssignmentRow(parent, labelText, getFn, setFn, drop
 	end
 
 	dropdown.onSelect = function(value)
-		-- Temporary diag print (UI redesign branch, stance/page dropdown
-		-- investigation - /btv diag16) - remove once the bug is confirmed
-		-- fixed live. The stack dump distinguishes a callback that came
-		-- through the dropdown's own button (UIWidgets.lua's info.func,
-		-- which prints its own line just before this one) from one invoked
-		-- directly by something else entirely.
-		BTV:Print("diag16: onSelect fired for " .. tostring(dropdownName) .. " value=" .. tostring(value))
-
-		if debugstack then
-			BTV:Print("diag16: onSelect caller -> " .. tostring(debugstack(2, 4, 0)))
-		end
-
 		setFn(value ~= 0 and value or nil)
 		RefreshValue()
 	end
@@ -5311,14 +5299,6 @@ end
 function BTV:RebuildMainBarAssignmentRows()
 	local page = settingsFrame and settingsFrame.pages[1]
 
-	-- Temporary diag print (UI redesign branch, stance/page dropdown
-	-- investigation - /btv diag16) - remove once the bug is confirmed
-	-- fixed live.
-	BTV:Print(
-		"diag16: RebuildMainBarAssignmentRows called, page=" .. tostring(page ~= nil) ..
-		" assignmentContainer=" .. tostring(page and page.assignmentContainer ~= nil)
-	)
-
 	if not page or not page.assignmentContainer then
 		return
 	end
@@ -5331,14 +5311,12 @@ function BTV:RebuildMainBarAssignmentRows()
 		CloseDropDownMenus()
 	end
 
-	-- Live diag (UI redesign branch, stance/page dropdown investigation -
-	-- /btv diag16) proved CreateFrame does NOT actually return the same
+	-- Live-confirmed: CreateFrame does NOT actually return the same
 	-- underlying frame object on this client when a name is reused - two
 	-- consecutive rebuilds produced two DIFFERENT dropdown identities
 	-- (confirmed via tostring() address) despite passing the identical
 	-- name string both times, contradicting this function's own previous
-	-- assumption (and UIDropDownMenuMixin's whole generation-tracking
-	-- system, built on that assumption). Concretely: every rebuild was
+	-- assumption. Concretely: every rebuild was
 	-- silently creating a brand new dropdown widget that just HAPPENED to
 	-- share its predecessor's name - and native UIDropDownMenu_* code
 	-- resolves its own sub-pieces (Text/Left/Middle/Right) via

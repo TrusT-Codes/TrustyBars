@@ -781,6 +781,16 @@ Implemented instead as a fresh, standard vanilla-era looping alpha animation: a 
 
 **Where else this likely applies.** Any code in this addon that (a) moves a frame or subtree — `SetVerticalScroll`, `SetPoint`, `Show`/`Hide` on something others anchor to — and then (b) reads positions to measure or fit, is exposed to the same trap. `DeferFit` (one frame's delay) is *not* sufficient protection on its own. The correct pattern is the explicit top-down resolve pass above.
 
+## 5ag. `CreateFrame` with an already-used name creates a SECOND frame sharing that name — it does not return the existing one
+
+**Live-confirmed during the UI-redesign branch's stance/page dropdown investigation.** Two consecutive `RebuildMainBarAssignmentRows` calls, each passing the *identical* name string to `CreateFrame`, produced two **different** frame objects (confirmed by comparing `tostring(dropdown)` addresses across rebuilds). The widely-assumed vanilla behavior — "a name that already exists as a global returns that same frame back" — does **not** hold here.
+
+**Why it matters, and the bug it caused.** The native `UIDropDownMenu_*` functions resolve their own sub-widgets by string lookup: `getglobal(self:GetName() .. "Text")`, `...Left`, `...Middle`, `...Right`. When two live frames both answer to the same name, those lookups can land on the wrong frame's regions, which is exactly what produced the reported symptom: the Main Bar page's stance/page dropdowns rendered with a fragmented skin and a blank label after switching away from the page and back. Hiding or reparenting the older frame does **not** help — a hidden frame's same-named regions are still what `getglobal` finds.
+
+**The fix pattern:** make each rebuild's frame names genuinely unique rather than relying on reuse. `Settings.lua`'s `RebuildMainBarAssignmentRows` bumps a per-page `assignmentRebuildGeneration` counter and suffixes it onto every dropdown name it creates, so no two rebuilds' dropdowns (or their native sub-pieces) can ever collide.
+
+**Corollaries.** Any code in this addon that passes a fixed name to `CreateFrame` on a path that can run more than once is leaking a new frame per call. That is usually harmless for a plain container, but it is *not* harmless for anything built on a FrameXML template whose own code does `getglobal(name .. "...")` — dropdowns above all. Note this cuts the other way too: you cannot use a stable name to deliberately persist a frame's identity or state across rebuilds, because you simply get a fresh frame each time.
+
 ## 6. Summary: what to build vs. what to reuse
 
 
