@@ -535,6 +535,23 @@ function BTV:CreateScrollFrame(parent, name, scrollbarOnLeft)
 		scrollBar:SetPoint("BOTTOMRIGHT", scrollFrame, "BOTTOMLEFT", -4, 16)
 	end
 
+	if scrollBar then
+		-- Same dark backdrop the top nav tabs carry
+		-- (BTV:StyleModernButton, UIWidgets.lua) so the scrollbar reads as
+		-- part of the same UI rather than a bare native slider track.
+		scrollBar:SetBackdrop({
+			bgFile   = "Interface\\Tooltips\\UI-Tooltip-Background",
+			edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+			tile = true,
+			tileSize = 16,
+			edgeSize = 12,
+			insets = { left = 3, right = 3, top = 3, bottom = 3 },
+		})
+
+		scrollBar:SetBackdropColor(0.08, 0.08, 0.08, 0.85)
+		scrollBar:SetBackdropBorderColor(0.55, 0.55, 0.55, 1)
+	end
+
 	scrollFrame:EnableMouseWheel(true)
 
 	scrollFrame:SetScript("OnMouseWheel", function()
@@ -1041,12 +1058,14 @@ local function CreateSettingsFrame()
 	f.contentScrollFrame = BTV:CreateScrollFrame(f, "BTVanillaSettingsContentScrollFrame")
 
 	f.contentScrollFrame:SetHeight(610)
-	-- Narrowed by a SECOND SETTINGS_SCROLLBAR_RESERVED_WIDTH (on top of its
-	-- own scrollbar's usual reservation) - listPanel above shifted right by
-	-- this same amount to make room for ITS OWN scrollbar on its left
-	-- side, so this shrinks from the left to keep the visual gap between
-	-- the two panels unchanged rather than growing it.
-	f.contentScrollFrame:SetWidth(580 - SETTINGS_SCROLLBAR_RESERVED_WIDTH - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
+	-- 602 = the window's own 780 width, minus the 18px padding on each side,
+	-- minus listPanel's 140 width, minus the 2px gap between the two panels.
+	-- Then minus BOTH scrollbar reservations: this frame's own (on its
+	-- right) and listPanel's (on its left, since that one is anchored
+	-- left-side per BTV:CreateScrollFrame's scrollbarOnLeft). Anchored by
+	-- TOPRIGHT, so narrowing it moves only its LEFT edge - which is what
+	-- sets the gap to the bar list beside it.
+	f.contentScrollFrame:SetWidth(602 - SETTINGS_SCROLLBAR_RESERVED_WIDTH - SETTINGS_SCROLLBAR_RESERVED_WIDTH)
 
 	f.contentScrollFrame:SetPoint(
 		"TOPRIGHT",
@@ -4496,26 +4515,47 @@ local function AppendCandidate(list, n, frame)
 	return n
 end
 
-local function ConsiderFrameBottom(frame, lowestBottom)
-	if not frame or not frame.GetBottom then
-		return lowestBottom
+-- Deepest distance from `referenceTop` (a real, resolved GetTop() of the
+-- scroll child every candidate lives inside) down to any candidate's own
+-- bottom edge - i.e. exactly how much vertical room this content needs.
+--
+-- Measured as a DELTA between two live positions rather than against a
+-- computed "where the window's top edge should be" estimate: the settings
+-- window is movable (f:SetMovable(true)/StartMoving, CreateSettingsFrame),
+-- so the old screen-center-derived estimate
+-- ((GetScreenHeight() / 2) + (frameHeight / 2) - SETTINGS_CHROME_TOP) was
+-- only ever correct while the window happened to still sit exactly where
+-- it was first anchored. Once dragged anywhere, every fit computed a
+-- wrong height - sometimes SHORTER than the content, which also silently
+-- suppressed the scrollbar (BTV:UpdateScrollFrame only shows one when
+-- requiredContentHeight exceeds the viewport), leaving content both cut
+-- off AND unreachable. A top-to-bottom delta is position-independent, so
+-- it stays correct wherever the window has been dragged to.
+local function MeasureDeepestExtent(candidateList, referenceTop)
+	if not candidateList or not referenceTop then
+		return nil
 	end
 
-	if frame.IsShown and not frame:IsShown() then
-		return lowestBottom
+	local deepest = nil
+	local i
+
+	for i = 1, table.getn(candidateList) do
+		local frame = candidateList[i]
+
+		if frame and frame.GetBottom and not (frame.IsShown and not frame:IsShown()) then
+			local bottom = frame:GetBottom()
+
+			if bottom then
+				local depth = referenceTop - bottom
+
+				if not deepest or depth > deepest then
+					deepest = depth
+				end
+			end
+		end
 	end
 
-	local bottom = frame:GetBottom()
-
-	if not bottom then
-		return lowestBottom
-	end
-
-	if not lowestBottom or bottom < lowestBottom then
-		return bottom
-	end
-
-	return lowestBottom
+	return deepest
 end
 
 -- Resizes `scrollChildPanel` (settingsFrame.contentPanel/generalPanel/
@@ -4535,80 +4575,69 @@ end
 -- previous behavior, since settingsFrame.listPanel used to be a plain,
 -- non-scrolling Frame just given a same-as-content SetHeight with nothing
 -- to actually clip its rows to that height.
-local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel, listCandidateList)
+-- minContentHeight (optional): a floor for the shared viewport, on top of
+-- SETTINGS_CONTENT_MIN_HEIGHT - see FitSettingsWindowToBarPage's own
+-- "standard bar page" baseline, which keeps the window from shrinking
+-- below what an ordinary bar page needs just because the page currently
+-- being shown happens to be a shorter one.
+--
+-- Returns the measured (unclamped, unfloored) content height so callers
+-- can record a baseline from it.
+local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel, listCandidateList, minContentHeight)
 	if not settingsFrame or not scrollFrame or not scrollChildPanel then
-		return
+		return nil
 	end
 
-	-- settingsFrame is CENTER-anchored to UIParent, so its own top edge is
-	-- always (screen height / 2) + (its own current height / 2) - computed
-	-- this way rather than settingsFrame:GetTop() (an anchor-derived read)
-	-- because GetHeight() reflects an explicit SetHeight() call
-	-- immediately (a direct property), while GetTop() live-tested as NOT
-	-- reliably resolved yet the instant this function re-runs right after
-	-- a DIFFERENT view's own SetHeight call just changed it (switching
-	-- straight from a short view to a tall one produced a viewport taller
-	-- than the window around it, self-correcting the next time the same
-	-- view was shown - this sidesteps that class of bug entirely).
-	local frameHeight = settingsFrame:GetHeight()
-
-	if not frameHeight then
-		return
-	end
-
-	local top = (GetScreenHeight() / 2) + (frameHeight / 2) - SETTINGS_CHROME_TOP
-
-	-- Every candidate below is a descendant of scrollChildPanel, which is
-	-- PERMANENTLY the given scrollFrame's scroll child (set once, at
-	-- creation - see CreateSettingsFrame/BTV:CreateWideContentScrollFrame's
-	-- own comments on why nothing here ever re-targets SetScrollChild at
-	-- a different frame) - its GetBottom() reads as a real SCREEN
-	-- position that shifts with the current scroll offset, so scroll has
-	-- to be reset to the top BEFORE measuring or a previously-scrolled
-	-- view would measure as shorter than it really is.
+	-- Both scroll positions have to be reset to the top BEFORE measuring:
+	-- GetTop()/GetBottom() read real SCREEN positions that shift with the
+	-- current scroll offset, so a previously-scrolled view would otherwise
+	-- measure as shorter than it really is.
 	scrollFrame:SetVerticalScroll(0)
 
 	if listCandidateList and settingsFrame.listPanel then
 		settingsFrame.listPanel:SetVerticalScroll(0)
 	end
 
-	local lowestBottom = nil
-	local i
+	-- Every candidate is a descendant of scrollChildPanel, which is
+	-- PERMANENTLY the given scrollFrame's scroll child (set once, at
+	-- creation - see CreateSettingsFrame/BTV:CreateWideContentScrollFrame's
+	-- own comments on why nothing here ever re-targets SetScrollChild at a
+	-- different frame), so its own top is the right reference to measure
+	-- each candidate's depth from.
+	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
-	for i = 1, table.getn(candidateList) do
-		lowestBottom = ConsiderFrameBottom(candidateList[i], lowestBottom)
+	local listDepth = nil
+
+	if listCandidateList and settingsFrame.listContent then
+		listDepth = MeasureDeepestExtent(listCandidateList, settingsFrame.listContent:GetTop())
 	end
 
-	local listLowestBottom = nil
-
-	if listCandidateList then
-		for i = 1, table.getn(listCandidateList) do
-			listLowestBottom = ConsiderFrameBottom(listCandidateList[i], listLowestBottom)
-		end
-	end
-
-	-- The shared viewport is driven by whichever side's content reaches
-	-- further down (a SMALLER GetBottom() value, WoW's Y axis grows
-	-- upward) - same "tallest side wins" rule as before, just now computed
-	-- from two independently-measured sides instead of one merged list.
-	local overallLowestBottom = lowestBottom
-
-	if listLowestBottom and (not overallLowestBottom or listLowestBottom < overallLowestBottom) then
-		overallLowestBottom = listLowestBottom
-	end
-
-	if not overallLowestBottom then
-		return
+	if not contentDepth and not listDepth then
+		return nil
 	end
 
 	local BOTTOM_MARGIN = 20
-	local contentHeight = lowestBottom and ((top - lowestBottom) + BOTTOM_MARGIN) or SETTINGS_CONTENT_MIN_HEIGHT
-	local listContentHeight = listLowestBottom and ((top - listLowestBottom) + BOTTOM_MARGIN) or 0
-	local sharedRequirement = (top - overallLowestBottom) + BOTTOM_MARGIN
+	local measuredContentHeight = contentDepth and (contentDepth + BOTTOM_MARGIN) or 0
+	local listContentHeight = listDepth and (listDepth + BOTTOM_MARGIN) or 0
+
+	-- The shared viewport is driven by whichever side needs more room -
+	-- same "tallest side wins" rule as before, just now from two
+	-- independently measured depths instead of one merged bottom edge.
+	local sharedRequirement = measuredContentHeight
+
+	if listContentHeight > sharedRequirement then
+		sharedRequirement = listContentHeight
+	end
+
+	if minContentHeight and sharedRequirement < minContentHeight then
+		sharedRequirement = minContentHeight
+	end
 
 	if sharedRequirement < SETTINGS_CONTENT_MIN_HEIGHT then
 		sharedRequirement = SETTINGS_CONTENT_MIN_HEIGHT
 	end
+
+	local contentHeight = measuredContentHeight
 
 	if contentHeight < SETTINGS_CONTENT_MIN_HEIGHT then
 		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
@@ -4650,6 +4679,8 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	settingsFrame:SetHeight(
 		viewportHeight + SETTINGS_CHROME_TOP + SETTINGS_CHROME_BOTTOM
 	)
+
+	return measuredContentHeight
 end
 
 -- Bars view: combines the current bar page's own controls with the bar
@@ -4766,7 +4797,30 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	-- every bar page uses page:SetAllPoints(settingsFrame.contentPanel)
 	-- (GetOrCreateBarPage), so `page` always just mirrors contentPanel's
 	-- own rect rather than having independently meaningful dimensions.
-	ApplySettingsHeightFromCandidates(candidates, settingsFrame.contentScrollFrame, settingsFrame.contentPanel, listCandidates)
+	local measured = ApplySettingsHeightFromCandidates(
+		candidates,
+		settingsFrame.contentScrollFrame,
+		settingsFrame.contentPanel,
+		listCandidates,
+		settingsFrame.standardBarPageHeight
+	)
+
+	-- "Standard bar page" baseline: every numbered bar page except bar 1
+	-- (Action Bars 2-5 and Extra Bars 6-9) is built by the same code path
+	-- with the same controls, so they all measure the same height - record
+	-- it and use it as the window's floor from then on (passed back in as
+	-- minContentHeight above). This is what stops the window from resizing
+	-- at all while clicking between those pages, and from shrinking below
+	-- that baseline when a SHORTER page (a simple bar) is selected.
+	--
+	-- Bar 1 is deliberately excluded: its Stance/Page Bar Assignment rows
+	-- make it taller than a standard page, and using it as the baseline
+	-- would inflate every other page to Main Bar's height.
+	if measured and type(barId) == "number" and barId ~= 1 then
+		if not settingsFrame.standardBarPageHeight or measured > settingsFrame.standardBarPageHeight then
+			settingsFrame.standardBarPageHeight = measured
+		end
+	end
 end
 
 -- General view: no bar list is shown here, just the checkbox and its
