@@ -5076,17 +5076,42 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- for its candidate handling now.
 
 	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation, round 2): mirrors the OLD (confirmed-working) diag22
-	-- touch-point - a full read pass over every candidate's GetBottom()/
-	-- IsShown() at THIS point, before ApplySettingsHeightFromCandidates
-	-- even runs - to reproduce the exact same set of reads the previously-
-	-- working commit performed, in case this earlier read (not just the
-	-- later diag26 pass) is what actually matters. Remove once root-caused.
+	-- investigation, round 3): diag26 (round 2) mirrored the old diag22/24
+	-- touch-points exactly and the bug STILL reproduced without diag25's
+	-- own reads - the one thing diag26 didn't cover. diag25 uniquely read
+	-- 5 frames that are NOT in `candidates` and are never read by anything
+	-- else in this file: hotkeyTitle, hotkeySlider, countTitle, countSlider,
+	-- snapToAdjacentCheckbox (the static anchors candidates like
+	-- hotkeyValueText/countValueText/snapToAdjacentDescription hang off,
+	-- but which themselves are skipped as measurement candidates). Testing
+	-- whether forcing a read on THESE specific frames - not just the
+	-- ones actually measured - is what settles the layout this client
+	-- needs before GetBottom() on their descendants is trustworthy.
+	-- Remove once root-caused.
 	do
 		local diagM
 
 		for diagM = 1, n do
 			local diagFrame = candidates[diagM]
+
+			if diagFrame and diagFrame.GetBottom then
+				diagFrame:GetBottom()
+			end
+
+			if diagFrame and diagFrame.IsShown then
+				diagFrame:IsShown()
+			end
+		end
+
+		local diagExtraFrames = {
+			panel.hotkeyTitle, panel.hotkeySlider,
+			panel.countTitle, panel.countSlider,
+			panel.snapToAdjacentCheckbox,
+		}
+		local diagN
+
+		for diagN = 1, table.getn(diagExtraFrames) do
+			local diagFrame = diagExtraFrames[diagN]
 
 			if diagFrame and diagFrame.GetBottom then
 				diagFrame:GetBottom()
@@ -5987,6 +6012,8 @@ function BTV:GetOrCreateGeneralPanel()
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
 
+	panel.hotkeyTitle = hotkeyTitle
+
 
 	local hotkeySlider = CreateSettingSlider(
 		panel,
@@ -6148,6 +6175,7 @@ function BTV:GetOrCreateGeneralPanel()
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
 
+	panel.countTitle = countTitle
 
 	local countSlider = CreateSettingSlider(
 		panel,
