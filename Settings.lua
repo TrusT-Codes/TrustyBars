@@ -4767,6 +4767,50 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation, round 2): removing the earlier diag22/24/25 trace
+	-- prints (pure GetBottom()/GetTop() reads, same candidates, same spot)
+	-- made the bug come back, and checking out the commit before they were
+	-- added reproduces it too - i.e. those reads themselves were load-
+	-- bearing, not just observational. DeferFit already waits one frame
+	-- before this function runs specifically because GetBottom() can be
+	-- stale in the same tick a layout change happens (see DeferFit's own
+	-- comment above) - this checks whether ONE deferred frame is
+	-- sometimes still not enough, and a second, immediate re-read of the
+	-- same getter within this same tick returns a different (fresher)
+	-- value than the first. Prints first-vs-second GetTop()/GetBottom()
+	-- for scrollChildPanel and every candidate. Remove once root-caused.
+	do
+		local diag26Top1 = scrollChildPanel:GetTop()
+		local diag26Top2 = scrollChildPanel:GetTop()
+
+		BTV:Print(
+			"diag26: scrollChildPanel top1=" .. tostring(diag26Top1) ..
+			" top2=" .. tostring(diag26Top2) ..
+			" differs=" .. tostring(diag26Top1 ~= diag26Top2)
+		)
+
+		local diagL
+
+		for diagL = 1, table.getn(candidateList) do
+			local diagFrame = candidateList[diagL]
+
+			if diagFrame and diagFrame.GetBottom then
+				local b1 = diagFrame:GetBottom()
+				local b2 = diagFrame:GetBottom()
+
+				BTV:Print(
+					"diag26: candidate " .. diagL ..
+					" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+					" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+					" bottom1=" .. tostring(b1) ..
+					" bottom2=" .. tostring(b2) ..
+					" differs=" .. tostring(b1 ~= b2)
+				)
+			end
+		end
+	end
+
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
 	local listDepth = nil
@@ -5030,6 +5074,29 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- "Enable Better Experience Bar" - RELOCATED to the Experience Bar's
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
+
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation, round 2): mirrors the OLD (confirmed-working) diag22
+	-- touch-point - a full read pass over every candidate's GetBottom()/
+	-- IsShown() at THIS point, before ApplySettingsHeightFromCandidates
+	-- even runs - to reproduce the exact same set of reads the previously-
+	-- working commit performed, in case this earlier read (not just the
+	-- later diag26 pass) is what actually matters. Remove once root-caused.
+	do
+		local diagM
+
+		for diagM = 1, n do
+			local diagFrame = candidates[diagM]
+
+			if diagFrame and diagFrame.GetBottom then
+				diagFrame:GetBottom()
+			end
+
+			if diagFrame and diagFrame.IsShown then
+				diagFrame:IsShown()
+			end
+		end
+	end
 
 	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
 end
