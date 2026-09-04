@@ -4766,6 +4766,34 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- own comments on why nothing here ever re-targets SetScrollChild at a
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
+
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag22's own reads happened BEFORE the
+	-- SetVerticalScroll(0) resets above (it lives in a separate function,
+	-- FitSettingsWindowToGeneralView, called before this one) - invalidating
+	-- direct comparison against diag23's referenceTop, since a candidate's
+	-- GetBottom() shifts with scroll position. This dumps the SAME
+	-- candidateList's shown/bottom state AT THE EXACT POINT
+	-- MeasureDeepestExtent itself is about to read it (i.e. after the
+	-- scroll reset, same snapshot the real computation uses), so it can be
+	-- trusted against referenceTop directly. Remove once root-caused.
+	local diagReferenceTop = scrollChildPanel:GetTop()
+
+	BTV:Print("diag24: referenceTop=" .. tostring(diagReferenceTop) .. " n=" .. tostring(table.getn(candidateList)))
+
+	local diagJ
+
+	for diagJ = 1, table.getn(candidateList) do
+		local diagFrame = candidateList[diagJ]
+
+		BTV:Print(
+			"diag24: candidate " .. diagJ ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		)
+	end
+
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
 	local listDepth = nil
