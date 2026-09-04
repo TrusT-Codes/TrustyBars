@@ -5030,6 +5030,33 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- own settings page (round 17 item 5) - see FitSettingsWindowToBarPage
 	-- for its candidate handling now.
 
+	-- Temporary diag (UI redesign branch, General-panel disappearing-items
+	-- investigation): diag20 showed the measured content height matching
+	-- modernBorderStyleDescription's own depth exactly - i.e. every
+	-- candidate from globalSpacingCheckbox onward got skipped by
+	-- MeasureDeepestExtent - but diag20 is a manually-typed slash command
+	-- run AFTER the fact, so it can't tell "those candidates really were
+	-- skipped at measurement time" apart from "the deferred Fit just
+	-- hadn't run yet when diag20 was typed, and this is stale data from
+	-- an earlier fit". Printing straight from inside this function
+	-- (n and each candidate's own IsShown()/GetBottom() at the exact
+	-- moment it actually runs) removes that timing ambiguity entirely.
+	-- Remove once root-caused.
+	BTV:Print("diag22: FitSettingsWindowToGeneralView candidates n=" .. tostring(n))
+
+	local diagI
+
+	for diagI = 1, n do
+		local diagFrame = candidates[diagI]
+
+		BTV:Print(
+			"diag22: candidate " .. diagI ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		)
+	end
+
 	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
 end
 
