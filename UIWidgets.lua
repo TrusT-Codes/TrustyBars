@@ -85,8 +85,18 @@ function BTVInlineDropdownMixin:OnLoad(widthPixels)
 	-- own :Show() call) suggest UIDropDownMenuTemplate's skin textures
 	-- don't reliably finish settling into the width this call already
 	-- passed them at that point - cheap to just redo once actually shown.
+	-- Same reasoning applies to the displayed label text: SetSelected can
+	-- (and for the Main Bar assignment rows, always does) run while this
+	-- frame is still hidden, and UIDropDownMenu_SetText doesn't reliably
+	-- stick from that state either - reapplying the cached
+	-- selectedDisplayText here fixes the label going blank/stale after
+	-- switching bar pages away and back.
 	self:SetScript("OnShow", function()
 		UIDropDownMenu_SetWidth(this.widthPixels, this)
+
+		if this.selectedDisplayText then
+			UIDropDownMenu_SetText(this.selectedDisplayText, this)
+		end
 	end)
 
 	local dropdown = self
@@ -181,7 +191,14 @@ function BTVInlineDropdownMixin:SetSelected(value, displayText)
 		end
 	end
 
-	UIDropDownMenu_SetText(displayText or value, self)
+	-- Cached so OnShow (below) can reapply the label - UIDropDownMenu_SetText
+	-- called while this frame is still hidden (RebuildMainBarAssignmentRows
+	-- runs RefreshValue()/SetSelected before ShowBarPage's own :Show()) does
+	-- not reliably stick, same underlying cause as the width-fragmentation
+	-- fix already applied in OnLoad's OnShow handler below.
+	self.selectedDisplayText = displayText or value
+
+	UIDropDownMenu_SetText(self.selectedDisplayText, self)
 end
 
 function BTVInlineDropdownMixin:GetSelected()

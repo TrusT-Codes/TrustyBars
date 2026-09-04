@@ -529,6 +529,21 @@ function BTV:CreateScrollFrame(parent, name, scrollbarOnLeft)
 
 	scrollFrame.scrollBar = scrollBar
 
+	-- Temporary diag (UI redesign branch, MainBar-scrollbar-outside-window
+	-- investigation - diag18 showed contentScrollFrame.needsScrollbar=false
+	-- while its native scrollBar was still IsShown()=true, which our own
+	-- Show()/Hide() calls in BTV:UpdateScrollFrame should never leave
+	-- inconsistent - something else is calling :Show() on this frame.
+	-- Reports every real Show() with a caller stack so the source can be
+	-- identified directly instead of guessed. Remove once root-caused.
+	if scrollBar and debugstack then
+		scrollBar:HookScript("OnShow", function()
+			BTV:Print(
+				"diag19: " .. tostring(name) .. "ScrollBar shown -> " .. tostring(debugstack(2, 4, 0))
+			)
+		end)
+	end
+
 	if scrollBar and scrollbarOnLeft then
 		scrollBar:ClearAllPoints()
 		scrollBar:SetPoint("TOPRIGHT", scrollFrame, "TOPLEFT", -4, -16)
