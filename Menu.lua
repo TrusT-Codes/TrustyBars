@@ -1,8 +1,6 @@
 -- Menu.lua
--- Right-click-style context menu opened by the minimap button, using
--- vanilla's native UIDropDownMenu system (a genuine, long-standing part
--- of FrameXML - the same mechanism Blizzard's own chat channel and
--- friends-list menus use), not a custom-built dropdown.
+-- Context menu opened by the minimap button, built on vanilla's native
+-- UIDropDownMenuTemplate system.
 
 local BTV = BTVanilla
 
@@ -56,12 +54,6 @@ local function InitializeMenu()
 	info.func = function() BTV:ToggleAlwaysShowMultibars() end
 	info.keepShownOnClick = true
 	UIDropDownMenu_AddButton(info)
-
-	-- "Add New Bar" - REMOVED (Stance/Page Bar Assignment feature, Part 1).
-	-- Custom-bar capacity is now fixed at exactly 4 permanent Extra Bars
-	-- (Settings.lua's bar list, ids 6-9), each toggled on/off via its own
-	-- inline checkbox rather than added/removed - see Bar.lua's
-	-- IsExtraBarId/SetExtraBarEnabled and Core.lua's EnsureExtraBars.
 end
 
 UIDropDownMenu_Initialize(BTV.menuFrame, InitializeMenu, "MENU")

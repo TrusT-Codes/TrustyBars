@@ -1,38 +1,14 @@
 -- Bar.lua
--- Multi-bar grid engine for BTVanilla.
+-- Multi-bar grid engine for BTVanilla, backed by the action-slot pool.
 --
--- Vanilla WoW 1.12.1 / Lua 5.0 compatible.
+-- Each bar's saved config: id, point, relativePoint, x, y, cols, rows,
+-- buttonSize, slotStart, buttonCount.
 --
--- Each bar has its own saved configuration:
---
---   id
---   point
---   relativePoint
---   x
---   y
---   cols
---   rows
---   buttonSize
---   slotStart
---   buttonCount
---
--- IMPORTANT:
--- Bar IDs are persistent identities. They are NOT array indices.
---
--- Example:
---
---   Bar 1
---   Bar 2
---   Bar 4
---
--- is perfectly valid after Bar 3 has been deleted.
---
--- Action slots are also persistent. Deleting a bar NEVER moves or
--- reassigns another bar's slots.
---
--- New bars search the entire available action-slot pool for a free
--- contiguous block instead of assuming that the highest existing slot
--- is always the correct place to start.
+-- Bar IDs are persistent identities, not array indices (e.g. bars 1, 2, 4
+-- can exist after bar 3 is deleted). Action slots are also persistent -
+-- deleting a bar never moves or reassigns another bar's slots. New bars
+-- search the whole action-slot pool for a free contiguous block rather
+-- than starting after the highest existing bar.
 
 local BTV = BTVanilla
 
@@ -63,12 +39,8 @@ end
 -- Helpers
 -------------------------------------------------------------------------
 
--- cfg.spacing: default bars 1-5 have a real captured value (Core.lua's
--- CaptureNativeSpacing/seedDefaultBars); Extra Bars (id 6+, bug-fix batch
--- Fix 4) are also given a real spacing = 0 field at creation (Core.lua's
--- seedExtraBarConfig) so their own Settings-page slider has something to
--- read/write. The `or 0` fallback here now exists purely for any bar
--- saved before Fix 4 whose config predates that field.
+-- cfg.spacing may be absent on a bar saved before spacing was tracked;
+-- default to 0.
 local function BarFrameSize(cfg)
 	local spacing = cfg.spacing or 0
 
@@ -79,10 +51,7 @@ local function BarFrameSize(cfg)
 end
 
 -- Converts a 1-based button index into a 0-based column and row.
---
--- Lua 5.0 has no % operator, therefore:
---
---   remainder = i - (math.floor(i / cols) * cols)
+-- Lua 5.0 has no % operator: remainder = i - (math.floor(i / cols) * cols).
 
 local function ButtonIndexToGridPos(index, cols)
 	local i = index - 1
@@ -124,10 +93,8 @@ function BTV:LayoutButtons(bar)
 	end
 
 	local cfg = bar.config
-	-- Every bar now has a real cfg.spacing field (default bars via
-	-- Core.lua's CaptureNativeSpacing, Extra Bars via seedExtraBarConfig's
-	-- explicit spacing = 0 - bug-fix batch Fix 4). `or 0` remains only as
-	-- a fallback for a bar saved before Fix 4.
+	-- cfg.spacing may be absent on a bar saved before spacing was tracked;
+	-- default to 0.
 	local spacing = cfg.spacing or 0
 	local i
 
@@ -156,37 +123,14 @@ end
 -------------------------------------------------------------------------
 -- Bar-level edit-mode overlay
 --
--- Fully owns ALL edit-mode interaction for a bar, mirroring
--- DefaultBars.lua's own container-overlay pattern for its chain-anchored
--- elements: while BTV:IsEditMode() is true, this frame is mouse-enabled
--- and elevated to "TOOLTIP" strata (above the bar/buttons' own "HIGH" -
--- see CreateBarFromConfig), so it wins every hit-test within its bounds
--- and intercepts drag AND right-click uniformly across the whole bar area
--- - button, gap, or beyond-buttonCount cell alike. Outside edit mode it
--- drops back to EnableMouse(false) and "HIGH" strata, becoming completely
--- inert so buttons regain unobstructed native interaction (cast-on-click,
--- native pickup-drag) exactly as if this overlay didn't exist.
---
--- This is the ONLY edit-mode hitbox tint anywhere in the addon, for every
--- bar kind - Button.lua has no per-button equivalent. A bar-level overlay
--- (rather than per-button) is required because custom bars lay out their
--- buttons with zero spacing (LayoutButtons above: xOff = col *
--- cfg.buttonSize, no gap term), but a hidden pool slot (i > buttonCount,
--- SetSlotVisible(false)) leaves a real gap in the middle of an otherwise-
--- full row/column, with no button frame at all sitting over it to catch a
--- right-click there. A single frame spanning the bar's own bounding box
--- has no such gaps by construction.
---
--- BarFrameSize (cfg.buttonSize * cfg.cols/rows, plus any cfg.spacing -
--- bug-fix batch Fix 4 gave custom bars a real, user-adjustable spacing
--- field too) IS exactly the bar frame's own width/height, since
--- CreateBarFromConfig/SetBarButtonSize/ApplyBarShape all size `bar` itself
--- from that same formula - so this overlay never needs separate
--- position/size math of its own, regardless of whatever spacing value the
--- bar currently has: `SetAllPoints(bar)` for custom bars (id 6+), or the
--- same anchor expanded by BTV:GetElementVisualInset(bar) for default bars
--- (id 1-5, see EnsureBarOverlay below) so the tint reaches their visible
--- border's outer edge instead of stopping at the frame.
+-- One full-bar-sized overlay frame owns all edit-mode interaction (drag,
+-- right-click-to-settings, scroll-to-resize) for a bar. It sits above the
+-- bar/buttons' own "HIGH" strata at "TOOLTIP" while edit mode is on, so it
+-- wins every hit-test across the whole bar area, including gaps between
+-- hidden pool slots that have no button frame of their own to catch a
+-- click. Outside edit mode it is mouse-disabled and inert. This is the
+-- only edit-mode hitbox tint in the addon; there is no per-button
+-- equivalent.
 -------------------------------------------------------------------------
 
 local barOverlays = {}
@@ -204,21 +148,16 @@ local function EnsureBarOverlay(bar)
 		bar
 	)
 
-	-- Starts at HIGH strata / bar's own frame level (inert baseline,
-	-- matching the bar/buttons' own round-34 "HIGH" strata - see
-	-- CreateBarFromConfig's comment) - ApplyEditModeVisual below elevates
-	-- to TOOLTIP + EnableMouse(true) for the duration of edit mode only.
+	-- Starts inert at HIGH strata / the bar's own frame level;
+	-- ApplyEditModeVisual below elevates to TOOLTIP + EnableMouse(true)
+	-- for the duration of edit mode only.
 	overlay:SetFrameStrata("HIGH")
 	overlay:SetFrameLevel(bar:GetFrameLevel())
 
-	-- (v1.0 polish pass, RE-ENABLED after live-client diagnosis) Expands
-	-- past `bar`'s own frame bounds for default bars (id 1-5) so this tint
-	-- reaches the visible native border's outer edge instead of stopping
-	-- at the frame - each side independently, since the border's own
-	-- y=-1 anchor offset (BTV.BORDER_Y_OFFSET) makes the top/bottom
-	-- overhang asymmetric (see BTV:GetElementVisualInset's comment,
-	-- Core.lua). Custom bars (id 6+, all 4 insets 0) keep the exact
-	-- SetAllPoints(bar) behavior they always had.
+	-- Default bars (id 1-5) expand the overlay past the bar's own frame
+	-- bounds via GetElementVisualInset so the tint reaches the visible
+	-- native border's outer edge; custom bars (id 6+, all insets 0) just
+	-- SetAllPoints(bar).
 	local insetLeft, insetRight, insetTop, insetBottom = BTV:GetElementVisualInset(bar)
 
 	if insetLeft ~= 0 or insetRight ~= 0 or insetTop ~= 0 or insetBottom ~= 0 then
@@ -233,13 +172,8 @@ local function EnsureBarOverlay(bar)
 	tex:SetVertexColor(0.35, 0.65, 1.0, 0.45)
 	tex:SetAllPoints(overlay)
 
-	-- Round 36 (Item 2): hover border - a plain SetBackdrop edge (no
-	-- bgFile, the blue tint texture above already fills that role), kept
-	-- fully transparent until OnEnter/OnLeave below toggle it. Mirrors
-	-- Button.lua's own SetBackdropBorderColor-toggle technique for its
-	-- native-border buttons (Init/UpdateBackdropVisibility) rather than a
-	-- separate texture, since a backdrop edge already gives a clean solid
-	-- outline with no extra region to keep positioned/sized in sync.
+	-- Hover border: a plain SetBackdrop edge, kept fully transparent until
+	-- OnEnter/OnLeave below toggle it.
 	overlay:SetBackdrop({
 		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
 		edgeSize = 8,
@@ -253,24 +187,15 @@ local function EnsureBarOverlay(bar)
 		this:SetBackdropBorderColor(0, 0, 0, 0)
 	end)
 
-	-- Round 36 (Item 2): centered element-name label, always visible while
-	-- in edit mode (not just on hover) - reuses BTV:GetBarDisplayName
-	-- (Core.lua), the exact same friendly name Settings.lua's bar list/page
-	-- title already shows, so there's no separate/divergent name invented
-	-- here. A plain child FontString has no Show/Hide of its own called
-	-- anywhere - it simply inherits overlay's own Show()/Hide() state
-	-- (ApplyEditModeVisual below), so the label is shown exactly whenever
-	-- the blue tint is, with no separate bookkeeping.
+	-- Centered element-name label, shown/hidden together with the overlay
+	-- (it has no Show/Hide of its own) - reuses BTV:GetBarDisplayName, the
+	-- same name Settings.lua's bar list/page title shows.
 	local nameText = overlay:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 	nameText:SetPoint("CENTER", overlay, "CENTER", 0, 0)
 	nameText:SetText(BTV:GetBarDisplayName(bar.config.id))
 
-	-- Owns dragging directly (SetScript, not HookScript - this is
-	-- entirely our own frame with no native behavior to preserve),
-	-- exactly mirroring DefaultBars.lua's EnsureContainerOverlay pattern
-	-- for its own chain-anchored elements.
-	-- RegisterForDrag is registered once here unconditionally - only
-	-- EnableMouse/strata are toggled per edit-mode state, in
+	-- RegisterForDrag is set once here unconditionally; only
+	-- EnableMouse/strata toggle per edit-mode state, in
 	-- ApplyEditModeVisual below.
 	overlay:RegisterForDrag("LeftButton")
 	overlay:SetScript("OnDragStart", function()
@@ -280,22 +205,17 @@ local function EnsureBarOverlay(bar)
 		BTV:StopBarDrag(bar)
 	end)
 
-	-- Right-click-to-settings. While this overlay is mouse-enabled (edit
-	-- mode only) it fully covers the real buttons underneath, so their
-	-- own right-click handling can no longer receive the event at all -
-	-- this is now the ONLY place that opens bar settings via right-click.
+	-- Right-click-to-settings. While mouse-enabled (edit mode only) this
+	-- overlay fully covers the real buttons underneath, so it is the only
+	-- place that opens bar settings via right-click.
 	overlay:SetScript("OnMouseUp", function()
 		if arg1 == "RightButton" then
 			BTV:OpenBarSettings(bar)
 		end
 	end)
 
-	-- Scroll-wheel-to-resize, matching drag-to-move's existing
-	-- whole-overlay coverage above - mirrors DefaultBars.lua's
-	-- EnsureContainerOverlay OnMouseWheel handler and Button.lua's
-	-- per-button BTVButtonMixin.OnMouseWheel gating logic, reproduced
-	-- here so scroll-to-resize works anywhere over this bar's overlay,
-	-- not just directly over an individual button.
+	-- Scroll-wheel-to-resize, covering the whole overlay the same way
+	-- drag-to-move does, not just directly over an individual button.
 	overlay:EnableMouseWheel(true)
 	overlay:SetScript("OnMouseWheel", function()
 		if not BTV:IsEditMode() then
@@ -332,23 +252,12 @@ function BTV:ApplyEditModeVisual()
 
 	local barId
 	for barId, bar in pairs(self.bars) do
-		-- Bug-fix batch round 3, Bug 1: bars 1-5 are only EVER individually
-		-- draggable (i.e. each button independently movable) when edit mode
-		-- is on AND useDefaultLayout == false - DefaultBars.lua's own
-		-- CanDragDefaultLayout() is exactly this same condition. When
-		-- useDefaultLayout == true, the whole bar is locked to its default
-		-- position as a single unit (no per-button dragging is possible
-		-- either way), so per-button tinting must be suppressed exactly
-		-- like it already correctly is whenever useDefaultLayout == false
-		-- and edit mode is off. This used to only gate the bar-level
-		-- overlay (below) - the per-button tint loop unconditionally used
-		-- `editMode` on its own, which is what let individual buttons on
-		-- bars 1-5 light up blue even while useDefaultLayout == true, even
-		-- though the whole-bar overlay (the only thing actually draggable
-		-- in that state) stayed correctly hidden. Computed BEFORE the
-		-- button loop now so both the per-button tint and the bar-level
-		-- overlay agree on the exact same "is this button/bar actually
-		-- individually draggable right now" condition.
+		-- Bars 1-5 are individually draggable only when edit mode is on
+		-- AND useDefaultLayout is false (mirrors DefaultBars.lua's own
+		-- CanDragDefaultLayout). Computed once here so both the per-button
+		-- tint and the bar-level overlay below agree on the same
+		-- "is this bar actually individually draggable right now"
+		-- condition.
 		local isDefaultBar1to5 = barId and barId >= 1 and barId <= 5
 
 		local canEdit = editMode
@@ -357,13 +266,9 @@ function BTV:ApplyEditModeVisual()
 			canEdit = editMode and BTVanillaDB and BTVanillaDB.useDefaultLayout == false
 		end
 
-		-- There is deliberately no per-button edit-mode tint - the user
-		-- found it "looks weird" in every state, for every bar (default
-		-- 1-5 and custom 6+ alike). The bar-level overlay hitbox tint below
-		-- (EnsureBarOverlay's own texture) is the ONLY edit-mode tint left
-		-- anywhere - it already correctly represents "this whole bar is
-		-- draggable as a unit" with no per-button redundancy needed on top
-		-- of it.
+		-- There is deliberately no per-button edit-mode tint for any bar
+		-- kind; the bar-level overlay hitbox tint below is the only
+		-- edit-mode tint in the addon.
 		if bar and bar.buttons then
 			local i
 
@@ -371,35 +276,17 @@ function BTV:ApplyEditModeVisual()
 				local btn = bar.buttons[i]
 
 				if btn then
-					-- Issue 3 (bug-fix batch v5): re-evaluate final Show/
-					-- Hide state the moment edit mode toggles, not just next
-					-- time some other refresh happens to run - mirrors the
-					-- ACTIONBAR_SHOWGRID/ACTIONBAR_HIDEGRID sweep in
-					-- Button.lua (gridVisibilityFrame's OnEvent above),
-					-- which walks every live custom-bar button the same
-					-- way. UpdateGridVisibility itself now also checks
-					-- BTV:IsEditMode() (see Button.lua), so this call makes
-					-- empty slots become visible/interactable immediately
-					-- on entering edit mode, and correctly revert (hide
-					-- empty slots again per normal rules) immediately on
-					-- exiting.
+					-- Re-evaluate Show/Hide the moment edit mode toggles,
+					-- not just next time some other refresh happens to
+					-- run.
 					btn:UpdateGridVisibility()
 				end
 			end
 		end
 
-		-- Bar-level overlay - see EnsureBarOverlay's comment; this is now
-		-- the only edit-mode hitbox tint. It fully owns edit-mode
-		-- interaction: mouse-enabled and elevated to TOOLTIP strata (above
-		-- the bar/buttons' own round-34 "HIGH" - see CreateBarFromConfig's
-		-- comment) only while editMode is true, so it intercepts every
-		-- drag/right-click within its bounds during that window and is
-		-- otherwise completely inert - mirrors DefaultBars.lua's
-		-- ApplyContainerOverlayVisual gating its own overlay's EnableMouse
-		-- the same way (TOOLTIP, not just HIGH, is needed since the
-		-- "bug-fix batch" filled-multibar-button strata gap, and this
-		-- overlay needs the exact same headroom now that the buttons
-		-- underneath it are "HIGH" too, not "MEDIUM").
+		-- Bar-level overlay: fully owns edit-mode interaction while
+		-- canEdit is true (mouse-enabled, elevated to TOOLTIP strata
+		-- above the bar/buttons' own HIGH), otherwise fully inert.
 		if bar then
 			local overlay = EnsureBarOverlay(bar)
 
@@ -409,14 +296,10 @@ function BTV:ApplyEditModeVisual()
 				overlay:SetFrameStrata("TOOLTIP")
 				overlay:Show()
 
-				-- Round 36 (Item 2): reset the hover border to invisible every
-				-- time edit mode is (re-)entered, rather than leaving whatever
-				-- state a stale OnEnter left it in from a previous edit-mode
-				-- session (mouse was left sitting over the overlay the instant
-				-- edit mode turned off, so OnLeave never fired) - without this
-				-- the border could appear "stuck" on at the very start of a
-				-- new edit-mode session, before the mouse next actually
-				-- leaves/re-enters this overlay.
+				-- Reset the hover border to invisible every time edit
+				-- mode is (re-)entered, in case OnLeave never fired from
+				-- a previous edit-mode session (mouse left sitting over
+				-- the overlay when edit mode turned off).
 				overlay:SetBackdropBorderColor(0, 0, 0, 0)
 			else
 				overlay:SetFrameStrata("HIGH")
@@ -425,15 +308,9 @@ function BTV:ApplyEditModeVisual()
 		end
 	end
 
-	-- Issue 3 (bug-fix batch): default-bar/stance-bar overlays live in
-	-- DefaultBars.lua (they're gated on CanDragDefaultLayout, not just
-	-- edit mode, unlike custom bars above) - folded in here rather than
-	-- added as a separate call at every one of this function's own call
-	-- sites, so both bar kinds' overlays always update together.
-	-- Defensive existence check: DefaultBars.lua loads before this file
-	-- per BTVanilla.toc, so this is always defined in practice, but the
-	-- rest of this codebase already prefers this guard for cross-file
-	-- calls (see e.g. RefreshBarSettingsPage in DefaultBars.lua).
+	-- Also refreshes DefaultBars.lua's own overlays (gated on
+	-- CanDragDefaultLayout, not just edit mode) so both bar kinds update
+	-- together.
 	if self.ApplyDefaultLayoutEditVisual then
 		self:ApplyDefaultLayoutEditVisual()
 	end
@@ -454,13 +331,10 @@ function BTV:SetBarButtonSize(bar, newSize)
 		return
 	end
 
-	-- Button size is deliberately restricted to even values.
-	--
-	-- The edit-mode mouse wheel changes the size by 2 pixels and the
-	-- Settings UI uses the same granularity.
+	-- Restricted to even values, matching the 2px mouse-wheel/Settings UI
+	-- step.
 	newSize = math.floor(newSize / 2) * 2
 
-	-- Keep the same sensible limits used by the addon.
 	if newSize < 16 then
 		newSize = 16
 	end
@@ -491,13 +365,9 @@ end
 -------------------------------------------------------------------------
 -- Spacing (true custom bars, id 6+)
 --
--- Fix 4 (bug-fix batch): mirrors DefaultBars.lua's SetDefaultBarSpacing
--- structure exactly (clamp, write, reapply) - the only difference is this
--- one always writes straight to bar.config (a real custom bar's cfg IS
--- its own BTVanillaDB.bars[] entry, no id==1-vs-2-5 branch needed here)
--- and reapplies via ApplyBarShape, which already re-lays-out the grid from
--- whatever cfg.spacing now holds (LayoutButtons/BarFrameSize above both
--- already read cfg.spacing generically for any bar that has it).
+-- Mirrors DefaultBars.lua's SetDefaultBarSpacing (clamp, write, reapply);
+-- writes directly to bar.config since a custom bar's cfg IS its own
+-- BTVanillaDB.bars[] entry.
 -------------------------------------------------------------------------
 
 function BTV:SetBarSpacing(bar, spacing)
@@ -513,12 +383,9 @@ function BTV:SetBarSpacing(bar, spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- Vanilla-only real minimum spacing - modern needs none (global
-	-- spacing override depends on this asymmetry to compute the right
-	-- real value per style; Settings.lua's GetSpacingDisplayOffset
-	-- separately keeps the per-bar slider's DISPLAYED number invariant
-	-- across a style switch, so the two together give the desired
-	-- behavior without forcing modern's real minimum up to match).
+	-- Vanilla style has a real minimum spacing floor; modern has none.
+	-- Settings.lua's GetSpacingDisplayOffset keeps the per-bar slider's
+	-- displayed number consistent across a style switch.
 	local minSpacing = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
 
 	if spacing < minSpacing then
@@ -538,23 +405,17 @@ end
 -- Global border/spacing style sweep (General tab checkbox,
 -- BTVanillaDB.modernBorderStyle / useDefaultLayout's forced-vanilla lock)
 --
--- Re-styles every bar's buttons for the CURRENT global style
--- (BTV:IsVanillaBorderStyle()) via Button.lua's BTVButtonMixin:ApplyBorderStyle,
--- unconditionally on every call. Separately, exactly once per REAL style
+-- Re-styles every bar's buttons for the current global style
+-- (BTV:IsVanillaBorderStyle(), via Button.lua's
+-- BTVButtonMixin:ApplyBorderStyle) on every call. On a real style
 -- transition (tracked via BTVanillaDB.lastAppliedVanillaStyle, not on
--- every call - this function also runs unconditionally at every login),
--- shifts every bar's buttonSize by BTV.MODERN_BUTTON_SIZE_DELTA (modern
--- buttons need to be this many pixels bigger than vanilla to look the
--- same size - empirically measured), nudges its position to compensate
--- (bars are anchored, not centered, so growing/shrinking shifts them),
--- and shifts its REAL spacing by the same amount in the OPPOSITE
--- direction so buttonSize + spacing stays visually constant - the
--- DISPLAYED spacing number in Settings.lua never changes across a switch
--- because GetSpacingDisplayOffset's vanilla-only offset exactly cancels
--- this real-value shift. Not a live lock - the per-bar Settings.lua
--- spacing/size sliders remain freely adjustable afterward. Called from:
--- the style checkbox's OnClick, useDefaultLayoutCheckbox's OnClick, and
--- once at login after every bar (default + extra) exists.
+-- every call) it also shifts every bar's buttonSize by
+-- BTV.MODERN_BUTTON_SIZE_DELTA, nudges position to compensate, and shifts
+-- real spacing by the same amount in the opposite direction so
+-- buttonSize + spacing stays visually constant - Settings.lua's
+-- GetSpacingDisplayOffset cancels this shift so the displayed spacing
+-- number never changes. Not a live lock; per-bar sliders stay freely
+-- adjustable afterward.
 -------------------------------------------------------------------------
 
 function BTV:ApplyGlobalButtonStyle()
@@ -569,33 +430,22 @@ function BTV:ApplyGlobalButtonStyle()
 	elseif BTVanillaDB.lastAppliedVanillaStyle ~= vanilla then
 		local delta = vanilla and -self.MODERN_BUTTON_SIZE_DELTA or self.MODERN_BUTTON_SIZE_DELTA
 
-		-- Compensates for the size delta above being anchored, not
-		-- centered - growing to modern shifts the bar up-left, shrinking
-		-- back to vanilla shifts it back down-right.
+		-- posShift compensates for the size delta being anchor-relative,
+		-- not centered: growing to modern shifts the bar up-left,
+		-- shrinking back to vanilla shifts it back down-right.
 		local posShift = self.MODERN_BUTTON_SIZE_POSITION_SHIFT
 		local dx = vanilla and posShift or -posShift
 		local dy = vanilla and -posShift or posShift
 
-		-- Opposite sign to the buttonSize delta above: buttonSize +
-		-- spacing must stay visually constant across a switch (going to
-		-- modern, buttons grow +delta so the real gap between them
-		-- shrinks by the same amount, and vice versa going to vanilla).
-		-- The DISPLAYED spacing number never changes because
-		-- GetSpacingDisplayOffset (Settings.lua) is conditional on style
-		-- and exactly cancels this real-value shift when computing the
-		-- shown number.
+		-- Opposite sign to the buttonSize delta above, so buttonSize +
+		-- spacing stays visually constant across the switch.
 		local spacingDelta = vanilla and self.VANILLA_SPACING_FLOOR or -self.VANILLA_SPACING_FLOOR
 
-		-- useDefaultLayout turning ON forces vanilla=true here regardless
-		-- of modernBorderStyle, and its own OnClick already reset bars
-		-- 1-5's buttonSize/position to their true native values via the
-		-- reset cascade BEFORE calling this function - applying the delta
-		-- on top of that would double-shift them away from native. Skip
-		-- bars 1-5 in that specific case; extra bars 6-9 (never touched
-		-- by that cascade) still need the delta. Every OTHER transition
-		-- (useDefaultLayout turning off, or the style checkbox toggling
-		-- while it's already off) has no such reset to conflict with, so
-		-- bars 1-5 get the delta normally there.
+		-- useDefaultLayout turning ON forces vanilla=true here and its own
+		-- OnClick already reset bars 1-5's buttonSize/position to native
+		-- values before calling this function - applying the delta on top
+		-- would double-shift them. Skip bars 1-5 in that case only; extra
+		-- bars 6-9 (never touched by that reset) still need the delta.
 		local skipDefaultBars = BTVanillaDB.useDefaultLayout ~= false
 
 		local barId
@@ -644,17 +494,13 @@ end
 -- Global spacing/button-size overrides (General tab checkboxes,
 -- BTVanillaDB.globalSpacingEnabled/globalButtonSizeEnabled)
 --
--- Unlike ApplyGlobalButtonStyle's one-time sweep, these are a live lock:
--- while enabled, the corresponding General-tab slider is the single
--- source of truth for every true action bar (default 1-5 + extra 6-9,
--- i.e. everything in self.bars - simple bars like Bag Bar/Micro Menu are
--- never in self.bars, so they're naturally excluded), and each bar's own
--- per-bar slider locks (Settings.lua's RefreshBarPageGlobalOverrideGating).
--- No-ops entirely while disabled - turning a toggle off leaves every
--- bar's last-applied value in place rather than reverting anything.
--- Also no-ops while useDefaultLayout is on (its own reset-to-native
--- cascade already owns bars 1-5's spacing/size in that state, and the
--- General-tab sliders themselves are locked then too - see
+-- While enabled, the General-tab slider is the single source of truth for
+-- every bar in self.bars (default 1-5 + extra 6-9; simple bars like Bag
+-- Bar/Micro Menu are never in self.bars); each bar's own per-bar slider
+-- locks (Settings.lua's RefreshBarPageGlobalOverrideGating). No-ops while
+-- disabled, leaving each bar's last-applied value in place. Also no-ops
+-- while useDefaultLayout is on (its reset cascade already owns bars 1-5's
+-- spacing/size then, and the General-tab sliders are locked too - see
 -- RefreshGeneralPanel).
 -------------------------------------------------------------------------
 
@@ -664,10 +510,10 @@ function BTV:ApplyGlobalSpacing()
 		return
 	end
 
-	-- Vanilla-only floor - see SetBarSpacing's own comment. The global
-	-- slider's own displayed number is the raw stored value, never
-	-- itself offset, so this asymmetry is what makes the SAME displayed
-	-- global spacing number apply the correct real spacing per style.
+	-- Vanilla-only floor, see SetBarSpacing's comment. The global slider's
+	-- own displayed number is the raw stored value, never itself offset,
+	-- so the same displayed number applies the correct real spacing per
+	-- style.
 	local floor = self:IsVanillaBorderStyle() and self.VANILLA_SPACING_FLOOR or 0
 	local real = (BTVanillaDB.globalSpacingValue or 0) + floor
 
@@ -724,13 +570,9 @@ end
 -------------------------------------------------------------------------
 -- Apply layout configuration
 --
--- All current grid presets total exactly 12 buttons (see Core.lua's
--- MAX_BAR_BUTTONS), which is also the pool size every custom bar
--- allocates once at creation - so a plain cols*rows change never needs
--- more pool slots than already exist. The hard "must equal 12" rejection
--- has been dropped: buttonCount is allowed to be decoupled from
--- cols*rows (Phase 3b UI work), ApplyBarShape already shows/hides pool
--- slots to match whatever buttonCount ends up being.
+-- buttonCount can be smaller than cols*rows; ApplyBarShape shows/hides
+-- pool slots to match. Every grid preset totals at most MAX_BAR_BUTTONS
+-- (12, Core.lua), the pool size every custom bar allocates at creation.
 -------------------------------------------------------------------------
 
 function BTV:SetBarLayout(bar, cols, rows)
@@ -762,12 +604,8 @@ function BTV:SetBarLayout(bar, cols, rows)
 	bar.config.cols = cols
 	bar.config.rows = rows
 
-	-- A shrinking grid can leave a previously-chosen buttonCount pointing
-	-- past the new cell count (e.g. 12 -> 6 cells while buttonCount was
-	-- 9). Clamp it down to fit. Growing the grid back out deliberately
-	-- does NOT restore the old buttonCount - the user's explicit choice
-	-- to show fewer buttons should not be silently discarded just
-	-- because the grid got bigger again.
+	-- Clamps buttonCount down when the new grid has fewer cells; growing
+	-- the grid back out does not restore a previously reduced buttonCount.
 	local maxButtons = cols * rows
 	local currentCount = bar.config.buttonCount or maxButtons
 
@@ -783,10 +621,8 @@ end
 -------------------------------------------------------------------------
 -- Button count
 --
--- Lets a custom bar show fewer than cols*rows buttons (Phase 3b). Driven
--- by the Settings UI's +/- stepper. Unlike SetBarLayout, this never
--- resizes the button pool itself - ApplyBarShape simply shows/hides
--- existing pool slots per Phase 2's stable-frame model.
+-- Lets a custom bar show fewer than cols*rows buttons. Never resizes the
+-- button pool itself - ApplyBarShape shows/hides existing pool slots.
 -------------------------------------------------------------------------
 
 function BTV:SetBarButtonCount(bar, count)
@@ -873,11 +709,10 @@ function BTV:IsActionSlotRangeFree(startSlot, count, ignoredBarId)
 	return true
 end
 
--- Finds the first free contiguous action-slot range large enough for
--- `neededCount`.
---
--- This deliberately scans from ACTION_SLOT_START instead of simply
--- looking after the highest existing bar.
+-- Finds the first free contiguous action-slot range of `neededCount`
+-- slots. Scans the whole action-slot pool from ACTION_SLOT_START rather
+-- than starting after the highest existing bar, so a slot freed by
+-- deleting a bar in the middle of the range can be reused.
 --
 -- Example:
 --
@@ -894,17 +729,11 @@ end
 --
 -- New bar can now correctly use 85-96.
 
--- Main Bar migration, Part 5: page 10 (slots 109-120) is the ONLY range no
--- native mechanism ever reaches - confirmed via real FrameXML source that
--- Bar 1's own paging tops out at page 6 (slots 61-72) and
--- GetBonusBarOffset() (stance/form/stealth) only ever maps to pages 7-9
--- (slots 73-108), never page 10. Slots 73-108 are still perfectly usable
--- for a custom bar, but for a stance-capable class with the Main Bar's own
--- Stance/Form/Stealth Swapping toggle (DefaultBars.lua's
--- GetMainBarEffectivePage) enabled, they can show the same content the
--- Main Bar itself is currently displaying while shapeshifted/stealthed -
--- so new bars prefer 109-120 first, only falling back to 73-108 once page
--- 10's 12 slots are exhausted.
+-- Page 10 (slots 109-120) is the only range no native paging mechanism
+-- ever reaches (Bar 1's own paging tops out at page 6, slots 61-72; stance/
+-- form/stealth paging only ever reaches pages 7-9, slots 73-108). New bars
+-- prefer 109-120 first so pages 7-9 stay available for stance/page content
+-- assignment, only falling back to 73-108 once page 10 is exhausted.
 local PREFERRED_SLOT_START = 109
 
 function BTV:GetNextFreeSlotStart(neededCount)
@@ -937,21 +766,17 @@ end
 -- Apply a bar's shape (grid, slotStart, buttonCount) to its existing
 -- button pool
 --
--- This is the replacement for the old destroy-and-recreate cycle a prior
--- round used. The pool of button-slot frames is created exactly once, in
--- CreateBarFromConfig, and never destroyed again - bars are permanent
--- (see Bar.lua's Extra Bar enable/disable section below; there is no bar
--- deletion in this addon). Every layout change - grid shape, button
--- count, or slotStart - just:
+-- The button-slot pool is created once, in CreateBarFromConfig, and never
+-- destroyed - bars are permanent, there is no bar deletion in this addon.
+-- Any layout change (grid shape, button count, or slotStart) just:
 --
 --   1. Re-maps which action slot each pool slot points at (Rebind),
 --   2. Shows pool slots up to buttonCount and hides the rest,
 --   3. Repositions/resizes via the existing LayoutButtons math.
 --
--- Because Rebind (Button.lua) keeps BTV.customBindTargets updated as
--- each pool slot's actionSlot changes, a TRUSTYBARSBIND<n> binding
--- (HoverBind.lua) aimed at a specific action slot stays valid across
--- any resize/relayout of that bar.
+-- Rebind (Button.lua) keeps BTV.customBindTargets updated as each pool
+-- slot's actionSlot changes, so a TRUSTYBARSBIND<n> binding (HoverBind.lua)
+-- aimed at a specific action slot stays valid across any resize/relayout.
 -------------------------------------------------------------------------
 
 function BTV:ApplyBarShape(bar)
@@ -961,8 +786,8 @@ function BTV:ApplyBarShape(bar)
 
 	local cfg = bar.config
 
-	-- Bars saved before Phase 3b never wrote buttonCount, so fall back to
-	-- filling the whole grid - that was the only possible behavior then.
+	-- Bars saved before buttonCount existed fall back to filling the
+	-- whole grid.
 	local buttonCount = cfg.buttonCount or (cfg.cols * cfg.rows)
 
 	local i
@@ -974,28 +799,23 @@ function BTV:ApplyBarShape(bar)
 			local desiredSlot
 			local slotValid
 
-			-- Fixed-slot bars (default bars 2-5, major architecture
-			-- migration) always rebind pool slot i to the SAME real native
-			-- action slot cfg.fixedActionSlots[i] every time - unlike a
-			-- free-pool custom bar (id 6+), there's no slotStart to derive
-			-- this from, and no ACTION_SLOT_END pool-range check applies at
-			-- all (native slots 1-72 are outside that pool's 73-120 range
-			-- entirely).
+			-- Fixed-slot bars (default bars 2-5) always rebind pool slot
+			-- i to the same native action slot cfg.fixedActionSlots[i] -
+			-- unlike a free-pool custom bar (id 6+), there is no
+			-- slotStart to derive this from, and no ACTION_SLOT_END
+			-- pool-range check applies (native slots 1-72 are outside the
+			-- 73-120 pool range entirely).
 			if cfg.fixedActionSlots then
 				desiredSlot = cfg.fixedActionSlots[i]
 				slotValid = desiredSlot ~= nil
 			elseif cfg.dynamicMainBar then
-				-- Bar 1 (Main) only (Main Bar migration, schema version 7):
-				-- unlike a fixed-slot default bar (2-5), pool slot i has no
-				-- single permanent action slot - it's recomputed every call
-				-- from whichever page/bonus-bar state currently applies (see
+				-- Bar 1 (Main) only: pool slot i has no single permanent
+				-- action slot - it is recomputed every call from whichever
+				-- page/bonus-bar state currently applies (see
 				-- DefaultBars.lua's GetMainBarEffectivePage/
-				-- GetMainBarSlotForIndex). ApplyBarShape already re-runs this
-				-- for every button on every call, so calling this here means
-				-- a page/stance change just needs to call
-				-- BTV:ApplyBarShape(BTV.bars[1]) (DefaultBars.lua's
-				-- RefreshMainBarSlots) to take effect - no separate resolve-
-				-- and-diff step is needed.
+				-- GetMainBarSlotForIndex). Calling
+				-- BTV:ApplyBarShape(BTV.bars[1]) after a page/stance change
+				-- is enough to pick up the new slots.
 				desiredSlot = self:GetMainBarSlotForIndex(i)
 				slotValid = desiredSlot ~= nil
 			else
@@ -1007,10 +827,9 @@ function BTV:ApplyBarShape(bar)
 				btn:Rebind(desiredSlot)
 				btn:SetSlotVisible(i <= buttonCount)
 			else
-				-- Out of the valid action-slot range entirely (only
-				-- possible from a corrupt/hand-edited SavedVariables
-				-- entry) - keep it hidden rather than rebinding to an
-				-- invalid slot number.
+				-- Only reachable from a corrupt/hand-edited SavedVariables
+				-- entry - keep hidden rather than rebind to an invalid
+				-- slot number.
 				btn:SetSlotVisible(false)
 			end
 		end
@@ -1020,29 +839,18 @@ function BTV:ApplyBarShape(bar)
 
 	PixelSetSize(bar, barW, barH)
 
-	-- Re-assert strata/level on every ApplyBarShape call, not just once at
-	-- CreateBarFromConfig time (see that function's own comment for why
-	-- "HIGH" strata is required at all). ApplyBarShape is exactly what
-	-- RefreshMainBarSlots (DefaultBars.lua) calls on every native page
-	-- swap and every stance/form/stealth change - live testing confirmed
-	-- Bar 1 could drop back behind the native art specifically after one
-	-- of those triggers, meaning something in that path re-levels either
-	-- Bar 1's own frame or MainMenuBarArtFrame back above the one-shot
-	-- login-time value. Cheap and idempotent for every other bar/trigger
-	-- (SetFrameStrata/SetFrameLevel to their own current values is a
-	-- harmless no-op), so this is applied unconditionally here rather
-	-- than only from the Main-Bar-specific call sites.
+	-- Re-asserted on every call, not just once at creation: some native
+	-- page-swap/stance-change path can re-level Bar 1 behind the native
+	-- art frame otherwise. Harmless no-op for every other bar/trigger.
 	bar:SetFrameStrata("HIGH")
 	bar:SetFrameLevel(10)
 
 	self:LayoutButtons(bar)
 
-	-- Issue 4 (bug-fix batch): ensure this bar's overlay exists as soon as
-	-- the bar itself does, rather than lazily deferring creation to the
-	-- first edit-mode toggle. The overlay's anchor to `bar` (see
-	-- EnsureBarOverlay) means no separate resize call is needed here even
-	-- though PixelSetSize just changed bar's own dimensions - it already
-	-- tracks that.
+	-- Ensure this bar's overlay exists as soon as the bar itself does,
+	-- rather than lazily deferring to the first edit-mode toggle. The
+	-- overlay is anchored to `bar`, so no separate resize call is needed
+	-- here even though PixelSetSize just changed the bar's dimensions.
 	EnsureBarOverlay(bar)
 
 	self:ApplyEditModeVisual()
@@ -1061,44 +869,16 @@ function BTV:CreateBarFromConfig(cfg)
 		UIParent
 	)
 
-	-- Bar 1 sits at "HIGH" strata, not "MEDIUM" - a same-tier frame LEVEL
-	-- race against MainMenuBarArtFrame (which stays "MEDIUM"/level 5, see
-	-- DefaultBars.lua's ApplyBlizzardArtVisibility) proved unreliable:
-	-- clicking the native Blizzard art bar raises the art frame's own
-	-- level (a common vanilla FrameXML `:Raise()`-on-click pattern),
-	-- which can push it back above whatever level this bar holds within
-	-- the same "MEDIUM" tier and make Bar 1 disappear behind the art.
-	-- Frame STRATA fully dominates frame LEVEL regardless of tier (see
-	-- Settings.lua's documented strata-tier ordering, BACKGROUND < LOW <
-	-- MEDIUM < HIGH < ...), so "HIGH" makes this permanently immune to any
-	-- future level change on the art frame's part. Does not touch
-	-- MainMenuBarArtFrame's own "MEDIUM" strata/level 5, which is still
-	-- needed for the separate art-above-Experience-Bar masking
-	-- relationship - "HIGH" beats "MEDIUM" unconditionally no matter what
-	-- level either frame is at, so both relationships hold at once.
-	--
-	-- Button.lua's BTVButtonMixin:Init gives every individual button (and
-	-- its cooldown-swipe child frame) this exact same explicit "HIGH"
-	-- strata too, rather than assuming it would inherit this bar's own
-	-- value - whether plain child-frame strata actually cascades from a
-	-- parent on this client is an open, not-live-confirmed question (see
-	-- docs/01-Environment-Capability-Analysis.md), so every frame that
-	-- needs a non-default strata sets it explicitly on itself instead of
-	-- depending on inheritance either way. This bar frame's own backdrop
-	-- is fully transparent (SetBackdropColor(0,0,0,0) below) and was
-	-- never itself the thing visually racing the art frame - the buttons
-	-- are, which is why they need the same explicit treatment.
+	-- Strata HIGH, not MEDIUM: MEDIUM lets MainMenuBarArtFrame's own
+	-- :Raise() (fired on native art bar click) push above the bar within
+	-- the same tier and hide it behind the art. Button.lua also sets HIGH
+	-- explicitly on every button rather than relying on strata inheritance.
 	bar:SetFrameStrata("HIGH")
 
-	-- Without an explicit frame LEVEL, a freshly CreateFrame(...,
-	-- UIParent)'d frame starts at whatever low level UIParent's own
-	-- child-nesting default assigns it - within a shared strata tier,
-	-- frame LEVEL (not creation order) decides stacking on this client
-	-- (same rule DefaultBars.lua's EnsureContainerOverlay relies on for
-	-- its own explicit high levels). Applied uniformly to every bar (1-5
-	-- and every custom bar 6+ share this one creation path) - comfortably
-	-- below the overlay frames' own level 100 (EnsureBarOverlay reads
-	-- bar:GetFrameLevel() relatively, so it always stays above this).
+	-- Frame LEVEL (not creation order) decides stacking within a shared
+	-- strata tier on this client. Comfortably below the overlay frames'
+	-- own level 100 (EnsureBarOverlay reads bar:GetFrameLevel()
+	-- relatively, so it always stays above this).
 	bar:SetFrameLevel(10)
 
 	PixelSetSize(bar, barW, barH)
@@ -1141,21 +921,20 @@ function BTV:CreateBarFromConfig(cfg)
 
 	bar.buttons = {}
 
-	-- The pool is sized to MAX_BAR_BUTTONS (12) - the largest any current
-	-- grid preset needs - once, here, and never destroyed/recreated again
+	-- The pool is sized to MAX_BAR_BUTTONS (12), the largest any current
+	-- grid preset needs, once here, and never destroyed/recreated again
 	-- (see ApplyBarShape). Slots beyond the bar's current buttonCount are
-	-- simply hidden by the ApplyBarShape call below.
+	-- hidden by the ApplyBarShape call below.
 	local i
 
 	for i = 1, self.MAX_BAR_BUTTONS do
 		local slot
 
-		-- Fixed-slot bars (default bars 2-5, major architecture
-		-- migration): each pool slot i is permanently tied to
-		-- cfg.fixedActionSlots[i], a REAL native action slot discovered
-		-- once from the live Blizzard button frame (Core.lua's
-		-- CaptureFixedActionSlots) - never the free 73-120 pool a real
-		-- custom bar (id 6+) allocates from.
+		-- Fixed-slot bars (default bars 2-5): each pool slot i is
+		-- permanently tied to cfg.fixedActionSlots[i], a real native
+		-- action slot discovered once from the live Blizzard button frame
+		-- (Core.lua's CaptureFixedActionSlots) - never the free 73-120
+		-- pool a real custom bar (id 6+) allocates from.
 		if cfg.fixedActionSlots then
 			slot = cfg.fixedActionSlots[i]
 
@@ -1163,11 +942,10 @@ function BTV:CreateBarFromConfig(cfg)
 				break
 			end
 		elseif cfg.dynamicMainBar then
-			-- Bar 1 (Main) only - resolved the same way ApplyBarShape does
-			-- (see its own comment above); the initial pool-creation slot
-			-- just needs to be A valid slot to bind to, since the
-			-- ApplyBarShape call at the end of this function immediately
-			-- re-resolves every button anyway.
+			-- Bar 1 (Main) only, resolved the same way ApplyBarShape does
+			-- - the initial pool-creation slot just needs to be a valid
+			-- slot to bind to, since the ApplyBarShape call at the end of
+			-- this function immediately re-resolves every button anyway.
 			slot = self:GetMainBarSlotForIndex(i)
 
 			if not slot then
@@ -1219,15 +997,10 @@ function BTV:CreateAllBars()
 
 			self.bars[cfg.id] = bar
 
-			-- Extra Bars (ids 6-9, Stance/Page Bar Assignment feature,
-			-- Part 1): honor cfg.enabled the same way
-			-- CreateFixedSlotDefaultBars honors it for default bars 2-5 -
-			-- a fresh bar defaults to Hidden until enabled, matching
-			-- cfg.enabled's own default-false seed (Core.lua's
-			-- seedExtraBarConfig). Every OTHER bar kind (a real default
-			-- bar 1-5 is never built here at all - see
-			-- CreateFixedSlotDefaultBars instead) has no cfg.enabled
-			-- field, so this is a no-op for anything but an Extra Bar.
+			-- Extra Bars (ids 6-9) default to hidden until cfg.enabled is
+			-- set, mirroring CreateFixedSlotDefaultBars for default bars
+			-- 2-5. Every other bar kind has no cfg.enabled field, so this
+			-- is a no-op for anything but an Extra Bar.
 			if self:IsExtraBarId(cfg.id) then
 				if cfg.enabled then
 					bar:Show()
@@ -1242,21 +1015,12 @@ function BTV:CreateAllBars()
 end
 
 -------------------------------------------------------------------------
--- Extra Bar enable/disable (ids 6-9, Stance/Page Bar Assignment feature,
--- Part 1)
+-- Extra Bar enable/disable (ids 6-9)
 --
--- Mirrors DefaultBars.lua's SetDefaultBarEnabled exactly (cfg.enabled +
--- a plain bar:Show()/Hide(), the sole visibility mechanism) - just
--- against a true custom-bar config (bar.config IS this exact
--- BTVanillaDB.bars[] entry, not BTVanillaDB.defaultBars, and there's no
--- id == 1 "always active, no toggle" special case to skip here).
---
--- The old open-ended "Add New Bar" flow (Bar.lua's removed AddNewBar/
--- GetNextBarId, Menu.lua's removed menu entry, Settings.lua's removed
--- "+ Add New Bar" list button) is gone - capacity is now fixed at exactly
--- BTV.EXTRA_BAR_COUNT (4), seeded once by Core.lua's EnsureExtraBars, so
--- a user enables/disables an already-existing Extra Bar rather than
--- adding/removing one.
+-- Mirrors DefaultBars.lua's SetDefaultBarEnabled against a true custom-bar
+-- config (bar.config IS this exact BTVanillaDB.bars[] entry). Capacity is
+-- fixed at BTV.EXTRA_BAR_COUNT (4), seeded once by Core.lua's
+-- EnsureExtraBars - there is no add/remove-bar flow.
 -------------------------------------------------------------------------
 
 function BTV:IsExtraBarId(barId)
@@ -1284,18 +1048,15 @@ function BTV:SetExtraBarEnabled(barId, enabled)
 end
 
 -------------------------------------------------------------------------
--- Extra Bar slot lookup (Stance/Page Bar Assignment feature, Part 3)
+-- Extra Bar slot lookup
 --
--- Resolves pool-slot `slotIndex` (1-12) of Extra Bar `barId` to its real,
+-- Resolves pool-slot `slotIndex` (1-12) of Extra Bar `barId` to its
 -- currently-bound native action slot - used by DefaultBars.lua's
--- GetMainBarSlotForIndex to read an assigned Extra Bar's OWN content
--- straight off its live cfg.slotStart, instead of computing a native page
--- number. Deliberately does NOT check bar.config.enabled or bar:IsShown()
--- - an Extra Bar assigned as a stance/page content source keeps supplying
--- the Main Bar regardless of whether that Extra Bar is separately shown
--- as its own visible bar (Part 3's deliberate design: assignment always
--- works for content resolution, independent of the source bar's own
--- visibility).
+-- GetMainBarSlotForIndex to read an assigned Extra Bar's own content.
+-- Deliberately does not check bar.config.enabled or bar:IsShown(): an
+-- Extra Bar assigned as a stance/page content source keeps supplying the
+-- Main Bar regardless of whether it is separately shown as its own
+-- visible bar.
 -------------------------------------------------------------------------
 
 function BTV:GetExtraBarSlotForIndex(barId, slotIndex)
@@ -1317,23 +1078,13 @@ end
 -------------------------------------------------------------------------
 -- Bar drag
 --
--- Round 36 (unify bar dragging with the chain-anchored live-drag system):
--- bars 1-9 used to drag via native bar:StartMoving()/StopMovingOrSizing(),
--- which gives NO per-frame hook during the drag itself - snap could only
--- ever be applied once, at drop time (the old ApplyBarDropSnap, removed).
--- Bars now start/stop the exact same shared cursor-tracking OnUpdate loop
--- DefaultBars.lua's 7 chain-anchored elements (Bag Bar, Micro Menu, Stance
--- Bar, Key Ring, Latency Bar, Experience Bar, Page Indicator) already use
--- for live, real-time snap-while-dragging - see DefaultBars.lua's
--- BTV:StartSharedDrag/StopSharedDrag (the exposed seam onto that file's
--- own file-local dragFrame/DefaultBarDrag_OnUpdate machinery) and its
--- dragKind == "bar" branch, which reads/writes bar.config.x/y directly
--- and calls BTV:ApplyBarPosition(bar) every tick - the cheapest correct
--- reposition-only call (ApplyBarShape would also redundantly re-bind
--- every button's action slot, resize the bar frame, and re-run
--- LayoutButtons on every single tick, none of which changes during a pure
--- position drag). No bar frame calls StartMoving()/StopMovingOrSizing()
--- anywhere in this addon anymore.
+-- Bars start/stop the same shared cursor-tracking OnUpdate loop
+-- DefaultBars.lua's chain-anchored elements (Bag Bar, Micro Menu, Stance
+-- Bar, Key Ring, Latency Bar, Experience Bar, Page Indicator) use for
+-- live, real-time snap-while-dragging - see DefaultBars.lua's
+-- BTV:StartSharedDrag/StopSharedDrag and its dragKind == "bar" branch,
+-- which reads/writes bar.config.x/y directly and calls
+-- BTV:ApplyBarPosition(bar) every tick.
 -------------------------------------------------------------------------
 
 function BTV:StartBarDrag(bar)
@@ -1343,20 +1094,15 @@ function BTV:StartBarDrag(bar)
 
 	local cfg = bar.config
 
-	-- Normalize to the exact TOPLEFT-of-bar/BOTTOMLEFT-of-UIParent anchor
-	-- convention Core.lua's CaptureNativeAnchor and every one of
-	-- DefaultBars.lua's 7 chain-anchored elements already use (see
-	-- DefaultBars.lua's ApplyDragSnap comment on why this pairing is
-	-- required) - necessary because a real custom/Extra Bar (id 6+) is
-	-- originally seeded CENTER/CENTER (Core.lua's seedExtraBarConfig),
+	-- Normalize to the TOPLEFT-of-bar/BOTTOMLEFT-of-UIParent anchor
+	-- convention Core.lua's CaptureNativeAnchor and every chain-anchored
+	-- element already use - needed because a real custom/Extra Bar (id 6+)
+	-- is originally seeded CENTER/CENTER (Core.lua's seedExtraBarConfig),
 	-- under which the same cfg.x/cfg.y numbers would mean an offset from
-	-- screen CENTER, not from UIParent's BOTTOMLEFT corner, and the shared
-	-- drag mechanism's per-tick math only ever works in that one
-	-- convention. Reading the bar's own real GetLeft()/GetTop() sidesteps
-	-- having to convert between anchor conventions by hand, exactly like
-	-- CaptureNativeAnchor already does for default bars 1-5 (this is a
-	-- one-time, permanent normalization - once a bar has been dragged
-	-- through this addon once, it stays TOPLEFT/BOTTOMLEFT from then on).
+	-- screen CENTER rather than from UIParent's BOTTOMLEFT corner. Reading
+	-- the bar's own real GetLeft()/GetTop() sidesteps converting between
+	-- anchor conventions by hand; this is a one-time, permanent
+	-- normalization.
 	local scale = bar:GetEffectiveScale()
 	local uiParentScale = UIParent:GetEffectiveScale()
 	local left, top = bar:GetLeft(), bar:GetTop()
@@ -1383,9 +1129,8 @@ function BTV:StopBarDrag(bar)
 	self:StopSharedDrag()
 
 	-- Keeps the Settings X/Y sliders in sync if this bar's page happens to
-	-- already be built/cached - same pattern as every one of the 7 chain-
-	-- anchored elements' own Stop*Drag (e.g. StopBagBarDrag). A no-op if
-	-- the Settings window/this bar's page was never opened this session.
+	-- already be built/cached. No-op if the Settings window/this bar's
+	-- page was never opened this session.
 	if bar.config and self.RefreshBarSettingsPage then
 		self:RefreshBarSettingsPage(bar.config.id)
 	end
