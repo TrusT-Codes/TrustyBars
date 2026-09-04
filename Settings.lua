@@ -4767,49 +4767,11 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	-- different frame), so its own top is the right reference to measure
 	-- each candidate's depth from.
 
-	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation, round 2): removing the earlier diag22/24/25 trace
-	-- prints (pure GetBottom()/GetTop() reads, same candidates, same spot)
-	-- made the bug come back, and checking out the commit before they were
-	-- added reproduces it too - i.e. those reads themselves were load-
-	-- bearing, not just observational. DeferFit already waits one frame
-	-- before this function runs specifically because GetBottom() can be
-	-- stale in the same tick a layout change happens (see DeferFit's own
-	-- comment above) - this checks whether ONE deferred frame is
-	-- sometimes still not enough, and a second, immediate re-read of the
-	-- same getter within this same tick returns a different (fresher)
-	-- value than the first. Prints first-vs-second GetTop()/GetBottom()
-	-- for scrollChildPanel and every candidate. Remove once root-caused.
-	do
-		local diag26Top1 = scrollChildPanel:GetTop()
-		local diag26Top2 = scrollChildPanel:GetTop()
-
-		BTV:Print(
-			"diag26: scrollChildPanel top1=" .. tostring(diag26Top1) ..
-			" top2=" .. tostring(diag26Top2) ..
-			" differs=" .. tostring(diag26Top1 ~= diag26Top2)
-		)
-
-		local diagL
-
-		for diagL = 1, table.getn(candidateList) do
-			local diagFrame = candidateList[diagL]
-
-			if diagFrame and diagFrame.GetBottom then
-				local b1 = diagFrame:GetBottom()
-				local b2 = diagFrame:GetBottom()
-
-				BTV:Print(
-					"diag26: candidate " .. diagL ..
-					" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
-					" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
-					" bottom1=" .. tostring(b1) ..
-					" bottom2=" .. tostring(b2) ..
-					" differs=" .. tostring(b1 ~= b2)
-				)
-			end
-		end
-	end
+	-- Bisection round 1 (UI redesign branch, General-panel disappearing-
+	-- items investigation): diag24 and diag25 removed for this round,
+	-- diag22 and diag23 (below) kept exactly as in the known-working
+	-- a04afec commit - testing whether diag22+diag23 alone are sufficient
+	-- to keep the bug from reproducing.
 
 	local contentDepth = MeasureDeepestExtent(candidateList, scrollChildPanel:GetTop())
 
@@ -4866,15 +4828,23 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	end
 
 	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation, round 4): neither the double-read on every candidate
-	-- (diag26) nor reading the off-candidate ancestor frames (round 3)
-	-- fixed the repro on their own. The one remaining untested touch-point
-	-- from the old working diag23: it read scrollChildPanel:GetTop() AGAIN
-	-- here, AFTER contentHeight/viewportHeight were already computed and
-	-- BEFORE BTV:UpdateScrollFrame runs - a read at a point nothing else
-	-- in this file ever reads from. Testing that specific spot in
-	-- isolation. Remove once root-caused.
-	scrollChildPanel:GetTop()
+	-- investigation): diag22 showed every candidate's own shown/bottom
+	-- state was sane and correctly populated at measurement time, so the
+	-- bug isn't in WHICH candidates get measured - this prints the actual
+	-- computed numbers (reference top, raw depth, and every height this
+	-- function derives from it) so the next repro shows exactly where a
+	-- wrong value first appears. Remove once root-caused.
+	BTV:Print(
+		"diag23: referenceTop=" .. tostring(scrollChildPanel:GetTop()) ..
+		" contentDepth=" .. tostring(contentDepth) ..
+		" measuredContentHeight=" .. tostring(measuredContentHeight) ..
+		" sharedRequirement=" .. tostring(sharedRequirement) ..
+		" minContentHeight=" .. tostring(minContentHeight) ..
+		" contentHeight=" .. tostring(contentHeight) ..
+		" viewportHeight=" .. tostring(viewportHeight) ..
+		" maxViewportHeight=" .. tostring(maxViewportHeight) ..
+		" previousContentScroll=" .. tostring(previousContentScroll)
+	)
 
 	BTV:UpdateScrollFrame(
 		scrollFrame,
@@ -5087,51 +5057,30 @@ function BTV:FitSettingsWindowToGeneralView()
 	-- for its candidate handling now.
 
 	-- Temporary diag (UI redesign branch, General-panel disappearing-items
-	-- investigation, round 3): diag26 (round 2) mirrored the old diag22/24
-	-- touch-points exactly and the bug STILL reproduced without diag25's
-	-- own reads - the one thing diag26 didn't cover. diag25 uniquely read
-	-- 5 frames that are NOT in `candidates` and are never read by anything
-	-- else in this file: hotkeyTitle, hotkeySlider, countTitle, countSlider,
-	-- snapToAdjacentCheckbox (the static anchors candidates like
-	-- hotkeyValueText/countValueText/snapToAdjacentDescription hang off,
-	-- but which themselves are skipped as measurement candidates). Testing
-	-- whether forcing a read on THESE specific frames - not just the
-	-- ones actually measured - is what settles the layout this client
-	-- needs before GetBottom() on their descendants is trustworthy.
+	-- investigation): diag20 showed the measured content height matching
+	-- modernBorderStyleDescription's own depth exactly - i.e. every
+	-- candidate from globalSpacingCheckbox onward got skipped by
+	-- MeasureDeepestExtent - but diag20 is a manually-typed slash command
+	-- run AFTER the fact, so it can't tell "those candidates really were
+	-- skipped at measurement time" apart from "the deferred Fit just
+	-- hadn't run yet when diag20 was typed, and this is stale data from
+	-- an earlier fit". Printing straight from inside this function
+	-- (n and each candidate's own IsShown()/GetBottom() at the exact
+	-- moment it actually runs) removes that timing ambiguity entirely.
 	-- Remove once root-caused.
-	do
-		local diagM
+	BTV:Print("diag22: FitSettingsWindowToGeneralView candidates n=" .. tostring(n))
 
-		for diagM = 1, n do
-			local diagFrame = candidates[diagM]
+	local diagI
 
-			if diagFrame and diagFrame.GetBottom then
-				diagFrame:GetBottom()
-			end
+	for diagI = 1, n do
+		local diagFrame = candidates[diagI]
 
-			if diagFrame and diagFrame.IsShown then
-				diagFrame:IsShown()
-			end
-		end
-
-		local diagExtraFrames = {
-			panel.hotkeyTitle, panel.hotkeySlider,
-			panel.countTitle, panel.countSlider,
-			panel.snapToAdjacentCheckbox,
-		}
-		local diagN
-
-		for diagN = 1, table.getn(diagExtraFrames) do
-			local diagFrame = diagExtraFrames[diagN]
-
-			if diagFrame and diagFrame.GetBottom then
-				diagFrame:GetBottom()
-			end
-
-			if diagFrame and diagFrame.IsShown then
-				diagFrame:IsShown()
-			end
-		end
+		BTV:Print(
+			"diag22: candidate " .. diagI ..
+			" name=" .. tostring(diagFrame.GetName and diagFrame:GetName()) ..
+			" shown=" .. tostring(diagFrame.IsShown and diagFrame:IsShown()) ..
+			" bottom=" .. tostring(diagFrame.GetBottom and diagFrame:GetBottom())
+		)
 	end
 
 	ApplySettingsHeightFromCandidates(candidates, settingsFrame.generalScrollFrame, panel)
@@ -6023,8 +5972,10 @@ function BTV:GetOrCreateGeneralPanel()
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
 
+	-- Exposed only so the temporary diag25 trace (below in
+	-- FitSettingsWindowToGeneralView) can inspect this normally-static
+	-- anchor chain - not otherwise needed on panel.
 	panel.hotkeyTitle = hotkeyTitle
-
 
 	local hotkeySlider = CreateSettingSlider(
 		panel,
@@ -6186,6 +6137,8 @@ function BTV:GetOrCreateGeneralPanel()
 		" to " .. tostring(FONT_SIZE_MAX) .. ")"
 	)
 
+	-- Exposed only so the temporary diag25 trace can inspect this
+	-- normally-static anchor chain - not otherwise needed on panel.
 	panel.countTitle = countTitle
 
 	local countSlider = CreateSettingSlider(
