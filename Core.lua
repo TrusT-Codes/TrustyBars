@@ -997,8 +997,12 @@ function BTV:EnsureDB()
 		BTVanillaDB.stanceBarNativeSpacing = nil
 	end
 
-	-- hotkeyFontSize/countFontSize stay nil until the user moves a
-	-- slider; Button.lua treats nil as "use the native captured default".
+	-- hotkeyFontSize/countFontSize/macroFontSize stay nil until the user
+	-- moves a slider; Button.lua treats nil as "use the captured default".
+
+	if BTVanillaDB.showMacroText == nil then
+		BTVanillaDB.showMacroText = false
+	end
 
 	-- One-time forced recapture of default-bar native anchors/spacing
 	-- (clears BTVanillaDB.defaultBars so seedDefaultBars reruns), without

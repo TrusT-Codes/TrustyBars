@@ -11,6 +11,14 @@
 
 local BTV = BTVanilla
 
+-- Hotkey/Count/Macro text's inset from the button's own edges, by border
+-- style (BTV:IsVanillaBorderStyle) - applied by
+-- BTVButtonMixin:ApplyButtonTextInsets, and read back by
+-- SetTruncatedButtonText for the matching truncation maxWidth so the two
+-- never drift apart.
+BTV.BUTTON_TEXT_INSET_VANILLA = 0
+BTV.BUTTON_TEXT_INSET_MODERN = 2
+
 -- Gets the quality color for an action slot holding an equipped item.
 -- Matches the action slot's texture against each inventory slot's texture
 -- to find which equipment slot the item is in, then reads its quality.
@@ -271,12 +279,12 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self:SetBackdropColor(0, 0, 0, 0)
 	self:SetBackdropBorderColor(0, 0, 0, 0)
 
+	-- Anchored by ApplyButtonTextInsets below, once self.hasNativeBorder
+	-- (set earlier in Init) is known.
 	self.count = self:CreateFontString(nil, "OVERLAY", "NumberFontNormal")
-	self.count:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -2, 2)
 
 	-- Keybind hotkey text, top-right.
 	self.hotkey = self:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
-	self.hotkey:SetPoint("TOPRIGHT", self, "TOPRIGHT", -2, -2)
 
 	-- Captures both font templates' native (path, size, flags) once.
 	-- Must run after both FontStrings are created and before the SetFont
@@ -288,6 +296,18 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		BTV.NATIVE_HOTKEY_FONT = { path = hkPath, size = hkSize, flags = hkFlags }
 		BTV.NATIVE_COUNT_FONT = { path = cntPath, size = cntSize, flags = cntFlags }
 
+		-- Real vanilla macro-name font, captured from a native action
+		-- button's own Name region rather than hardcoded. Falls back to
+		-- the hotkey font if that region is missing on this client fork.
+		local macroFontFrame = getglobal("ActionButton1Name")
+
+		if macroFontFrame and macroFontFrame.GetFont then
+			local mPath, mSize, mFlags = macroFontFrame:GetFont()
+			BTV.NATIVE_MACRO_FONT = { path = mPath, size = mSize, flags = mFlags }
+		else
+			BTV.NATIVE_MACRO_FONT = BTV.NATIVE_HOTKEY_FONT
+		end
+
 		-- Hotkey text's default color, used to reset the "tint whole
 		-- button on out of range" state back to normal.
 		local hkR, hkG, hkB = self.hotkey:GetTextColor()
@@ -298,6 +318,10 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 
 	-- Applies the current saved font size, falling back to the captured
 	-- native size when BTVanillaDB.hotkeyFontSize/countFontSize is nil.
+	-- Live-verified: real vanilla uses Fonts\ARIALN.ttf for both HotKey
+	-- and Count (NATIVE_HOTKEY_FONT/NATIVE_COUNT_FONT already capture
+	-- this, via the matching NumberFontNormalSmall/NumberFontNormal
+	-- templates) - distinct from NATIVE_MACRO_FONT's FRIZQT__.TTF.
 	self.hotkey:SetFont(
 		BTV.NATIVE_HOTKEY_FONT.path,
 		(BTVanillaDB and BTVanillaDB.hotkeyFontSize) or BTV.NATIVE_HOTKEY_FONT.size,
@@ -309,6 +333,19 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		(BTVanillaDB and BTVanillaDB.countFontSize) or BTV.NATIVE_COUNT_FONT.size,
 		BTV.NATIVE_COUNT_FONT.flags
 	)
+
+	-- Macro name text, bottom-left. Anchored by ApplyButtonTextInsets below.
+	self.macroText = self:CreateFontString(nil, "OVERLAY", "NumberFontNormalSmall")
+	self.macroText:SetJustifyH("LEFT")
+	self.macroText:SetFont(
+		BTV.NATIVE_MACRO_FONT.path,
+		(BTVanillaDB and BTVanillaDB.macroFontSize) or BTV.NATIVE_MACRO_FONT.size,
+		BTV.NATIVE_MACRO_FONT.flags
+	)
+
+	-- Anchors all three now that they all exist and self.hasNativeBorder
+	-- (set earlier in Init) is known.
+	self:ApplyButtonTextInsets()
 
 	self:SetScript("OnClick", BTVButtonMixin.OnClick)
 	self:SetScript("OnReceiveDrag", BTVButtonMixin.OnReceiveDrag)
@@ -375,6 +412,41 @@ function BTVButtonMixin:ApplySize(size)
 		self.border:SetHeight(borderSize)
 	end
 
+	-- Re-checks hotkey/count/macro truncation width against the new size.
+	if self.hotkey then
+		self:UpdateHotkeyText()
+	end
+	if self.count then
+		self:UpdateCount()
+	end
+	if self.macroText then
+		self:UpdateMacroText()
+	end
+end
+
+-- Re-anchors hotkey/count/macro text for the current border style
+-- (BTV.BUTTON_TEXT_INSET_VANILLA/_MODERN) and stores the active inset on
+-- self.buttonTextInset, read back by SetTruncatedButtonText for a matching
+-- truncation maxWidth.
+function BTVButtonMixin:ApplyButtonTextInsets()
+	local inset = self.hasNativeBorder and BTV.BUTTON_TEXT_INSET_VANILLA or BTV.BUTTON_TEXT_INSET_MODERN
+
+	self.buttonTextInset = inset
+
+	if self.hotkey then
+		self.hotkey:ClearAllPoints()
+		self.hotkey:SetPoint("TOPRIGHT", self, "TOPRIGHT", -inset, -inset)
+	end
+
+	if self.count then
+		self.count:ClearAllPoints()
+		self.count:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -inset, inset)
+	end
+
+	if self.macroText then
+		self.macroText:ClearAllPoints()
+		self.macroText:SetPoint("BOTTOMLEFT", self, "BOTTOMLEFT", inset, inset)
+	end
 end
 
 -- Re-applies the current global border style to an already-created button
@@ -382,6 +454,8 @@ end
 -- self.hasNativeBorder-gated block in Init.
 function BTVButtonMixin:ApplyBorderStyle()
 	self.hasNativeBorder = BTV:IsVanillaBorderStyle()
+
+	self:ApplyButtonTextInsets()
 
 	if self.hasNativeBorder then
 		if not self.border then
@@ -558,22 +632,21 @@ function BTVButtonMixin:UpdateCount()
 		return
 	end
 
-	if not GetActionCount or not self:IsSlotFilled() then
-		self.count:SetText("")
-		return
+	local text = ""
+
+	if GetActionCount and self:IsSlotFilled() then
+		local count = GetActionCount(self.actionSlot)
+
+		if count and count > 1 then
+			text = tostring(count)
+		elseif count and count == 1 and
+			((IsConsumableAction and IsConsumableAction(self.actionSlot)) or
+			 (IsStackableAction and IsStackableAction(self.actionSlot))) then
+			text = "1"
+		end
 	end
 
-	local count = GetActionCount(self.actionSlot)
-
-	if count and count > 1 then
-		self.count:SetText(tostring(count))
-	elseif count and count == 1 and
-		((IsConsumableAction and IsConsumableAction(self.actionSlot)) or
-		 (IsStackableAction and IsStackableAction(self.actionSlot))) then
-		self.count:SetText("1")
-	else
-		self.count:SetText("")
-	end
+	self:SetTruncatedButtonText(self.count, text)
 end
 
 -- Compact modifier abbreviation for hotkey text. GetBindingKey's raw
@@ -649,11 +722,59 @@ function BTVButtonMixin:UpdateHotkeyText()
 		key = GetBindingKey("TRUSTYBARSBIND" .. tostring(self.actionSlot - 72))
 	end
 
-	if not key then
-		self.hotkey:SetText("")
-	else
-		self.hotkey:SetText(CompactBindingKeyText(key))
+	self:SetTruncatedButtonText(self.hotkey, key and CompactBindingKeyText(key) or "")
+end
+
+-- Truncates text to fit maxWidth, appending ".." when it doesn't.
+local function SetTruncatedText(fontString, text, maxWidth)
+	fontString:SetText(text)
+
+	if maxWidth <= 0 or fontString:GetStringWidth() <= maxWidth then
+		return
 	end
+
+	local truncated = text
+
+	while string.len(truncated) > 1 and fontString:GetStringWidth() > maxWidth do
+		truncated = string.sub(truncated, 1, string.len(truncated) - 1)
+		fontString:SetText(truncated .. "..")
+	end
+end
+
+-- Shared by hotkey/count/macro text: hides fontString for blank text,
+-- otherwise truncates it to this button's own width (self.buttonTextInset,
+-- set by ApplyButtonTextInsets) and shows it. Re-run by each Update*
+-- method on every Refresh and by ApplySize/the Set*FontSize sweeps, so a
+-- resize or font size change always re-fits rather than leaving stale
+-- truncation.
+function BTVButtonMixin:SetTruncatedButtonText(fontString, text)
+	if not text or text == "" then
+		fontString:Hide()
+		return
+	end
+
+	local inset = self.buttonTextInset or 0
+	local maxWidth = (self.buttonSize or BTV.BUTTON_SIZE) - (2 * inset)
+
+	SetTruncatedText(fontString, text, maxWidth)
+	fontString:Show()
+end
+
+-- Shows the macro name (GetActionText) for a macro action, truncated to
+-- the button's own width, while BTVanillaDB.showMacroText is on.
+function BTVButtonMixin:UpdateMacroText()
+	if not self.macroText then
+		return
+	end
+
+	if not (BTVanillaDB and BTVanillaDB.showMacroText) then
+		self.macroText:Hide()
+		return
+	end
+
+	local text = self:IsSlotFilled() and GetActionText and GetActionText(self.actionSlot)
+
+	self:SetTruncatedButtonText(self.macroText, text or "")
 end
 
 function BTVButtonMixin:Refresh()
@@ -671,6 +792,7 @@ function BTVButtonMixin:Refresh()
 	self:UpdateState()
 	self:UpdateEquipRing()
 	self:UpdateHotkeyText()
+	self:UpdateMacroText()
 
 	-- Re-evaluates final Show/Hide state now that content may have changed.
 	self:UpdateGridVisibility()
@@ -976,6 +1098,10 @@ function BTV:SetHotkeyFontSize(size)
 
 				if btn and btn.hotkey then
 					btn.hotkey:SetFont(path, size, flags)
+
+					-- SetFont alone doesn't re-run truncation - see
+					-- SetMacroFontSize's identical fix below.
+					btn:UpdateHotkeyText()
 				end
 			end
 		end
@@ -1008,6 +1134,69 @@ function BTV:SetCountFontSize(size)
 
 				if btn and btn.count then
 					btn.count:SetFont(path, size, flags)
+					btn:UpdateCount()
+				end
+			end
+		end
+	end
+end
+
+function BTV:SetMacroFontSize(size)
+	self:EnsureDB()
+
+	-- Rounds to an integer since GetFont() can return a float size.
+	size = math.floor(size + 0.5)
+
+	BTVanillaDB.macroFontSize = size
+
+	-- Nothing captured yet (no button created this session) - the write
+	-- above is enough, the next button Init will pick it up directly.
+	if not BTV.NATIVE_MACRO_FONT then
+		return
+	end
+
+	local path = BTV.NATIVE_MACRO_FONT.path
+	local flags = BTV.NATIVE_MACRO_FONT.flags
+	local barId
+	local bar
+
+	for barId, bar in pairs(BTV.bars) do
+		if bar and bar.buttons then
+			local i
+
+			for i = 1, table.getn(bar.buttons) do
+				local btn = bar.buttons[i]
+
+				if btn and btn.macroText then
+					btn.macroText:SetFont(path, size, flags)
+
+					-- SetFont alone doesn't re-run truncation - without this,
+					-- a button already showing an old-size truncated macro
+					-- name would keep that stale text at the new font size.
+					btn:UpdateMacroText()
+				end
+			end
+		end
+	end
+end
+
+function BTV:SetMacroTextEnabled(enabled)
+	self:EnsureDB()
+
+	BTVanillaDB.showMacroText = enabled and true or false
+
+	local barId
+	local bar
+
+	for barId, bar in pairs(BTV.bars) do
+		if bar and bar.buttons then
+			local i
+
+			for i = 1, table.getn(bar.buttons) do
+				local btn = bar.buttons[i]
+
+				if btn then
+					btn:UpdateMacroText()
 				end
 			end
 		end
