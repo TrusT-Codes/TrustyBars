@@ -810,10 +810,38 @@ local function CreateSettingsFrame()
 		end
 	)
 
+	local tabEditModeButton = CreateFrame(
+		"Button",
+		nil,
+		f
+	)
+
+	tabEditModeButton:SetHeight(20)
+
+	tabEditModeButton:SetPoint(
+		"LEFT",
+		tabProfilesButton,
+		"RIGHT",
+		6,
+		0
+	)
+
+	BTV:StyleModernButton(tabEditModeButton, 90, 90)
+	tabEditModeButton:SetText("Edit Mode")
+	ApplyTabFadeHighlight(tabEditModeButton)
+
+	tabEditModeButton:SetScript(
+		"OnClick",
+		function()
+			BTV:ShowEditModeView()
+		end
+	)
+
 	f.tabButtonsByView = {
 		bars = tabBarsButton,
 		general = tabGeneralButton,
 		profiles = tabProfilesButton,
+		editmode = tabEditModeButton,
 	}
 
 	-- Matches f.currentView's initial value ("bars"); set manually here
@@ -4496,7 +4524,6 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 			"macroTextCheckbox", "macroTitle", "macroSlider", "macroValueText", "macroResetButton",
 			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
 			"countTitle", "countSlider", "countValueText", "countResetButton",
-			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
 			"modernBorderStyleCheckbox",
 		}
 
@@ -4756,7 +4783,6 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.hotkeyResetButton)
 	n = AppendCandidate(candidates, n, panel.countValueText)
 	n = AppendCandidate(candidates, n, panel.countResetButton)
-	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
 	n = AppendCandidate(candidates, n, panel.modernBorderStyleCheckbox)
 	n = AppendCandidate(candidates, n, panel.modernBorderStyleDescription)
 	n = AppendCandidate(candidates, n, panel.globalSpacingCheckbox)
@@ -4809,6 +4835,14 @@ function BTV:ShowBarPage(barId)
 
 	if settingsFrame.profilesPanel then
 		settingsFrame.profilesPanel:Hide()
+	end
+
+	if settingsFrame.editModeScrollFrame then
+		settingsFrame.editModeScrollFrame:Hide()
+	end
+
+	if settingsFrame.editModePanel then
+		settingsFrame.editModePanel:Hide()
 	end
 
 	local id
@@ -6052,88 +6086,6 @@ function BTV:GetOrCreateGeneralPanel()
 	panel.countResetButton = countResetButton
 
 	-------------------------------------------------------------------------
-	-- Snap to Adjacent Elements
-	--
-	-- BTVanillaDB.snapToAdjacentElements (default false, Core.lua's
-	-- EnsureDB) - gates BOTH of this addon's snap injection points
-	-- (Bar.lua's StopBarDrag drop-time snap, DefaultBars.lua's live
-	-- OnUpdate-driven snap) via the single shared BTV:ComputeSnapAdjustment
-	-- utility, which reads this field directly - no separate Apply/refresh
-	-- call is needed here the way disableBlizzardArtCheckbox's OnClick
-	-- needs one, since this setting only ever affects the NEXT drag, never
-	-- anything already on screen.
-	--
-	-- Styled/positioned like the two font-size sections above, but must
-	-- anchor via a real anchor chain off countTitle (a fixed-X FontString,
-	-- same reasoning as countTitle's own anchor off hotkeyTitle above)
-	-- rather than off countResetButton/countValueText directly -
-	-- countValueText uses a "TOP" anchor (centered under countSlider), so
-	-- its LEFT edge shifts with the displayed digit count/width.
-	-------------------------------------------------------------------------
-
-	local snapToAdjacentCheckbox = CreateFrame(
-		"CheckButton",
-		"BTVanillaGeneralSnapToAdjacentCheckbox",
-		panel,
-		"UICheckButtonTemplate"
-	)
-
-	snapToAdjacentCheckbox:SetWidth(24)
-	snapToAdjacentCheckbox:SetHeight(24)
-
-	snapToAdjacentCheckbox:SetPoint(
-		"TOPLEFT",
-		countTitle,
-		"BOTTOMLEFT",
-		0,
-		-12 - countSlider:GetHeight() - 2 - countValueText:GetHeight() - 18
-	)
-
-	snapToAdjacentCheckbox:SetScript(
-		"OnClick",
-		function()
-			local checked = this:GetChecked() and true or false
-
-			BTVanillaDB.snapToAdjacentElements = checked
-		end
-	)
-
-	local snapToAdjacentLabel = getglobal(
-		snapToAdjacentCheckbox:GetName() .. "Text"
-	)
-
-	if snapToAdjacentLabel then
-		snapToAdjacentLabel:SetText("Snap to Adjacent Elements")
-	end
-
-	panel.snapToAdjacentCheckbox = snapToAdjacentCheckbox
-
-	local snapToAdjacentDescription = panel:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontHighlightSmall"
-	)
-
-	snapToAdjacentDescription:SetPoint(
-		"TOPLEFT",
-		snapToAdjacentCheckbox,
-		"BOTTOMLEFT",
-		4,
-		-10
-	)
-
-	snapToAdjacentDescription:SetWidth(520)
-	snapToAdjacentDescription:SetJustifyH("LEFT")
-
-	snapToAdjacentDescription:SetText(
-		"When enabled, elements moved in Edit Layout Mode snap to nearby " ..
-		"screen edges/corners and to adjacent elements' edges for pixel-" ..
-		"perfect alignment and stacking."
-	)
-
-	panel.snapToAdjacentDescription = snapToAdjacentDescription
-
-	-------------------------------------------------------------------------
 	-- Global border/spacing style (default bars vs. extra bars alignment)
 	--
 	-- One global checkbox choosing the button border style used by ALL
@@ -6156,12 +6108,17 @@ function BTV:GetOrCreateGeneralPanel()
 	modernBorderStyleCheckbox:SetWidth(24)
 	modernBorderStyleCheckbox:SetHeight(24)
 
+	-- Anchors off countTitle (a fixed-X FontString) with the exact offset
+	-- the removed Snap to Adjacent Elements checkbox used to occupy (now
+	-- on the Edit Mode tab's own panel) - same reasoning as that anchor's
+	-- own comment: countValueText's "TOP" anchor shifts with the displayed
+	-- digit count/width, so it can't be anchored off directly.
 	modernBorderStyleCheckbox:SetPoint(
 		"TOPLEFT",
-		snapToAdjacentDescription,
+		countTitle,
 		"BOTTOMLEFT",
-		-4,
-		-14
+		0,
+		-12 - countSlider:GetHeight() - 2 - countValueText:GetHeight() - 18
 	)
 
 	modernBorderStyleCheckbox:SetScript(
@@ -6811,6 +6768,402 @@ function BTV:FitSettingsWindowToProfilesView()
 end
 
 -------------------------------------------------------------------------
+-- Edit Mode panel (BTVanillaDB.snapToAdjacentElements/showLayoutGrid/
+-- snapToGrid)
+--
+-- Own dedicated scrollframe+scrollchild pair, same pattern as
+-- GetOrCreateProfilesPanel/GetOrCreateGeneralPanel above.
+-------------------------------------------------------------------------
+
+function BTV:GetOrCreateEditModePanel()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	if settingsFrame.editModePanel then
+		return settingsFrame.editModePanel
+	end
+
+	local scrollFrame, panel = BTV:CreateWideContentScrollFrame("BTVanillaSettingsEditModeScrollFrame")
+
+	settingsFrame.editModeScrollFrame = scrollFrame
+	scrollFrame:Hide()
+
+	local title = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
+	title:SetPoint("TOPLEFT", panel, "TOPLEFT", INDENT_SECTION, -14)
+	title:SetText("Edit Mode Settings")
+	panel.title = title
+
+	-------------------------------------------------------------------------
+	-- Snap to Adjacent Elements
+	--
+	-- BTVanillaDB.snapToAdjacentElements (default true, Core.lua's
+	-- EnsureDB) - gates BOTH of this addon's snap injection points
+	-- (Bar.lua's StopBarDrag drop-time snap, DefaultBars.lua's live
+	-- OnUpdate-driven snap) via the single shared BTV:ComputeSnapAdjustment
+	-- utility, which reads this field directly - no separate Apply/refresh
+	-- call is needed here, since this setting only ever affects the NEXT
+	-- drag, never anything already on screen.
+	-------------------------------------------------------------------------
+
+	local snapToAdjacentCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaEditModeSnapToAdjacentCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	snapToAdjacentCheckbox:SetWidth(24)
+	snapToAdjacentCheckbox:SetHeight(24)
+
+	snapToAdjacentCheckbox:SetPoint("TOPLEFT", title, "BOTTOMLEFT", 0, -20)
+
+	snapToAdjacentCheckbox:SetScript(
+		"OnClick",
+		function()
+			BTVanillaDB.snapToAdjacentElements = this:GetChecked() and true or false
+		end
+	)
+
+	local snapToAdjacentLabel = getglobal(snapToAdjacentCheckbox:GetName() .. "Text")
+
+	if snapToAdjacentLabel then
+		snapToAdjacentLabel:SetText("Snap to Adjacent Elements")
+	end
+
+	panel.snapToAdjacentCheckbox = snapToAdjacentCheckbox
+
+	local snapToAdjacentDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	snapToAdjacentDescription:SetPoint("TOPLEFT", snapToAdjacentCheckbox, "BOTTOMLEFT", 4, -10)
+	snapToAdjacentDescription:SetWidth(520)
+	snapToAdjacentDescription:SetJustifyH("LEFT")
+
+	snapToAdjacentDescription:SetText(
+		"When enabled, elements moved in Edit Layout Mode snap to nearby " ..
+		"screen edges/corners and to adjacent elements' edges for pixel-" ..
+		"perfect alignment and stacking."
+	)
+
+	panel.snapToAdjacentDescription = snapToAdjacentDescription
+
+	-------------------------------------------------------------------------
+	-- Show Layout Grid
+	--
+	-- BTVanillaDB.showLayoutGrid (default true, Core.lua's EnsureDB) -
+	-- purely visual: a light-blue reference grid spanning the whole
+	-- screen while in Edit Layout Mode, spaced to match the current
+	-- action-button footprint (BTV:GetLayoutGridSpacing()), with a
+	-- darker/thicker line through the exact screen center on each axis
+	-- (Bar.lua's RebuildLayoutGrid). Holding Ctrl in Edit Layout Mode
+	-- temporarily flips this on/off, mirroring Shift's temporary override
+	-- of Snap to Adjacent Elements above.
+	-------------------------------------------------------------------------
+
+	local showLayoutGridCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaEditModeShowLayoutGridCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	showLayoutGridCheckbox:SetWidth(24)
+	showLayoutGridCheckbox:SetHeight(24)
+
+	showLayoutGridCheckbox:SetPoint("TOPLEFT", snapToAdjacentDescription, "BOTTOMLEFT", -4, -14)
+
+	showLayoutGridCheckbox:SetScript(
+		"OnClick",
+		function()
+			BTVanillaDB.showLayoutGrid = this:GetChecked() and true or false
+
+			if BTV:IsEditMode() then
+				BTV:RefreshLayoutGridVisibility()
+			end
+		end
+	)
+
+	local showLayoutGridLabel = getglobal(showLayoutGridCheckbox:GetName() .. "Text")
+
+	if showLayoutGridLabel then
+		showLayoutGridLabel:SetText("Show Layout Grid")
+	end
+
+	panel.showLayoutGridCheckbox = showLayoutGridCheckbox
+
+	local showLayoutGridDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	showLayoutGridDescription:SetPoint("TOPLEFT", showLayoutGridCheckbox, "BOTTOMLEFT", 4, -10)
+	showLayoutGridDescription:SetWidth(520)
+	showLayoutGridDescription:SetJustifyH("LEFT")
+
+	showLayoutGridDescription:SetText(
+		"When enabled, an evenly-spaced reference grid covers the whole " ..
+		"screen while in Edit Layout Mode. Hold Ctrl while in Edit Layout " ..
+		"Mode to temporarily show/hide it, regardless of this setting."
+	)
+
+	panel.showLayoutGridDescription = showLayoutGridDescription
+
+	-------------------------------------------------------------------------
+	-- Snap to Grid
+	--
+	-- BTVanillaDB.snapToGrid (default true, Core.lua's EnsureDB) - like
+	-- Snap to Adjacent Elements above, only ever affects the NEXT drag
+	-- (Core.lua's BTV:ComputeGridSnapAdjustment, wired into
+	-- DefaultBars.lua's ApplyDragSnap ahead of the adjacent-elements
+	-- snap), so no separate Apply/refresh call is needed here.
+	-------------------------------------------------------------------------
+
+	local snapToGridCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaEditModeSnapToGridCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	snapToGridCheckbox:SetWidth(24)
+	snapToGridCheckbox:SetHeight(24)
+
+	snapToGridCheckbox:SetPoint("TOPLEFT", showLayoutGridDescription, "BOTTOMLEFT", -4, -14)
+
+	snapToGridCheckbox:SetScript(
+		"OnClick",
+		function()
+			BTVanillaDB.snapToGrid = this:GetChecked() and true or false
+		end
+	)
+
+	local snapToGridLabel = getglobal(snapToGridCheckbox:GetName() .. "Text")
+
+	if snapToGridLabel then
+		snapToGridLabel:SetText("Snap to Grid")
+	end
+
+	panel.snapToGridCheckbox = snapToGridCheckbox
+
+	local snapToGridDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	snapToGridDescription:SetPoint("TOPLEFT", snapToGridCheckbox, "BOTTOMLEFT", 4, -10)
+	snapToGridDescription:SetWidth(520)
+	snapToGridDescription:SetJustifyH("LEFT")
+
+	snapToGridDescription:SetText(
+		"When enabled, elements dragged in Edit Layout Mode snap so their " ..
+		"center sits exactly on a grid line intersection, independent of " ..
+		"whether the grid is currently shown."
+	)
+
+	panel.snapToGridDescription = snapToGridDescription
+
+	-------------------------------------------------------------------------
+	-- Use custom Grid Size
+	--
+	-- BTVanillaDB.useCustomGridSize (default false, Core.lua's EnsureDB) -
+	-- overrides BTV:GetLayoutGridSpacing()'s normal behavior (tracking
+	-- Main Bar's live buttonSize - see that function's own comment) with a
+	-- flat BTVanillaDB.customGridSize value instead. The slider is
+	-- SetShown()-toggled by this checkbox exactly like the General tab's
+	-- Global Spacing/Global Button Size sliders - no ReflowStack pass is
+	-- needed here since nothing else is anchored below this slider on this
+	-- page, so hiding it simply shrinks what
+	-- BTV:FitSettingsWindowToEditModeView measures.
+	-------------------------------------------------------------------------
+
+	local useCustomGridSizeCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaEditModeUseCustomGridSizeCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	useCustomGridSizeCheckbox:SetWidth(24)
+	useCustomGridSizeCheckbox:SetHeight(24)
+
+	useCustomGridSizeCheckbox:SetPoint("TOPLEFT", snapToGridDescription, "BOTTOMLEFT", -4, -14)
+
+	local useCustomGridSizeLabel = getglobal(useCustomGridSizeCheckbox:GetName() .. "Text")
+
+	if useCustomGridSizeLabel then
+		useCustomGridSizeLabel:SetText("Use custom Grid Size")
+	end
+
+	panel.useCustomGridSizeCheckbox = useCustomGridSizeCheckbox
+
+	local useCustomGridSizeDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+
+	useCustomGridSizeDescription:SetPoint("TOPLEFT", useCustomGridSizeCheckbox, "BOTTOMLEFT", 4, -10)
+	useCustomGridSizeDescription:SetWidth(520)
+	useCustomGridSizeDescription:SetJustifyH("LEFT")
+
+	useCustomGridSizeDescription:SetText(
+		"Grid spacing normally tracks the Main Bar's current Button Size " ..
+		"live (resizing it, or the General tab's Global Button Size, " ..
+		"updates the grid too). When toggled on, Grid Size is no longer " ..
+		"directed by Main Bar's Button Size."
+	)
+
+	panel.useCustomGridSizeDescription = useCustomGridSizeDescription
+
+	local customGridSizeSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaEditModeCustomGridSizeSlider",
+		290
+	)
+
+	customGridSizeSlider:SetPoint("TOPLEFT", useCustomGridSizeDescription, "BOTTOMLEFT", -4, -14)
+
+	customGridSizeSlider:SetMinMaxValues(0, 55)
+	customGridSizeSlider:SetValueStep(1)
+	SetSliderLabel(customGridSizeSlider, "Grid Size")
+
+	local customGridSizeSliderLow = getglobal(customGridSizeSlider:GetName() .. "Low")
+
+	if customGridSizeSliderLow then
+		customGridSizeSliderLow:SetText("0")
+	end
+
+	local customGridSizeSliderHigh = getglobal(customGridSizeSlider:GetName() .. "High")
+
+	if customGridSizeSliderHigh then
+		customGridSizeSliderHigh:SetText("55")
+	end
+
+	local customGridSizeValueText = panel:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	customGridSizeValueText:SetPoint("TOP", customGridSizeSlider, "BOTTOM", 0, -2)
+	customGridSizeValueText:SetText("0")
+
+	customGridSizeSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			customGridSizeValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTVanillaDB.customGridSize = value
+
+				if BTV:IsEditMode() then
+					BTV:RebuildLayoutGrid()
+				end
+			end
+		end
+	)
+
+	useCustomGridSizeCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			if checked and not BTVanillaDB.useCustomGridSize then
+				-- Seeds the slider with whatever the dynamic (Main-Bar-
+				-- tracking) spacing currently evaluates to - read BEFORE
+				-- flipping the flag below, since GetLayoutGridSpacing
+				-- itself branches on useCustomGridSize. Rounded since the
+				-- border-inset math can yield a fractional value but the
+				-- slider only steps by whole numbers.
+				BTVanillaDB.customGridSize = math.floor(BTV:GetLayoutGridSpacing() + 0.5)
+			end
+
+			BTVanillaDB.useCustomGridSize = checked
+
+			customGridSizeSlider:SetShown(checked)
+			customGridSizeValueText:SetShown(checked)
+
+			if checked then
+				customGridSizeSlider.suppressApply = true
+				customGridSizeSlider:SetValue(BTVanillaDB.customGridSize or 0)
+				customGridSizeValueText:SetText(tostring(BTVanillaDB.customGridSize or 0))
+				customGridSizeSlider.suppressApply = nil
+			end
+
+			if BTV:IsEditMode() then
+				BTV:RebuildLayoutGrid()
+			end
+
+			if settingsFrame.currentView == "editmode" then
+				DeferFit(function() BTV:FitSettingsWindowToEditModeView() end)
+			end
+		end
+	)
+
+	panel.customGridSizeSlider = customGridSizeSlider
+	panel.customGridSizeSliderLow = customGridSizeSliderLow
+	panel.customGridSizeSliderHigh = customGridSizeSliderHigh
+	panel.customGridSizeValueText = customGridSizeValueText
+
+	panel:Hide()
+
+	settingsFrame.editModePanel = panel
+
+	return panel
+end
+
+-- First three default true, useCustomGridSize defaults false (Core.lua's
+-- EnsureDB).
+function BTV:RefreshEditModePanel()
+	local panel = self:GetOrCreateEditModePanel()
+
+	panel.snapToAdjacentCheckbox:SetChecked(
+		BTVanillaDB.snapToAdjacentElements == true
+	)
+
+	panel.showLayoutGridCheckbox:SetChecked(
+		BTVanillaDB.showLayoutGrid == true
+	)
+
+	panel.snapToGridCheckbox:SetChecked(
+		BTVanillaDB.snapToGrid == true
+	)
+
+	local useCustomGridSize = BTVanillaDB.useCustomGridSize == true
+
+	panel.useCustomGridSizeCheckbox:SetChecked(useCustomGridSize)
+	panel.customGridSizeSlider:SetShown(useCustomGridSize)
+	panel.customGridSizeValueText:SetShown(useCustomGridSize)
+
+	if useCustomGridSize then
+		panel.customGridSizeSlider.suppressApply = true
+		panel.customGridSizeSlider:SetValue(BTVanillaDB.customGridSize or 0)
+		panel.customGridSizeValueText:SetText(tostring(BTVanillaDB.customGridSize or 0))
+		panel.customGridSizeSlider.suppressApply = nil
+	end
+end
+
+function BTV:FitSettingsWindowToEditModeView()
+	if not settingsFrame or not settingsFrame.editModePanel then
+		return
+	end
+
+	local panel = settingsFrame.editModePanel
+
+	local candidates = {}
+	local n = 0
+
+	n = AppendCandidate(candidates, n, panel.snapToAdjacentCheckbox)
+	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
+	n = AppendCandidate(candidates, n, panel.showLayoutGridCheckbox)
+	n = AppendCandidate(candidates, n, panel.showLayoutGridDescription)
+	n = AppendCandidate(candidates, n, panel.snapToGridCheckbox)
+	n = AppendCandidate(candidates, n, panel.snapToGridDescription)
+	n = AppendCandidate(candidates, n, panel.useCustomGridSizeCheckbox)
+	n = AppendCandidate(candidates, n, panel.useCustomGridSizeDescription)
+	n = AppendCandidate(candidates, n, panel.customGridSizeSlider)
+	n = AppendCandidate(candidates, n, panel.customGridSizeValueText)
+
+	-- Edit Mode is a short page by nature - shrink-to-fit instead of
+	-- matching the Bars/General views' SETTINGS_CONTENT_MIN_HEIGHT floor.
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.editModeScrollFrame, panel, nil, nil, true)
+end
+
+-------------------------------------------------------------------------
 -- General panel: dynamic reflow for the Global Spacing / Global
 -- ButtonSize sliders
 --
@@ -7075,12 +7428,6 @@ function BTV:RefreshGeneralPanel()
 	panel.countValueText:SetText(tostring(countSize))
 	panel.countSlider.suppressApply = nil
 
-	-- Default false (Core.lua's EnsureDB) - only an explicit true ever
-	-- checks this.
-	panel.snapToAdjacentCheckbox:SetChecked(
-		BTVanillaDB.snapToAdjacentElements == true
-	)
-
 	-- "Enable Better Experience Bar" lives on the Experience Bar's own
 	-- settings page; refreshed from RefreshSimpleBarPage("expbar").
 end
@@ -7150,6 +7497,14 @@ function BTV:ShowGeneralView()
 		settingsFrame.profilesPanel:Hide()
 	end
 
+	if settingsFrame.editModeScrollFrame then
+		settingsFrame.editModeScrollFrame:Hide()
+	end
+
+	if settingsFrame.editModePanel then
+		settingsFrame.editModePanel:Hide()
+	end
+
 	settingsFrame.generalScrollFrame:Show()
 
 	self:RefreshGeneralPanel()
@@ -7192,6 +7547,14 @@ function BTV:ShowProfilesView()
 		settingsFrame.generalPanel:Hide()
 	end
 
+	if settingsFrame.editModeScrollFrame then
+		settingsFrame.editModeScrollFrame:Hide()
+	end
+
+	if settingsFrame.editModePanel then
+		settingsFrame.editModePanel:Hide()
+	end
+
 	settingsFrame.profilesScrollFrame:Show()
 
 	self:RefreshProfilesPanel()
@@ -7202,6 +7565,56 @@ function BTV:ShowProfilesView()
 	-- (DeferFit) so its own candidates' positions have settled before
 	-- anything measures them.
 	DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
+end
+
+function BTV:ShowEditModeView()
+	if not settingsFrame then
+		CreateSettingsFrame()
+	end
+
+	local id
+	local page
+
+	for id, page in pairs(settingsFrame.pages) do
+		page:Hide()
+	end
+
+	settingsFrame.listPanel:Hide()
+	settingsFrame.contentScrollFrame:Hide()
+	settingsFrame.contentPanel:Hide()
+	settingsFrame.currentView = "editmode"
+	BTV:RefreshActiveTabHighlight()
+
+	-- Ensure the Edit Mode panel (and its own dedicated scrollframe) exist
+	-- before trying to Show() the scrollframe below.
+	self:GetOrCreateEditModePanel()
+
+	if settingsFrame.generalScrollFrame then
+		settingsFrame.generalScrollFrame:Hide()
+	end
+
+	if settingsFrame.generalPanel then
+		settingsFrame.generalPanel:Hide()
+	end
+
+	if settingsFrame.profilesScrollFrame then
+		settingsFrame.profilesScrollFrame:Hide()
+	end
+
+	if settingsFrame.profilesPanel then
+		settingsFrame.profilesPanel:Hide()
+	end
+
+	settingsFrame.editModeScrollFrame:Show()
+
+	self:RefreshEditModePanel()
+	self:GetOrCreateEditModePanel():Show()
+
+	-- Same reasoning as ShowBarPage's call - has to run after
+	-- :Show() so GetBottom() reads real values. Deferred one frame
+	-- (DeferFit) so its own candidates' positions have settled before
+	-- anything measures them.
+	DeferFit(function() BTV:FitSettingsWindowToEditModeView() end)
 end
 
 -------------------------------------------------------------------------
@@ -7591,6 +8004,8 @@ function BTV:ShowSettingsFrame()
 		DeferFit(function() BTV:FitSettingsWindowToGeneralView() end)
 	elseif settingsFrame.currentView == "profiles" then
 		DeferFit(function() BTV:FitSettingsWindowToProfilesView() end)
+	elseif settingsFrame.currentView == "editmode" then
+		DeferFit(function() BTV:FitSettingsWindowToEditModeView() end)
 	else
 		-- RefreshBarList (above) just rebuilt the bar-list rows from
 		-- scratch (e.g. a bar added/removed while the window was closed),
