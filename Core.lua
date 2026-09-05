@@ -673,6 +673,14 @@ function BTV:DeleteProfile(name)
 
 	if BTVanillaCharDB and BTVanillaCharDB.activeProfile == name then
 		BTVanillaCharDB.activeProfile = self.DEFAULT_PROFILE_NAME
+
+		-- Also update the live in-memory pointer/data, not just
+		-- BTVanillaCharDB's - otherwise PLAYER_LOGOUT's SaveActiveProfileData
+		-- (fired by the caller's ReloadUI) saves BTVanillaDB back under the
+		-- just-deleted name, resurrecting it (same class of bug fixed for
+		-- CopyProfileInto/ApplyImportedProfileData above).
+		self.activeProfileName = self.DEFAULT_PROFILE_NAME
+		BTVanillaDB = self:DeepCopyTable(BTVanillaProfilesDB[self.DEFAULT_PROFILE_NAME] or {})
 	end
 
 	return true
@@ -690,7 +698,314 @@ function BTV:CopyProfileInto(sourceName, targetName)
 
 	BTVanillaProfilesDB[targetName] = self:DeepCopyTable(BTVanillaProfilesDB[sourceName])
 
+	if targetName == self.activeProfileName then
+		BTVanillaDB = self:DeepCopyTable(BTVanillaProfilesDB[targetName])
+	end
+
 	return true
+end
+
+-------------------------------------------------------------------------
+-- Profile export/import
+--
+-- A profile's data is serialized as this addon's own compact table-literal
+-- syntax (a signature prefix followed by nested [key]=value pairs), not
+-- executed as Lua - importing never runs loadstring on pasted text.
+-------------------------------------------------------------------------
+
+local PROFILE_EXPORT_PREFIX = "TBVPROFILE1:"
+
+BTV.PROFILE_IMPORT_ERROR_MESSAGE =
+	"Invalid Profile Import Syntax, please double check you copied all " ..
+	"Text correctly on your Export and try again"
+
+local function EscapeExportString(s)
+	s = string.gsub(s, "\\", "\\\\")
+	s = string.gsub(s, "\"", "\\\"")
+	s = string.gsub(s, "\n", "\\n")
+	s = string.gsub(s, "\r", "\\r")
+	s = string.gsub(s, "\t", "\\t")
+
+	return s
+end
+
+local function SerializeValue(value, parts)
+	if type(value) == "table" then
+		table.insert(parts, "{")
+
+		local k, v
+
+		for k, v in pairs(value) do
+			if v ~= nil then
+				table.insert(parts, "[")
+				SerializeValue(k, parts)
+				table.insert(parts, "]=")
+				SerializeValue(v, parts)
+				table.insert(parts, ",")
+			end
+		end
+
+		table.insert(parts, "}")
+	elseif type(value) == "string" then
+		table.insert(parts, "\"" .. EscapeExportString(value) .. "\"")
+	elseif type(value) == "number" then
+		table.insert(parts, tostring(value))
+	elseif type(value) == "boolean" then
+		table.insert(parts, value and "true" or "false")
+	else
+		table.insert(parts, "nil")
+	end
+end
+
+-- Serializes the currently active profile's live settings into a single
+-- exportable string.
+function BTV:ExportActiveProfileString()
+	local parts = {}
+
+	SerializeValue(BTVanillaDB, parts)
+
+	return PROFILE_EXPORT_PREFIX .. table.concat(parts, "")
+end
+
+-- Manual recursive-descent parser matching SerializeValue's exact grammar -
+-- a hand-rolled table literal ([key]=value pairs, quoted strings, numbers,
+-- booleans), never Lua source that gets executed.
+local function NewImportParser(str)
+	return { str = str, pos = 1, len = string.len(str) }
+end
+
+local function SkipImportWhitespace(p)
+	while p.pos <= p.len do
+		local c = string.sub(p.str, p.pos, p.pos)
+
+		if c == " " or c == "\t" or c == "\n" or c == "\r" then
+			p.pos = p.pos + 1
+		else
+			break
+		end
+	end
+end
+
+local ParseImportValue
+
+local function ParseImportString(p)
+	p.pos = p.pos + 1
+
+	local resultParts = {}
+
+	while true do
+		if p.pos > p.len then
+			return nil, "unterminated string"
+		end
+
+		local c = string.sub(p.str, p.pos, p.pos)
+
+		if c == "\"" then
+			p.pos = p.pos + 1
+			break
+		elseif c == "\\" then
+			local nextC = string.sub(p.str, p.pos + 1, p.pos + 1)
+
+			if nextC == "\\" then
+				table.insert(resultParts, "\\")
+			elseif nextC == "\"" then
+				table.insert(resultParts, "\"")
+			elseif nextC == "n" then
+				table.insert(resultParts, "\n")
+			elseif nextC == "r" then
+				table.insert(resultParts, "\r")
+			elseif nextC == "t" then
+				table.insert(resultParts, "\t")
+			else
+				return nil, "bad escape sequence"
+			end
+
+			p.pos = p.pos + 2
+		else
+			table.insert(resultParts, c)
+			p.pos = p.pos + 1
+		end
+	end
+
+	return table.concat(resultParts, "")
+end
+
+local function ParseImportNumberOrKeyword(p)
+	local startPos = p.pos
+
+	while p.pos <= p.len do
+		local c = string.sub(p.str, p.pos, p.pos)
+
+		if c == "," or c == "}" or c == "]" then
+			break
+		end
+
+		p.pos = p.pos + 1
+	end
+
+	local token = string.sub(p.str, startPos, p.pos - 1)
+
+	if token == "true" then
+		return true
+	elseif token == "false" then
+		return false
+	elseif token == "nil" then
+		return nil
+	end
+
+	local num = tonumber(token)
+
+	if not num then
+		return nil, "invalid token"
+	end
+
+	return num
+end
+
+local function ParseImportTable(p)
+	p.pos = p.pos + 1
+
+	local result = {}
+
+	SkipImportWhitespace(p)
+
+	if string.sub(p.str, p.pos, p.pos) == "}" then
+		p.pos = p.pos + 1
+		return result
+	end
+
+	while true do
+		SkipImportWhitespace(p)
+
+		if string.sub(p.str, p.pos, p.pos) ~= "[" then
+			return nil, "expected '[' for table key"
+		end
+
+		p.pos = p.pos + 1
+		SkipImportWhitespace(p)
+
+		local key, keyErr = ParseImportValue(p)
+
+		if key == nil and keyErr then
+			return nil, keyErr
+		end
+
+		SkipImportWhitespace(p)
+
+		if string.sub(p.str, p.pos, p.pos) ~= "]" then
+			return nil, "expected ']' after table key"
+		end
+
+		p.pos = p.pos + 1
+		SkipImportWhitespace(p)
+
+		if string.sub(p.str, p.pos, p.pos) ~= "=" then
+			return nil, "expected '=' after table key"
+		end
+
+		p.pos = p.pos + 1
+		SkipImportWhitespace(p)
+
+		local value, valueErr = ParseImportValue(p)
+
+		if value == nil and valueErr then
+			return nil, valueErr
+		end
+
+		if key ~= nil then
+			result[key] = value
+		end
+
+		SkipImportWhitespace(p)
+
+		local c = string.sub(p.str, p.pos, p.pos)
+
+		if c == "," then
+			p.pos = p.pos + 1
+			SkipImportWhitespace(p)
+
+			if string.sub(p.str, p.pos, p.pos) == "}" then
+				p.pos = p.pos + 1
+				break
+			end
+		elseif c == "}" then
+			p.pos = p.pos + 1
+			break
+		else
+			return nil, "expected ',' or '}' in table"
+		end
+	end
+
+	return result
+end
+
+ParseImportValue = function(p)
+	SkipImportWhitespace(p)
+
+	if p.pos > p.len then
+		return nil, "unexpected end of input"
+	end
+
+	local c = string.sub(p.str, p.pos, p.pos)
+
+	if c == "{" then
+		return ParseImportTable(p)
+	elseif c == "\"" then
+		return ParseImportString(p)
+	else
+		return ParseImportNumberOrKeyword(p)
+	end
+end
+
+local function ParseImportBody(body)
+	local p = NewImportParser(body)
+	local value, err = ParseImportValue(p)
+
+	if err then
+		return nil
+	end
+
+	SkipImportWhitespace(p)
+
+	if p.pos <= p.len then
+		return nil
+	end
+
+	return value
+end
+
+-- Validates and parses an exported profile string without applying it.
+-- Returns true, dataTable on success or false, errorMessage on failure.
+function BTV:ParseProfileImportString(str)
+	if type(str) ~= "string" then
+		return false, self.PROFILE_IMPORT_ERROR_MESSAGE
+	end
+
+	local prefixLen = string.len(PROFILE_EXPORT_PREFIX)
+
+	if string.sub(str, 1, prefixLen) ~= PROFILE_EXPORT_PREFIX then
+		return false, self.PROFILE_IMPORT_ERROR_MESSAGE
+	end
+
+	local body = string.sub(str, prefixLen + 1)
+	local ok, result = pcall(ParseImportBody, body)
+
+	if not ok or type(result) ~= "table" then
+		return false, self.PROFILE_IMPORT_ERROR_MESSAGE
+	end
+
+	return true, result
+end
+
+-- Overwrites the currently active profile (live data and its saved-profile
+-- entry) with already-parsed import data - mirrors CopyProfileInto's dual
+-- write so a PLAYER_LOGOUT-triggered SaveActiveProfileData right before the
+-- caller's ReloadUI() can't clobber it.
+function BTV:ApplyImportedProfileData(data)
+	BTVanillaDB = self:DeepCopyTable(data)
+
+	BTVanillaProfilesDB = BTVanillaProfilesDB or {}
+	BTVanillaProfilesDB[self.activeProfileName] = self:DeepCopyTable(data)
 end
 
 -- Switches this character to an existing profile and reloads the UI.

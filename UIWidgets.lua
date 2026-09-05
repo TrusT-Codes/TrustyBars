@@ -238,6 +238,47 @@ BTVDialogMixin = {}
 local DIALOG_WIDTH = 360
 local DIALOG_BUTTON_HEIGHT = 22
 local DIALOG_BUTTON_MIN_WIDTH = 100
+local DIALOG_TEXTAREA_HEIGHT = 160
+local DIALOG_ERROR_BANNER_HEIGHT = 54
+local DIALOG_TEXTAREA_SCROLLBAR_RESERVE = 28
+-- Fixed scroll-child height rather than measuring wrapped line count -
+-- covers any export size, at the cost of the scrollbar thumb not
+-- reflecting short texts proportionally.
+local DIALOG_TEXTAREA_CONTENT_HEIGHT = 4000
+
+-- Creates the scrollable multi-line EditBox backing mode == "textarea"
+-- (profile export/import). Built once and reused, same as the dialog
+-- frame itself - see EnsureDialogFrame's own header comment.
+local function CreateDialogTextArea(dialog)
+	local scrollFrame = BTV:CreateScrollFrame(dialog, "BTVanillaDialogTextAreaScrollFrame")
+
+	scrollFrame:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 12,
+		insets = { left = 3, right = 3, top = 3, bottom = 3 },
+	})
+	scrollFrame:SetBackdropColor(0.05, 0.05, 0.05, 0.9)
+
+	local editBox = CreateFrame("EditBox", "BTVanillaDialogTextAreaEditBox", scrollFrame)
+
+	editBox:SetMultiLine(true)
+	editBox:SetAutoFocus(false)
+	editBox:SetFontObject(ChatFontNormal)
+	editBox:SetMaxLetters(0)
+	-- No template (unlike InputBoxTemplate) means no built-in text padding -
+	-- without this the text starts flush at the scroll child's raw left
+	-- edge, underneath the scrollFrame backdrop's own left border inset.
+	editBox:SetTextInsets(6, 6, 4, 4)
+	editBox:SetScript("OnEscapePressed", function() this:ClearFocus() end)
+
+	scrollFrame:SetScrollChild(editBox)
+	scrollFrame.editBox = editBox
+
+	return scrollFrame
+end
 
 local function EnsureDialogFrame()
 	if BTV.activeDialog then
@@ -286,6 +327,43 @@ function BTVDialogMixin:OnLoad()
 	self.messageText:SetWidth(DIALOG_WIDTH - 40)
 	self.messageText:SetJustifyH("CENTER")
 
+	-- Optional red warning line (e.g. profile import's override warning),
+	-- shown only when config.warningText is set.
+	self.warningText = self:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	self.warningText:SetWidth(DIALOG_WIDTH - 40)
+	self.warningText:SetJustifyH("CENTER")
+	self.warningText:SetTextColor(1, 0.15, 0.15)
+	self.warningText:Hide()
+
+	self.textArea = CreateDialogTextArea(self)
+	self.textArea:Hide()
+
+	-- Inline validation-error banner - same red backdrop treatment as
+	-- Settings.lua's profile-lock banner (BTV:CreateProfileLockWarning).
+	local errorBanner = CreateFrame("Frame", nil, self)
+
+	errorBanner:SetBackdrop({
+		bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
+		edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
+		tile = true,
+		tileSize = 16,
+		edgeSize = 12,
+		insets = { left = 2, right = 2, top = 2, bottom = 2 },
+	})
+	errorBanner:SetBackdropColor(0.35, 0, 0, 0.9)
+
+	local errorBannerText = errorBanner:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+	errorBannerText:SetPoint("TOPLEFT", errorBanner, "TOPLEFT", 8, -6)
+	errorBannerText:SetPoint("TOPRIGHT", errorBanner, "TOPRIGHT", -8, -6)
+	errorBannerText:SetJustifyH("LEFT")
+	errorBannerText:SetJustifyV("TOP")
+	errorBannerText:SetTextColor(1, 0.15, 0.15)
+
+	errorBanner.text = errorBannerText
+	errorBanner:Hide()
+
+	self.errorBanner = errorBanner
+
 	-- InputBoxTemplate: standard vanilla FrameXML EditBox. Created hidden;
 	-- shown only for mode == "textinput".
 	self.editBox = CreateFrame("EditBox", "BTVanillaDialogEditBox", self, "InputBoxTemplate")
@@ -326,34 +404,113 @@ end
 
 -- config = {
 --     title = "...", message = "...",
---     mode = "confirm" | "textinput" | "dropdown",
---     defaultText = "...",     -- textinput: EditBox starting value
+--     mode = "confirm" | "textinput" | "dropdown" | "textarea",
+--     defaultText = "...",     -- textinput/textarea: EditBox starting value
 --     options = { "A", "B" },  -- dropdown: selectable values
---     buttons = { { text = "Accept", isDefault = true, onClick = function(value) end }, ... },
+--     warningText = "...",     -- optional red line under the message
+--     reserveErrorBanner = true, -- reserves space for :ShowInlineError
+--     liveValidate = function(value) return ok, errorMessage end, -- optional,
+--         -- textarea only: re-checked on every text change, not just on a
+--         -- button click; hides the banner again once the text is fixed.
+--     buttons = {
+--         {
+--             text = "Accept", isDefault = true,
+--             validate = function(value) return ok, errorMessage end, -- optional
+--             keepOpen = false, -- optional: skip auto-close on click
+--             onClick = function(value) end,
+--         }, ...
+--     },
 -- }
 function BTVDialogMixin:Init(config)
 	config = config or {}
 
 	self.mode = config.mode or "confirm"
 	self.buttonConfigs = config.buttons or {}
+	self.hasErrorBannerSlot = config.reserveErrorBanner and true or false
 
 	self.titleText:SetText(config.title or "")
 	self.messageText:SetText(config.message or "")
 
 	self.editBox:Hide()
 	self.dropdown:Hide()
+	self.textArea:Hide()
+	self.errorBanner:Hide()
+
+	local anchorAbove = self.messageText
+
+	if config.warningText then
+		self.warningText:ClearAllPoints()
+		self.warningText:SetPoint("TOP", self.messageText, "BOTTOM", 0, -8)
+		self.warningText:SetText(config.warningText)
+		self.warningText:Show()
+		anchorAbove = self.warningText
+	else
+		self.warningText:Hide()
+	end
 
 	if self.mode == "textinput" then
-		self.editBox:SetPoint("TOP", self.messageText, "BOTTOM", 0, -14)
+		self.editBox:ClearAllPoints()
+		self.editBox:SetPoint("TOP", anchorAbove, "BOTTOM", 0, -14)
 		self.editBox:SetText(config.defaultText or "")
 		self.editBox:HighlightText()
 		self.editBox:Show()
+		anchorAbove = self.editBox
 	elseif self.mode == "dropdown" then
 		self.dropdown:ClearAllPoints()
-		self.dropdown:SetPoint("TOP", self.messageText, "BOTTOM", 0, -10)
+		self.dropdown:SetPoint("TOP", anchorAbove, "BOTTOM", 0, -10)
 		self.dropdown:SetOptions(config.options or {})
 		self.dropdown:SetSelected((config.options or {})[1])
 		self.dropdown:Show()
+		anchorAbove = self.dropdown
+	elseif self.mode == "textarea" then
+		self.textArea:ClearAllPoints()
+		self.textArea:SetPoint("TOP", anchorAbove, "BOTTOM", 0, -10)
+		self.textArea:SetWidth(DIALOG_WIDTH - 80)
+		self.textArea.editBox:SetText(config.defaultText or "")
+		self.textArea.editBox:HighlightText()
+
+		-- Sets up the scrollbar's range/visibility (BTV:UpdateScrollFrame,
+		-- Settings.lua) - it also resets the scroll child's width to the
+		-- scrollFrame's own, so the EditBox is narrowed back down after.
+		BTV:UpdateScrollFrame(
+			self.textArea,
+			self.textArea.editBox,
+			DIALOG_TEXTAREA_CONTENT_HEIGHT,
+			DIALOG_TEXTAREA_HEIGHT
+		)
+		self.textArea.editBox:SetWidth(DIALOG_WIDTH - 80 - DIALOG_TEXTAREA_SCROLLBAR_RESERVE)
+
+		self.textArea.editBox:SetScript("OnTextChanged", function()
+			if not config.liveValidate then
+				return
+			end
+
+			local text = this:GetText()
+
+			if not text or text == "" then
+				BTV.activeDialog.errorBanner:Hide()
+				return
+			end
+
+			local ok, message = config.liveValidate(text)
+
+			if ok then
+				BTV.activeDialog.errorBanner:Hide()
+			else
+				BTV.activeDialog:ShowInlineError(message)
+			end
+		end)
+
+		self.textArea:Show()
+		anchorAbove = self.textArea
+	end
+
+	if self.hasErrorBannerSlot then
+		self.errorBanner:ClearAllPoints()
+		self.errorBanner:SetPoint("TOP", anchorAbove, "BOTTOM", 0, -8)
+		self.errorBanner:SetWidth(DIALOG_WIDTH - 40)
+		self.errorBanner:SetHeight(DIALOG_ERROR_BANNER_HEIGHT)
+		self.errorBanner.text:SetWidth(DIALOG_WIDTH - 56)
 	end
 
 	-- Buttons wrap into as many centered rows as needed, each row centered
@@ -378,6 +535,23 @@ function BTVDialogMixin:Init(config)
 
 			button:SetScript("OnClick", function()
 				local value = BTV.activeDialog:GetValue()
+
+				if buttonConfig.validate then
+					local ok, message = buttonConfig.validate(value)
+
+					if not ok then
+						BTV.activeDialog:ShowInlineError(message)
+						return
+					end
+				end
+
+				if buttonConfig.keepOpen then
+					if buttonConfig.onClick then
+						buttonConfig.onClick(value)
+					end
+
+					return
+				end
 
 				BTV.activeDialog:Hide()
 
@@ -439,10 +613,20 @@ function BTVDialogMixin:Init(config)
 	contentBottomY = contentBottomY + (self.titleText:GetHeight() or 0)
 	contentBottomY = contentBottomY + 10 + (self.messageText:GetHeight() or 0)
 
+	if config.warningText then
+		contentBottomY = contentBottomY + 8 + (self.warningText:GetHeight() or 0)
+	end
+
 	if self.mode == "textinput" then
 		contentBottomY = contentBottomY + 14 + (self.editBox:GetHeight() or 0)
 	elseif self.mode == "dropdown" then
 		contentBottomY = contentBottomY + 10 + (self.dropdown:GetHeight() or 0)
+	elseif self.mode == "textarea" then
+		contentBottomY = contentBottomY + 10 + DIALOG_TEXTAREA_HEIGHT
+	end
+
+	if self.hasErrorBannerSlot then
+		contentBottomY = contentBottomY + 8 + DIALOG_ERROR_BANNER_HEIGHT
 	end
 
 	local rowY = contentBottomY
@@ -479,9 +663,22 @@ function BTVDialogMixin:GetValue()
 		return self.editBox:GetText()
 	elseif self.mode == "dropdown" then
 		return self.dropdown:GetSelected()
+	elseif self.mode == "textarea" then
+		return self.textArea.editBox:GetText()
 	end
 
 	return nil
+end
+
+-- Shows the reserved inline red error banner (config.reserveErrorBanner)
+-- with `message`. No-op if the current dialog didn't reserve one.
+function BTVDialogMixin:ShowInlineError(message)
+	if not self.hasErrorBannerSlot then
+		return
+	end
+
+	self.errorBanner.text:SetText(message or "")
+	self.errorBanner:Show()
 end
 
 -- Invokes the default button's own OnClick handler directly rather than
@@ -507,6 +704,8 @@ function BTVDialogMixin:Display()
 
 	if self.mode == "textinput" then
 		self.editBox:SetFocus()
+	elseif self.mode == "textarea" then
+		self.textArea.editBox:SetFocus()
 	end
 end
 
@@ -524,37 +723,56 @@ end
 -------------------------------------------------------------------------
 -- BTVFadeStripMixin / BTV:CreateFadeStrip
 --
--- Horizontal transparent -> solid -> transparent highlight strip, split
--- 10%/80%/10% across its width. SetGradientAlpha only interpolates
--- between 2 stops, so the flat middle section is a separate solid
--- texture rather than part of one wider gradient - 3 stacked textures.
+-- Horizontal fade highlight. Textures are owned directly by `parent`
+-- (not a separate child frame) and drawn on the ARTWORK sublayer, so they
+-- render BEHIND any OVERLAY-layer text `parent` owns (e.g.
+-- BTV:StyleModernButton's label, BTVListRowMixin's label) - draw order
+-- between two DIFFERENT frames is governed by frame level, not layer, so
+-- a separate child frame's ARTWORK would still cover the parent's own
+-- OVERLAY text regardless of layer choice.
+--
+-- Two shapes, chosen at creation via options.inverted:
+--   normal (default) - transparent -> solid -> transparent, edges fade IN
+--                       to a flat color center (3 textures).
+--   inverted          - solid -> transparent -> solid, edges are flat
+--                       color fading OUT to a transparent center
+--                       (4 textures - the center fade needs two 2-stop
+--                       gradients since SetGradientAlpha only interpolates
+--                       between 2 stops).
+-- options.edgeFraction: each edge's share of the total width (default 0.1).
 -------------------------------------------------------------------------
 
 BTVFadeStripMixin = {}
 
--- parent: frame to anchor into. width/height: the strip's initial pixel
--- size (see :SetStripWidth to resize later without recreating textures).
-function BTV:CreateFadeStrip(parent, width, height)
-	local strip = CreateFrame("Frame", nil, parent)
+-- parent: frame to own the strip's textures. width/height: the strip's
+-- initial pixel size (see :SetStripWidth to resize later without
+-- recreating textures).
+function BTV:CreateFadeStrip(parent, width, height, options)
+	options = options or {}
+
+	local strip = {}
 
 	Mixin(strip, BTVFadeStripMixin)
 
-	-- Pure visual overlay - must not intercept mouse events meant for the
-	-- frame it decorates.
-	strip:EnableMouse(false)
-	strip:SetHeight(height)
-
 	strip.r, strip.g, strip.b = 1, 1, 1
 	strip.peakAlpha = 1
+	strip.height = height or 0
+	strip.edgeFraction = options.edgeFraction or 0.1
+	strip.inverted = options.inverted and true or false
 
-	strip.leftTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.leftTex = parent:CreateTexture(nil, "ARTWORK")
 	strip.leftTex:SetTexture("Interface\\Buttons\\WHITE8X8")
 
-	strip.midTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.midTex = parent:CreateTexture(nil, "ARTWORK")
 	strip.midTex:SetTexture("Interface\\Buttons\\WHITE8X8")
 
-	strip.rightTex = strip:CreateTexture(nil, "ARTWORK")
+	strip.rightTex = parent:CreateTexture(nil, "ARTWORK")
 	strip.rightTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+
+	if strip.inverted then
+		strip.midRightTex = parent:CreateTexture(nil, "ARTWORK")
+		strip.midRightTex:SetTexture("Interface\\Buttons\\WHITE8X8")
+	end
 
 	strip:SetStripWidth(width)
 	strip:ApplyFadeColors()
@@ -562,41 +780,106 @@ function BTV:CreateFadeStrip(parent, width, height)
 	return strip
 end
 
--- Resizes the frame and recomputes the 10/80/10 texture split - kept
+-- strip isn't a real Frame/Region (its textures are owned by `parent`
+-- instead), so SetPoint/ClearAllPoints/Show/Hide/IsShown are reimplemented
+-- here rather than inherited - all operate on leftTex, whose own anchor is
+-- what every other texture in the strip chains off of.
+function BTVFadeStripMixin:SetPoint(...)
+	self.leftTex:SetPoint(unpack(arg))
+end
+
+function BTVFadeStripMixin:ClearAllPoints()
+	self.leftTex:ClearAllPoints()
+end
+
+function BTVFadeStripMixin:Show()
+	self.leftTex:Show()
+	self.midTex:Show()
+	self.rightTex:Show()
+
+	if self.midRightTex then
+		self.midRightTex:Show()
+	end
+end
+
+function BTVFadeStripMixin:Hide()
+	self.leftTex:Hide()
+	self.midTex:Hide()
+	self.rightTex:Hide()
+
+	if self.midRightTex then
+		self.midRightTex:Hide()
+	end
+end
+
+function BTVFadeStripMixin:IsShown()
+	return self.leftTex:IsShown()
+end
+
+function BTVFadeStripMixin:SetShown(shown)
+	if shown then
+		self:Show()
+	else
+		self:Hide()
+	end
+end
+
+-- Recomputes the texture split for the strip's current width - kept
 -- separate from color/alpha updates so BTVListRowMixin:SetVisualWidth can
 -- resize an already-colored strip without touching its color.
 function BTVFadeStripMixin:SetStripWidth(width)
-	self:SetWidth(width)
+	self.width = width
 
-	local edgeWidth = width * 0.1
-	local midWidth = width - (edgeWidth * 2)
-	local height = self:GetHeight()
+	local height = self.height or 0
+	local edgeWidth = width * self.edgeFraction
 
-	self.leftTex:ClearAllPoints()
-	self.leftTex:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
 	self.leftTex:SetWidth(edgeWidth)
 	self.leftTex:SetHeight(height)
 
-	self.midTex:ClearAllPoints()
-	self.midTex:SetPoint("TOPLEFT", self.leftTex, "TOPRIGHT", 0, 0)
-	self.midTex:SetWidth(midWidth)
-	self.midTex:SetHeight(height)
+	if self.inverted then
+		local midWidth = (width - (edgeWidth * 2)) / 2
 
-	self.rightTex:ClearAllPoints()
-	self.rightTex:SetPoint("TOPLEFT", self.midTex, "TOPRIGHT", 0, 0)
-	self.rightTex:SetWidth(edgeWidth)
-	self.rightTex:SetHeight(height)
+		self.midTex:ClearAllPoints()
+		self.midTex:SetPoint("TOPLEFT", self.leftTex, "TOPRIGHT", 0, 0)
+		self.midTex:SetWidth(midWidth)
+		self.midTex:SetHeight(height)
+
+		self.midRightTex:ClearAllPoints()
+		self.midRightTex:SetPoint("TOPLEFT", self.midTex, "TOPRIGHT", 0, 0)
+		self.midRightTex:SetWidth(midWidth)
+		self.midRightTex:SetHeight(height)
+
+		self.rightTex:ClearAllPoints()
+		self.rightTex:SetPoint("TOPLEFT", self.midRightTex, "TOPRIGHT", 0, 0)
+		self.rightTex:SetWidth(edgeWidth)
+		self.rightTex:SetHeight(height)
+	else
+		local midWidth = width - (edgeWidth * 2)
+
+		self.midTex:ClearAllPoints()
+		self.midTex:SetPoint("TOPLEFT", self.leftTex, "TOPRIGHT", 0, 0)
+		self.midTex:SetWidth(midWidth)
+		self.midTex:SetHeight(height)
+
+		self.rightTex:ClearAllPoints()
+		self.rightTex:SetPoint("TOPLEFT", self.midTex, "TOPRIGHT", 0, 0)
+		self.rightTex:SetWidth(edgeWidth)
+		self.rightTex:SetHeight(height)
+	end
 end
 
--- Resizes just the height - SetStripWidth recomputes height from
--- self:GetHeight() too, but nothing re-runs it when only the strip's
--- height changes.
+-- Resizes just the height - SetStripWidth recomputes height too, but
+-- nothing re-runs it when only the strip's height changes.
 function BTVFadeStripMixin:SetStripHeight(height)
-	self:SetHeight(height)
+	self.height = height
 
 	self.leftTex:SetHeight(height)
 	self.midTex:SetHeight(height)
 	self.rightTex:SetHeight(height)
+
+	if self.midRightTex then
+		self.midRightTex:SetHeight(height)
+	end
 end
 
 -- Re-runs the gradient/solid-color calls with the current r/g/b/peakAlpha -
@@ -605,9 +888,16 @@ end
 function BTVFadeStripMixin:ApplyFadeColors()
 	local r, g, b, a = self.r, self.g, self.b, self.peakAlpha
 
-	self.leftTex:SetGradientAlpha("HORIZONTAL", r, g, b, 0, r, g, b, a)
-	self.midTex:SetVertexColor(r, g, b, a)
-	self.rightTex:SetGradientAlpha("HORIZONTAL", r, g, b, a, r, g, b, 0)
+	if self.inverted then
+		self.leftTex:SetVertexColor(r, g, b, a)
+		self.midTex:SetGradientAlpha("HORIZONTAL", r, g, b, a, r, g, b, 0)
+		self.midRightTex:SetGradientAlpha("HORIZONTAL", r, g, b, 0, r, g, b, a)
+		self.rightTex:SetVertexColor(r, g, b, a)
+	else
+		self.leftTex:SetGradientAlpha("HORIZONTAL", r, g, b, 0, r, g, b, a)
+		self.midTex:SetVertexColor(r, g, b, a)
+		self.rightTex:SetGradientAlpha("HORIZONTAL", r, g, b, a, r, g, b, 0)
+	end
 end
 
 function BTVFadeStripMixin:SetFadeColor(r, g, b)
@@ -618,6 +908,16 @@ end
 function BTVFadeStripMixin:SetPeakAlpha(a)
 	self.peakAlpha = a
 	self:ApplyFadeColors()
+end
+
+-- Gives a BTV:StyleModernButton-styled button a plain solid red "danger"
+-- background (destructive actions, e.g. Delete Profile) - just a flat
+-- backdrop color swap; StyleModernButton's own gold hover-border behavior
+-- is left untouched.
+local DANGER_COLOR = { 0.6, 0.08, 0.08 }
+
+function BTV:ApplyDangerButtonHighlight(button)
+	button:SetBackdropColor(DANGER_COLOR[1], DANGER_COLOR[2], DANGER_COLOR[3], 0.9)
 end
 
 -------------------------------------------------------------------------

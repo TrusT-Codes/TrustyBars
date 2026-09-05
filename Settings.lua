@@ -4424,10 +4424,13 @@ end
 -- "standard bar page" baseline, which keeps the window from shrinking
 -- below what an ordinary bar page needs just because the page currently
 -- being shown happens to be a shorter one.
+-- noMinFloor (optional): skips SETTINGS_CONTENT_MIN_HEIGHT entirely - for
+-- a view (Profiles) that's meant to shrink-to-fit its own short content
+-- instead of matching the other views' baseline height.
 --
 -- Returns the measured (unclamped, unfloored) content height so callers
 -- can record a baseline from it.
-local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel, listCandidateList, minContentHeight)
+local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scrollChildPanel, listCandidateList, minContentHeight, noMinFloor)
 	if not settingsFrame or not scrollFrame or not scrollChildPanel then
 		return nil
 	end
@@ -4537,13 +4540,13 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 		sharedRequirement = minContentHeight
 	end
 
-	if sharedRequirement < SETTINGS_CONTENT_MIN_HEIGHT then
+	if not noMinFloor and sharedRequirement < SETTINGS_CONTENT_MIN_HEIGHT then
 		sharedRequirement = SETTINGS_CONTENT_MIN_HEIGHT
 	end
 
 	local contentHeight = measuredContentHeight
 
-	if contentHeight < SETTINGS_CONTENT_MIN_HEIGHT then
+	if not noMinFloor and contentHeight < SETTINGS_CONTENT_MIN_HEIGHT then
 		contentHeight = SETTINGS_CONTENT_MIN_HEIGHT
 	end
 
@@ -6559,9 +6562,16 @@ function BTV:GetOrCreateProfilesPanel()
 	label:SetText("Active Profile:")
 	panel.label = label
 
+	-- Same row as the label (label left-aligned, dropdown right-aligned) -
+	-- anchored to panel's own TOPRIGHT (for the wide page's real right
+	-- edge) with a Y offset computed to match label's own TOP, since a
+	-- fixed-size frame can't take X from one anchor and Y from another
+	-- without the two anchors' redundant axes conflicting.
+	local labelRowTopY = -(14 + title:GetHeight() + 20)
+
 	local dropdown = BTV:CreateInlineDropdown(panel, 220, "BTVanillaProfilesDropdown")
 	dropdown:ClearAllPoints()
-	dropdown:SetPoint("TOPLEFT", label, "BOTTOMLEFT", -16, -6)
+	dropdown:SetPoint("TOPRIGHT", panel, "TOPRIGHT", -INDENT_SECTION, labelRowTopY)
 	panel.profileDropdown = dropdown
 
 	dropdown.onSelect = function(value)
@@ -6582,10 +6592,40 @@ function BTV:GetOrCreateProfilesPanel()
 		end
 	end
 
+	local PROFILE_BUTTON_GAP_X = 12
+
+	local exportButton = CreateFrame("Button", nil, panel)
+	exportButton:SetHeight(22)
+	exportButton:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -14)
+	BTV:StyleModernButton(exportButton, 0, 0)
+	exportButton:SetText("Export Profile")
+	panel.exportButton = exportButton
+
+	exportButton:SetScript("OnClick", function()
+		BTV:ShowDialog({
+			title = "Export Profile",
+			message = "Copy the text below (Ctrl+C) to share this profile.",
+			mode = "textarea",
+			defaultText = BTV:ExportActiveProfileString(),
+			buttons = {
+				{
+					text = "Select all",
+					isDefault = true,
+					keepOpen = true,
+					onClick = function()
+						BTV.activeDialog.textArea.editBox:SetFocus()
+						BTV.activeDialog.textArea.editBox:HighlightText()
+					end,
+				},
+				{ text = "Close", onClick = function() end },
+			},
+		})
+	end)
+
 	local copyButton = CreateFrame("Button", nil, panel)
 	copyButton:SetHeight(22)
-	copyButton:SetPoint("TOPLEFT", dropdown, "BOTTOMLEFT", 16, -14)
-	BTV:StyleModernButton(copyButton, 200, 200)
+	copyButton:SetPoint("TOPLEFT", exportButton, "TOPRIGHT", PROFILE_BUTTON_GAP_X, 0)
+	BTV:StyleModernButton(copyButton, 0, 0)
 	copyButton:SetText("Copy from other profile")
 	panel.copyButton = copyButton
 
@@ -6614,7 +6654,6 @@ function BTV:GetOrCreateProfilesPanel()
 					onClick = function(value)
 						if value then
 							BTV:CopyProfileInto(value, BTVanillaCharDB.activeProfile)
-							BTV:SaveActiveProfileData()
 							ReloadUI()
 						end
 					end,
@@ -6624,12 +6663,69 @@ function BTV:GetOrCreateProfilesPanel()
 		})
 	end)
 
+	local importButton = CreateFrame("Button", nil, panel)
+	importButton:SetHeight(22)
+	importButton:SetPoint("TOPLEFT", copyButton, "TOPRIGHT", PROFILE_BUTTON_GAP_X, 0)
+	BTV:StyleModernButton(importButton, 0, 0)
+	importButton:SetText("Import new Profile")
+	panel.importButton = importButton
+
+	importButton:SetScript("OnClick", function()
+		local function ValidateImportText(value)
+			return BTV:ParseProfileImportString(value)
+		end
+
+		BTV:ShowDialog({
+			title = "Import Profile",
+			message = "You are about to Import a Profile on to your currently " ..
+				"active Profile " .. tostring(BTVanillaCharDB.activeProfile),
+			warningText = "WARNING! This will override all data on your " ..
+				"current Profile with the imported Data",
+			mode = "textarea",
+			reserveErrorBanner = true,
+			liveValidate = ValidateImportText,
+			buttons = {
+				{
+					text = "Import",
+					isDefault = true,
+					validate = ValidateImportText,
+					onClick = function(value)
+						local ok, data = BTV:ParseProfileImportString(value)
+
+						if ok then
+							BTV:ApplyImportedProfileData(data)
+							ReloadUI()
+						end
+					end,
+				},
+				{ text = "Close", onClick = function() end },
+			},
+		})
+	end)
+
 	local deleteButton = CreateFrame("Button", nil, panel)
 	deleteButton:SetHeight(22)
-	deleteButton:SetPoint("TOPLEFT", copyButton, "BOTTOMLEFT", 0, -8)
-	BTV:StyleModernButton(deleteButton, 200, 200)
+	deleteButton:SetPoint("TOPLEFT", importButton, "TOPRIGHT", PROFILE_BUTTON_GAP_X, 0)
+	BTV:StyleModernButton(deleteButton, 0, 0)
 	deleteButton:SetText("Delete profile")
+	BTV:ApplyDangerButtonHighlight(deleteButton)
 	panel.deleteButton = deleteButton
+
+	-- Centers the whole 4-button row under the Active Profile row instead
+	-- of left-anchoring it under the dropdown - only exportButton's own
+	-- anchor needs resetting, since copy/import/delete are already chained
+	-- off their left neighbor's TOPRIGHT and follow automatically. Widths
+	-- are only known now that every button's SetText above has run.
+	local buttonRowY = labelRowTopY - math.max(label:GetHeight(), dropdown:GetHeight()) - 14
+	local totalRowWidth = exportButton:GetWidth() + copyButton:GetWidth()
+		+ importButton:GetWidth() + deleteButton:GetWidth() + (PROFILE_BUTTON_GAP_X * 3)
+
+	exportButton:ClearAllPoints()
+	exportButton:SetPoint(
+		"TOP", panel, "TOP",
+		-(totalRowWidth / 2) + (exportButton:GetWidth() / 2),
+		buttonRowY
+	)
 
 	deleteButton:SetScript("OnClick", function()
 		BTV:ShowDialog({
@@ -6657,10 +6753,11 @@ function BTV:GetOrCreateProfilesPanel()
 	return panel
 end
 
--- Refreshes the dropdown's option list/current selection and the Copy/
--- Delete buttons' visibility (only shown while a non-Default profile is
--- active) - called whenever the Profiles view is (re)shown and after any
--- profile CRUD action that doesn't already trigger a ReloadUI.
+-- Refreshes the dropdown's option list/current selection and all 4
+-- action buttons' visibility (only shown while a non-Default profile is
+-- active, since Default is locked/uneditable) - called whenever the
+-- Profiles view is (re)shown and after any profile CRUD action that
+-- doesn't already trigger a ReloadUI.
 function BTV:RefreshProfilesPanel()
 	local panel = self:GetOrCreateProfilesPanel()
 
@@ -6680,10 +6777,14 @@ function BTV:RefreshProfilesPanel()
 	panel.profileDropdown:SetSelected(BTVanillaCharDB.activeProfile)
 
 	if BTVanillaCharDB.activeProfile ~= self.DEFAULT_PROFILE_NAME then
+		panel.exportButton:Show()
 		panel.copyButton:Show()
+		panel.importButton:Show()
 		panel.deleteButton:Show()
 	else
+		panel.exportButton:Hide()
 		panel.copyButton:Hide()
+		panel.importButton:Hide()
 		panel.deleteButton:Hide()
 	end
 end
@@ -6699,10 +6800,14 @@ function BTV:FitSettingsWindowToProfilesView()
 	local n = 0
 
 	n = AppendCandidate(candidates, n, panel.profileDropdown)
+	n = AppendCandidate(candidates, n, panel.exportButton)
 	n = AppendCandidate(candidates, n, panel.copyButton)
+	n = AppendCandidate(candidates, n, panel.importButton)
 	n = AppendCandidate(candidates, n, panel.deleteButton)
 
-	ApplySettingsHeightFromCandidates(candidates, settingsFrame.profilesScrollFrame, panel)
+	-- Profiles is a short page by nature - shrink-to-fit instead of
+	-- matching the Bars/General views' SETTINGS_CONTENT_MIN_HEIGHT floor.
+	ApplySettingsHeightFromCandidates(candidates, settingsFrame.profilesScrollFrame, panel, nil, nil, true)
 end
 
 -------------------------------------------------------------------------
