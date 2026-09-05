@@ -512,10 +512,14 @@ end
 function BTVButtonMixin:UpdateGridVisibility()
 	local hasContent = self:IsSlotFilled() and true or false
 
-	-- Real vanilla's Main Bar (bar 1) never hides an empty button; all 12
-	-- slots stay permanently visible regardless of content or
-	-- ALWAYS_SHOW_MULTIBARS, which only ever governs the multi bars (2-5).
+	-- Real vanilla's Main Bar never hides an empty button, unlike the multi
+	-- bars (2-5) - but only while "Use Default Blizzard Layout" is still on
+	-- (BTVanillaDB.useDefaultLayout ~= false). Once the user turns that off
+	-- and starts positioning bar 1 like any other TrustyBars bar, it drops
+	-- this native quirk and follows the same toggle-based condition as
+	-- every other bar.
 	local isMainBar = self.parentBar and self.parentBar.config and self.parentBar.config.dynamicMainBar
+		and BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false
 
 	-- BTV.isShowingActionGrid makes an empty slot temporarily reappear
 	-- while something is picked up to place, matching native behavior.
@@ -542,9 +546,9 @@ end
 function BTVButtonMixin:UpdateBackdropVisibility()
 	local hasContent = self:IsSlotFilled() and true or false
 
-	-- Same Main Bar exemption as UpdateGridVisibility: an empty bar-1
-	-- slot's border stays permanently on.
+	-- Same useDefaultLayout-gated Main Bar exemption as UpdateGridVisibility.
 	local isMainBar = self.parentBar and self.parentBar.config and self.parentBar.config.dynamicMainBar
+		and BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false
 
 	if self.slotVisible and (isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid) then
 		self:SetBackdropColor(0, 0, 0, 0.75)
