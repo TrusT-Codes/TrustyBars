@@ -4490,6 +4490,7 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 
 	if scrollChildPanel.hotkeyTitle then
 		local resolveNames = {
+			"macroTextCheckbox", "macroTitle", "macroSlider", "macroValueText", "macroResetButton",
 			"hotkeyTitle", "hotkeySlider", "hotkeyValueText", "hotkeyResetButton",
 			"countTitle", "countSlider", "countValueText", "countResetButton",
 			"snapToAdjacentCheckbox", "snapToAdjacentDescription",
@@ -4743,6 +4744,10 @@ function BTV:FitSettingsWindowToGeneralView()
 
 	-- Stance/Page Bar Assignment rows live on bar 1's own settings page -
 	-- see FitSettingsWindowToBarPage for their candidate handling.
+
+	n = AppendCandidate(candidates, n, panel.macroTextCheckbox)
+	n = AppendCandidate(candidates, n, panel.macroValueText)
+	n = AppendCandidate(candidates, n, panel.macroResetButton)
 
 	n = AppendCandidate(candidates, n, panel.hotkeyValueText)
 	n = AppendCandidate(candidates, n, panel.hotkeyResetButton)
@@ -5542,6 +5547,185 @@ function BTV:GetOrCreateGeneralPanel()
 	-- BTV:RebuildMainBarAssignmentRows.
 
 	-------------------------------------------------------------------------
+	-- Macro text toggle + font size (both bars, live)
+	-------------------------------------------------------------------------
+
+	local macroTextCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralMacroTextCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	macroTextCheckbox:SetWidth(24)
+	macroTextCheckbox:SetHeight(24)
+
+	macroTextCheckbox:SetPoint(
+		"TOPLEFT",
+		mainBarStanceSwapDescription,
+		"BOTTOMLEFT",
+		-4,
+		-22
+	)
+
+	macroTextCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTV:SetMacroTextEnabled(checked)
+			BTV:RefreshGeneralPanel()
+		end
+	)
+
+	local macroTextLabel = getglobal(macroTextCheckbox:GetName() .. "Text")
+
+	if macroTextLabel then
+		macroTextLabel:SetText("Toggle Macro Text")
+	end
+
+	panel.macroTextCheckbox = macroTextCheckbox
+
+	local macroTitle = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormal"
+	)
+
+	macroTitle:SetPoint(
+		"TOPLEFT",
+		macroTextCheckbox,
+		"BOTTOMLEFT",
+		8,
+		-10
+	)
+
+	macroTitle:SetText(
+		"Macro Text Size (" .. tostring(FONT_SIZE_MIN) ..
+		" to " .. tostring(FONT_SIZE_MAX) .. ")"
+	)
+
+	-- Exposed so ApplySettingsHeightFromCandidates' warm-up read pass can
+	-- reach this static anchor - see its own comment for why.
+	panel.macroTitle = macroTitle
+
+	local macroSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralMacroFontSizeSlider",
+		260
+	)
+
+	macroSlider:SetPoint(
+		"TOPLEFT",
+		macroTitle,
+		"BOTTOMLEFT",
+		INDENT_INPUT - INDENT_SECTION,
+		-12
+	)
+
+	macroSlider:SetMinMaxValues(
+		FONT_SIZE_MIN,
+		FONT_SIZE_MAX
+	)
+
+	macroSlider:SetValueStep(FONT_SIZE_STEP)
+
+	SetSliderLabel(macroSlider, "Macro Text Size")
+
+	local macroSliderLow = getglobal(macroSlider:GetName() .. "Low")
+
+	if macroSliderLow then
+		macroSliderLow:SetText(tostring(FONT_SIZE_MIN))
+	end
+
+	local macroSliderHigh = getglobal(macroSlider:GetName() .. "High")
+
+	if macroSliderHigh then
+		macroSliderHigh:SetText(tostring(FONT_SIZE_MAX))
+	end
+
+	local macroValueText = panel:CreateFontString(
+		nil,
+		"OVERLAY",
+		"GameFontNormalSmall"
+	)
+
+	macroValueText:SetPoint(
+		"TOP",
+		macroSlider,
+		"BOTTOM",
+		0,
+		-2
+	)
+
+	-- Placeholder only - RefreshGeneralPanel (called by ShowGeneralView
+	-- every time this view is shown) overwrites this with the real saved
+	-- value before the panel is ever visible.
+	macroValueText:SetText(tostring(FONT_SIZE_MIN))
+
+	panel.macroValueText = macroValueText
+
+	macroSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor(value + 0.5)
+
+			macroValueText:SetText(tostring(value))
+
+			if not this.suppressApply then
+				BTV:SetMacroFontSize(value)
+			end
+		end
+	)
+
+	panel.macroSlider = macroSlider
+
+	local macroResetButton = CreateFrame(
+		"Button",
+		nil,
+		panel
+	)
+
+	macroResetButton:SetHeight(22)
+
+	macroResetButton:SetPoint(
+		"LEFT",
+		macroSlider,
+		"RIGHT",
+		16,
+		4
+	)
+
+	BTV:StyleModernButton(macroResetButton, 90, 90)
+	macroResetButton:SetText("Reset")
+
+	macroResetButton:SetScript(
+		"OnClick",
+		function()
+			if not BTV.NATIVE_MACRO_FONT then
+				return
+			end
+
+			local size = ClampFontSize(BTV.NATIVE_MACRO_FONT.size)
+
+			BTV:SetMacroFontSize(size)
+
+			panel.macroSlider.suppressApply = true
+			panel.macroSlider:SetValue(size)
+			panel.macroValueText:SetText(tostring(size))
+			panel.macroSlider.suppressApply = nil
+		end
+	)
+
+	panel.macroResetButton = macroResetButton
+
+	-------------------------------------------------------------------------
 	-- Hotkey / Count text font size (both bars, live sliders)
 	--
 	-- Global, not per-button (Button.lua's hasCapturedFontDefaults comment)
@@ -5568,15 +5752,13 @@ function BTV:GetOrCreateGeneralPanel()
 		"GameFontNormal"
 	)
 
-	-- Anchored directly to mainBarStanceSwapDescription's BOTTOMLEFT - the
-	-- Stance/Page Bar Assignment rows live on bar 1's own settings page,
-	-- not here, so this is a direct link between the two General-tab
-	-- elements.
+	-- Placeholder anchor - BTV:ReflowGeneralHotkeySection re-anchors this
+	-- live once the macro section's Shown state is known.
 	hotkeyTitle:SetPoint(
 		"TOPLEFT",
-		mainBarStanceSwapDescription,
+		macroTextCheckbox,
 		"BOTTOMLEFT",
-		4,
+		8,
 		-22
 	)
 
@@ -6610,6 +6792,33 @@ function BTV:ReflowGeneralOverrideSliders(panel)
 	RefitGeneralViewSoon()
 end
 
+-- Re-anchors hotkeyTitle below the macro text section's real bottom edge.
+-- Anchors off macroTitle, not macroValueText - macroValueText uses a "TOP"
+-- anchor, so its LEFT edge drifts with the displayed digit count/width.
+function BTV:ReflowGeneralHotkeySection(panel)
+	panel.hotkeyTitle:ClearAllPoints()
+
+	if panel.macroSlider:IsShown() then
+		panel.hotkeyTitle:SetPoint(
+			"TOPLEFT",
+			panel.macroTitle,
+			"BOTTOMLEFT",
+			0,
+			-12 - panel.macroSlider:GetHeight() - 2 - panel.macroValueText:GetHeight() - 18
+		)
+	else
+		panel.hotkeyTitle:SetPoint(
+			"TOPLEFT",
+			panel.macroTextCheckbox,
+			"BOTTOMLEFT",
+			8,
+			-22
+		)
+	end
+
+	RefitGeneralViewSoon()
+end
+
 function BTV:RefreshGeneralPanel()
 	local panel = self:GetOrCreateGeneralPanel()
 
@@ -6713,6 +6922,29 @@ function BTV:RefreshGeneralPanel()
 	panel.mainBarStanceSwapCheckbox:SetChecked(
 		BTVanillaDB.mainBarStanceSwapEnabled ~= false
 	)
+
+	-------------------------------------------------------------------------
+	-- Macro text toggle + font size
+	-------------------------------------------------------------------------
+
+	local macroTextEnabled = BTVanillaDB.showMacroText == true
+
+	panel.macroTextCheckbox:SetChecked(macroTextEnabled)
+
+	panel.macroTitle:SetShown(macroTextEnabled)
+	panel.macroSlider:SetShown(macroTextEnabled)
+	panel.macroValueText:SetShown(macroTextEnabled)
+	panel.macroResetButton:SetShown(macroTextEnabled)
+
+	local macroDefault = BTV.NATIVE_MACRO_FONT and BTV.NATIVE_MACRO_FONT.size
+	local macroSize = ClampFontSize(BTVanillaDB.macroFontSize or macroDefault)
+
+	panel.macroSlider.suppressApply = true
+	panel.macroSlider:SetValue(macroSize)
+	panel.macroValueText:SetText(tostring(macroSize))
+	panel.macroSlider.suppressApply = nil
+
+	BTV:ReflowGeneralHotkeySection(panel)
 
 	-------------------------------------------------------------------------
 	-- Hotkey / Count text font size
