@@ -1212,6 +1212,18 @@ function BTV:EnsureDB()
 		BTVanillaDB.snapToAdjacentElements = true
 	end
 
+	if BTVanillaDB.showLayoutGrid == nil then
+		BTVanillaDB.showLayoutGrid = true
+	end
+
+	if BTVanillaDB.snapToGrid == nil then
+		BTVanillaDB.snapToGrid = true
+	end
+
+	if BTVanillaDB.useCustomGridSize == nil then
+		BTVanillaDB.useCustomGridSize = false
+	end
+
 	if BTVanillaDB.bagBarEnabled == nil then
 		BTVanillaDB.bagBarEnabled = true
 	end
@@ -1416,6 +1428,30 @@ local function GetRealScreenBounds(region, insetLeft, insetRight, insetTop, inse
 	return (left - insetLeft) * scale, (right + insetRight) * scale, (top + insetTop) * scale, (bottom - insetBottom) * scale
 end
 
+-- Shared calibrated-overhang math for a vanilla-style button of the given
+-- size: how far its native border TEXTURE actually reads as visible
+-- beyond the button's own frame bounds, after BORDER_TEXTURE_FUDGE
+-- corrects for the texture's own transparent padding (the raw
+-- BORDER_RATIO ratio alone overstates it - see BORDER_TEXTURE_FUDGE's own
+-- comment). Used by both GetElementVisualInset below (per-frame, gates on
+-- frame.config.id) and BTV:GetLayoutGridSpacing (Edit Layout mode's
+-- reference grid, which has no single frame to measure against).
+local function ComputeVanillaBorderInsets(buttonSize, borderRatio, yOffset, fudge)
+	local uniform = buttonSize * (borderRatio - 1) / 2
+
+	local left = uniform - fudge
+	local right = uniform - fudge
+	local top = uniform - yOffset - fudge
+	local bottom = uniform + yOffset - fudge
+
+	if left < 0 then left = 0 end
+	if right < 0 then right = 0 end
+	if top < 0 then top = 0 end
+	if bottom < 0 then bottom = 0 end
+
+	return left, right, top, bottom
+end
+
 -- Returns how far (local units, pre-scale) a frame's visible border
 -- overhangs its own frame bounds on each side, non-zero only for default
 -- bars 1-5 in vanilla border style. Custom bars and every chain-anchored
@@ -1423,21 +1459,13 @@ end
 function BTV:GetElementVisualInset(frame)
 	if frame and frame.config and frame.config.id and self:IsVanillaBorderStyle() then
 		local buttonSize = frame.config.buttonSize or self.BUTTON_SIZE
-		local uniform = buttonSize * (self.BORDER_RATIO - 1) / 2
-		local yOffset = self.BORDER_Y_OFFSET or 0
-		local fudge = self.BORDER_TEXTURE_FUDGE or 0
 
-		local left = uniform - fudge
-		local right = uniform - fudge
-		local top = uniform - yOffset - fudge
-		local bottom = uniform + yOffset - fudge
-
-		if left < 0 then left = 0 end
-		if right < 0 then right = 0 end
-		if top < 0 then top = 0 end
-		if bottom < 0 then bottom = 0 end
-
-		return left, right, top, bottom
+		return ComputeVanillaBorderInsets(
+			buttonSize,
+			self.BORDER_RATIO,
+			self.BORDER_Y_OFFSET or 0,
+			self.BORDER_TEXTURE_FUDGE or 0
+		)
 	end
 
 	return 0, 0, 0, 0
@@ -1564,6 +1592,119 @@ function BTV:ComputeSnapAdjustment(proposedLeft, proposedTop, width, height, exc
 	return adjustedLeft, adjustedTop
 end
 
+-- Rounds `value` to the nearest multiple of `step`, half away from zero.
+local function RoundToNearestMultiple(value, step)
+	if not step or step == 0 then
+		return value
+	end
+
+	local n = value / step
+
+	if n >= 0 then
+		n = math.floor(n + 0.5)
+	else
+		n = -math.floor(-n + 0.5)
+	end
+
+	return n * step
+end
+
+-- Picks whichever candidate anchor position (a list of real-screen-pixel
+-- values, all meaning "proposed's own axis value if this candidate wins")
+-- keeps `proposed` closest to where the cursor actually is.
+local function BestSnapCandidate(proposed, candidates)
+	local best, bestDist
+	local i
+
+	for i = 1, table.getn(candidates) do
+		local dist = candidates[i] - proposed
+
+		if dist < 0 then
+			dist = -dist
+		end
+
+		if not bestDist or dist < bestDist then
+			best = candidates[i]
+			bestDist = dist
+		end
+	end
+
+	return best
+end
+
+-- Computes a grid-snapped (proposedLeft, proposedTop) for a dragged
+-- element's top-left corner. Unlike ComputeSnapAdjustment (edge-to-edge,
+-- threshold-gated against OTHER elements), this snaps every tick against
+-- the layout grid itself (BTV:GetLayoutGridSpacing(), same screen-center
+-- origin the grid overlay is drawn from - Bar.lua's RebuildLayoutGrid),
+-- and considers three ways an axis can land on a grid line: the near
+-- edge, the far edge, or the center - whichever keeps the element closest
+-- to the cursor wins, so an edge locks onto a line to align a bar's
+-- border with the grid just as readily as the center locking onto a line
+-- intersection. The screen's own edges are included as explicit
+-- candidates too, since they aren't guaranteed to fall on a regular
+-- spacing multiple from screen center.
+--
+-- `scale` is the dragged frame's own GetEffectiveScale() (same value
+-- DefaultBars.lua's ApplyDragSnap already computed to convert its local
+-- width/height into the real screen pixels proposedLeft/proposedTop/
+-- width/height are given in here) - BTV:GetLayoutGridSpacing() is a LOCAL
+-- unit (a raw button-size number, same units as button:SetWidth()), so it
+-- needs the same conversion before comparing against real-pixel screen
+-- coordinates.
+function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
+	if IsShiftKeyDown and IsShiftKeyDown() then
+		return nil, nil
+	end
+
+	if not BTVanillaDB or not BTVanillaDB.snapToGrid then
+		return nil, nil
+	end
+
+	if not proposedLeft or not proposedTop or not width or not height then
+		return nil, nil
+	end
+
+	local spacing = self:GetLayoutGridSpacing()
+
+	if not spacing or spacing <= 0 then
+		return nil, nil
+	end
+
+	spacing = spacing * (scale or 1)
+
+	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
+
+	if not screenLeft then
+		return nil, nil
+	end
+
+	local centerX = (screenLeft + screenRight) / 2
+	local centerY = (screenTop + screenBottom) / 2
+
+	local function NearestOnAxis(point, origin)
+		return origin + RoundToNearestMultiple(point - origin, spacing)
+	end
+
+	local adjustedLeft = BestSnapCandidate(proposedLeft, {
+		NearestOnAxis(proposedLeft, centerX),
+		NearestOnAxis(proposedLeft + width, centerX) - width,
+		NearestOnAxis(proposedLeft + (width / 2), centerX) - (width / 2),
+		screenLeft,
+		screenRight - width,
+	})
+
+	local adjustedTop = BestSnapCandidate(proposedTop, {
+		NearestOnAxis(proposedTop, centerY),
+		NearestOnAxis(proposedTop - height, centerY) + height,
+		NearestOnAxis(proposedTop - (height / 2), centerY) + (height / 2),
+		screenTop,
+		screenBottom + height,
+	})
+
+	return adjustedLeft, adjustedTop
+end
+
 -------------------------------------------------------------------------
 -- Global border/spacing style
 -------------------------------------------------------------------------
@@ -1586,6 +1727,57 @@ function BTV:GetCurrentButtonSizeBaseline()
 	end
 
 	return self.BUTTON_SIZE + self.MODERN_BUTTON_SIZE_DELTA
+end
+
+-- Layout-grid line spacing (Edit Layout mode).
+--
+-- BTVanillaDB.useCustomGridSize (default false, EnsureDB) overrides
+-- everything below with a flat user-chosen number (BTVanillaDB.
+-- customGridSize, the Edit Mode tab's "Use custom Grid Size" slider) when
+-- on.
+--
+-- Otherwise, tracks the Main Bar's (bar id 1) CURRENT buttonSize live -
+-- not a fixed baseline constant - so resizing Main Bar (its own settings
+-- page, the General tab's Global Button Size override, or scroll-wheel
+-- resize while editing, all of which funnel through BTV:SetBarButtonSize)
+-- immediately changes grid spacing too, via that function's own rebuild
+-- hook. Falls back to GetCurrentButtonSizeBaseline() only if Main Bar
+-- somehow isn't in BTV.bars yet (e.g. very first load).
+--
+-- Vanilla style ALSO adds Main Bar's real configured cfg.spacing (via the
+-- same rebuild hook in BTV:SetBarSpacing/BTV:SetDefaultBarSpacing) - this
+-- is the actual button-to-button PITCH real buttons tile at
+-- (BarFrameSize/LayoutButtons' own layout formula: buttonSize + spacing),
+-- not a border-overhang correction. An earlier version added
+-- BTV:GetElementVisualInset's calibrated border-texture overhang instead
+-- (reusing the Edit Layout overlay hitbox's own math) - REVERTED: that
+-- overhang is a BAR-LEVEL correction (how far the whole bar's outer edge
+-- needs to expand to visually contain every button's overhanging border
+-- as one unit) and is irrelevant to PER-BUTTON tiling, since adjacent
+-- buttons' oversized native borders overlap each other rather than adding
+-- real distance between buttons - using it here caused visible cumulative
+-- drift between grid lines and buttons across a bar with many buttons
+-- (each cell ended up wider than the real per-button pitch). Modern style
+-- is deliberately left untouched (buttonSize alone, no spacing added) -
+-- already confirmed to align perfectly, do not add spacing there too
+-- without separately re-confirming live.
+function BTV:GetLayoutGridSpacing()
+	if BTVanillaDB and BTVanillaDB.useCustomGridSize and BTVanillaDB.customGridSize then
+		return BTVanillaDB.customGridSize
+	end
+
+	local mainBar = self.bars and self.bars[1]
+	local size = (mainBar and mainBar.config and mainBar.config.buttonSize)
+		or self:GetCurrentButtonSizeBaseline()
+
+	if not self:IsVanillaBorderStyle() then
+		return size
+	end
+
+	local spacing = (mainBar and mainBar.config and mainBar.config.spacing)
+		or self.VANILLA_SPACING_FLOOR
+
+	return size + spacing
 end
 
 -------------------------------------------------------------------------
@@ -1622,7 +1814,7 @@ end
 function BTV:ToggleEditMode()
 	self:SetEditMode(not self:IsEditMode())
 	self:Print(self:IsEditMode()
-		and "Configure Layout ON - drag buttons to move bars, scroll to scale, right-click for bar settings. Hold Shift while dragging to temporarily disable snapping."
+		and "Configure Layout ON - drag buttons to move bars, scroll to scale, right-click for bar settings. Hold Shift while dragging to temporarily disable snapping. Hold Ctrl to temporarily show/hide the layout grid."
 		or "Configure Layout OFF.")
 end
 

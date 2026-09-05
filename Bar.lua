@@ -314,6 +314,229 @@ function BTV:ApplyEditModeVisual()
 	if self.ApplyDefaultLayoutEditVisual then
 		self:ApplyDefaultLayoutEditVisual()
 	end
+
+	self:ApplyLayoutGridVisual()
+end
+
+-------------------------------------------------------------------------
+-- Layout grid overlay (Edit Layout mode)
+--
+-- Light-blue reference grid spanning the whole screen, spaced at
+-- BTV:GetLayoutGridSpacing() (Core.lua - tracks the current button
+-- size/border style), with a single darker/thicker line through the exact
+-- screen center on each axis. Purely visual - BTVanillaDB.snapToGrid
+-- (Core.lua's BTV:ComputeGridSnapAdjustment, wired into DefaultBars.lua's
+-- ApplyDragSnap) is the separate setting that controls drag behavior.
+--
+-- BTVanillaDB.showLayoutGrid is the base on/off state; holding Ctrl while
+-- in Edit Layout mode temporarily flips it (mirrors Shift's temporary
+-- override of Snap to Adjacent Elements) via a C_Timer.NewTicker poll -
+-- CLAUDE.md's scheduling convention - rather than a hand-rolled OnUpdate,
+-- since visibility must track Ctrl even when nothing is being dragged.
+-------------------------------------------------------------------------
+
+local LAYOUT_GRID_LINE_COLOR = { 0.4, 0.75, 1.0, 0.35 }
+local LAYOUT_GRID_CENTER_COLOR = { 0.05, 0.25, 0.65, 0.9 }
+local LAYOUT_GRID_LINE_THICKNESS = 1
+local LAYOUT_GRID_CENTER_THICKNESS = 3
+local LAYOUT_GRID_CTRL_POLL_INTERVAL = 0.05
+
+-- Extra whole grid-line steps drawn past the screen edge on every side,
+-- on top of the minimum math.ceil already needs - a safety margin so
+-- minor rect/rounding variance never leaves the boundary looking like a
+-- missing line. The exact cell size at the visible edge already varies
+-- run to run (spacing rarely divides the screen evenly) and that's
+-- accepted as fine - this buffer isn't trying to fix that, just guards
+-- against landing suspiciously close to it.
+local LAYOUT_GRID_EDGE_OVERSHOOT_LINES = 5
+
+local layoutGridFrame
+local layoutGridVLines = {}
+local layoutGridHLines = {}
+local layoutGridCtrlTicker
+
+local function EnsureLayoutGridFrame()
+	if layoutGridFrame then
+		return layoutGridFrame
+	end
+
+	layoutGridFrame = CreateFrame("Frame", "BTVanillaLayoutGridFrame", UIParent)
+	layoutGridFrame:SetAllPoints(UIParent)
+	layoutGridFrame:SetFrameStrata("BACKGROUND")
+	layoutGridFrame:EnableMouse(false)
+	layoutGridFrame:Hide()
+
+	return layoutGridFrame
+end
+
+-- Hides every pooled line texture in `pool` beyond index `count`, without
+-- discarding them - reused on the next rebuild instead of recreated.
+local function HideLinesFrom(pool, count)
+	local i
+
+	for i = count + 1, table.getn(pool) do
+		pool[i]:Hide()
+	end
+end
+
+local function GetOrCreatePoolLine(pool, index, frame)
+	local line = pool[index]
+
+	if not line then
+		line = frame:CreateTexture(nil, "BACKGROUND")
+		line:SetTexture("Interface\\Buttons\\WHITE8X8")
+		pool[index] = line
+	end
+
+	return line
+end
+
+-- Rebuilds every grid line texture from scratch at the current
+-- BTV:GetLayoutGridSpacing(). Called whenever Edit Layout mode is entered
+-- and whenever the border style/baseline button size changes while it's
+-- already active (BTV:ApplyGlobalButtonStyle).
+function BTV:RebuildLayoutGrid()
+	local frame = EnsureLayoutGridFrame()
+
+	-- BTV:GetLayoutGridSpacing() is a LOCAL unit (a raw button-size number,
+	-- same units as button:SetWidth()) - this frame shares that same local
+	-- unit space with every other default-scale frame (nothing in this
+	-- addon applies a custom :SetScale to either a bar or this overlay),
+	-- so it's used directly as a SetPoint offset below with NO scale
+	-- conversion - dividing by GetEffectiveScale() here would double-
+	-- convert and shrink the grid relative to actual button size.
+	local spacing = self:GetLayoutGridSpacing()
+
+	if not spacing or spacing <= 0 then
+		HideLinesFrom(layoutGridVLines, 0)
+		HideLinesFrom(layoutGridHLines, 0)
+		return
+	end
+
+	-- Reads UIParent's own dimensions directly rather than this overlay's
+	-- (frame:GetWidth()/GetHeight()) - frame is SetAllPoints(UIParent) so
+	-- they're meant to be identical, but frame rects resolve LAZILY on
+	-- this client against the anchor's own cached rect (documented in
+	-- docs/01-Environment-Capability-Analysis.md §5af and already worked
+	-- around in Settings.lua) - reading a freshly SetAllPoints() child
+	-- immediately can return a stale/short rect. UIParent's own rect is
+	-- always already resolved (root frame, present since login), so this
+	-- sidesteps the issue entirely instead of forcing a resolve pass.
+	local width = UIParent:GetWidth()
+	local height = UIParent:GetHeight()
+
+	if not width or not height or width <= 0 or height <= 0 then
+		return
+	end
+
+	-- math.ceil (not math.floor) so the last line covering the screen
+	-- lands beyond the visible edge instead of stopping short of it, plus
+	-- a generous extra buffer of whole steps past that - a single plain,
+	-- uniformly-spaced grid extending out from the center lines with no
+	-- special-cased "exact edge" line and no recentering of the outermost
+	-- step (both tried and reverted - see this function's git history/
+	-- project memory). The exact leftover cell size at the visible edge
+	-- necessarily varies since spacing rarely divides the screen evenly -
+	-- accepted as fine; the buffer just guards against that boundary ever
+	-- landing so close to the true edge that it reads as a missing line.
+	local halfCountX = math.ceil((width / 2) / spacing) + LAYOUT_GRID_EDGE_OVERSHOOT_LINES
+	local halfCountY = math.ceil((height / 2) / spacing) + LAYOUT_GRID_EDGE_OVERSHOOT_LINES
+
+	local vCount = 0
+	local k
+
+	for k = -halfCountX, halfCountX do
+		vCount = vCount + 1
+
+		local line = GetOrCreatePoolLine(layoutGridVLines, vCount, frame)
+		local isCenter = (k == 0)
+		local color = isCenter and LAYOUT_GRID_CENTER_COLOR or LAYOUT_GRID_LINE_COLOR
+		local thickness = isCenter and LAYOUT_GRID_CENTER_THICKNESS or LAYOUT_GRID_LINE_THICKNESS
+
+		line:ClearAllPoints()
+		line:SetWidth(thickness)
+		line:SetPoint("TOP", frame, "TOP", k * spacing, 0)
+		line:SetPoint("BOTTOM", frame, "BOTTOM", k * spacing, 0)
+		line:SetVertexColor(color[1], color[2], color[3], color[4])
+		line:Show()
+	end
+
+	HideLinesFrom(layoutGridVLines, vCount)
+
+	local hCount = 0
+
+	for k = -halfCountY, halfCountY do
+		hCount = hCount + 1
+
+		local line = GetOrCreatePoolLine(layoutGridHLines, hCount, frame)
+		local isCenter = (k == 0)
+		local color = isCenter and LAYOUT_GRID_CENTER_COLOR or LAYOUT_GRID_LINE_COLOR
+		local thickness = isCenter and LAYOUT_GRID_CENTER_THICKNESS or LAYOUT_GRID_LINE_THICKNESS
+
+		line:ClearAllPoints()
+		line:SetHeight(thickness)
+		line:SetPoint("LEFT", frame, "LEFT", 0, k * spacing)
+		line:SetPoint("RIGHT", frame, "RIGHT", 0, k * spacing)
+		line:SetVertexColor(color[1], color[2], color[3], color[4])
+		line:Show()
+	end
+
+	HideLinesFrom(layoutGridHLines, hCount)
+end
+
+-- True if the grid should actually be on screen right now: Edit Layout
+-- mode active AND (BTVanillaDB.showLayoutGrid, XOR'd with Ctrl currently
+-- held).
+local function ComputeLayoutGridShouldShow()
+	if not BTV:IsEditMode() then
+		return false
+	end
+
+	local base = BTVanillaDB and BTVanillaDB.showLayoutGrid or false
+	local ctrlHeld = IsControlKeyDown and IsControlKeyDown()
+
+	if ctrlHeld then
+		return not base
+	end
+
+	return base
+end
+
+function BTV:RefreshLayoutGridVisibility()
+	local frame = EnsureLayoutGridFrame()
+
+	if ComputeLayoutGridShouldShow() then
+		frame:Show()
+	else
+		frame:Hide()
+	end
+end
+
+-- Called from ApplyEditModeVisual on every edit-mode toggle - (re)builds
+-- the grid and starts/stops the Ctrl-poll ticker together with the mode
+-- itself.
+function BTV:ApplyLayoutGridVisual()
+	local editMode = self:IsEditMode()
+
+	if layoutGridCtrlTicker then
+		layoutGridCtrlTicker:Cancel()
+		layoutGridCtrlTicker = nil
+	end
+
+	if editMode then
+		self:RebuildLayoutGrid()
+		self:RefreshLayoutGridVisibility()
+
+		if C_Timer and C_Timer.NewTicker then
+			layoutGridCtrlTicker = C_Timer.NewTicker(LAYOUT_GRID_CTRL_POLL_INTERVAL, function()
+				if BTV:IsEditMode() then
+					BTV:RefreshLayoutGridVisibility()
+				end
+			end)
+		end
+	else
+		EnsureLayoutGridFrame():Hide()
+	end
 end
 
 -------------------------------------------------------------------------
@@ -360,6 +583,16 @@ function BTV:SetBarButtonSize(bar, newSize)
 	PixelSetSize(bar, barW, barH)
 
 	self:LayoutButtons(bar)
+
+	-- BTV:GetLayoutGridSpacing() tracks Main Bar's (id 1) buttonSize live
+	-- (unless Use Custom Grid Size is on, in which case this is a no-op
+	-- change) - every buttonSize-changing path (per-bar/global sliders,
+	-- scroll-wheel resize, border-style switch) funnels through this one
+	-- function, so this is the single place that needs to rebuild the
+	-- grid rather than each call site remembering to.
+	if bar.config.id == 1 and self:IsEditMode() then
+		self:RebuildLayoutGrid()
+	end
 end
 
 -------------------------------------------------------------------------
@@ -399,6 +632,13 @@ function BTV:SetBarSpacing(bar, spacing)
 	bar.config.spacing = spacing
 
 	self:ApplyBarShape(bar)
+
+	-- Vanilla-style grid spacing (BTV:GetLayoutGridSpacing) includes Main
+	-- Bar's real configured spacing, not just its buttonSize - see that
+	-- function's own comment.
+	if bar.config.id == 1 and self:IsEditMode() then
+		self:RebuildLayoutGrid()
+	end
 end
 
 -------------------------------------------------------------------------
@@ -494,6 +734,13 @@ function BTV:ApplyGlobalButtonStyle()
 	-- DefaultBars.lua-owned border-style function.
 	if self.ApplyStanceBarBorderStyle then
 		self:ApplyStanceBarBorderStyle()
+	end
+
+	-- BTV:GetLayoutGridSpacing() tracks this same border style/baseline
+	-- size - rebuild the layout grid immediately if Edit Layout mode is
+	-- currently active, instead of leaving it stale until next toggle.
+	if self:IsEditMode() then
+		self:RebuildLayoutGrid()
 	end
 end
 

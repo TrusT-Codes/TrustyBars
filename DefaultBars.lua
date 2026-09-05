@@ -419,6 +419,13 @@ function BTV:SetDefaultBarSpacing(id, spacing)
 	if bar then
 		self:ApplyBarShape(bar)
 	end
+
+	-- Vanilla-style grid spacing (BTV:GetLayoutGridSpacing, Core.lua)
+	-- includes Main Bar's real configured spacing, not just its
+	-- buttonSize - see that function's own comment.
+	if id == 1 and self:IsEditMode() then
+		self:RebuildLayoutGrid()
+	end
 end
 
 -------------------------------------------------------------------------
@@ -954,13 +961,31 @@ local function ApplyDragSnap(frame, pos)
 	local proposedLeft = pos.x * scale - ilPx
 	local proposedTop = pos.y * scale + itPx
 
-	local adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
-		proposedLeft,
-		proposedTop,
-		width * scale + ilPx + irPx,
-		height * scale + itPx + ibPx,
-		frame
-	)
+	local boxWidth = width * scale + ilPx + irPx
+	local boxHeight = height * scale + itPx + ibPx
+
+	-- Snap to Grid and Snap to Adjacent Elements are mutually exclusive
+	-- per drag - grid wins when both are enabled, since it's the more
+	-- specific/deliberate of the two.
+	local adjustedLeft, adjustedTop
+
+	if BTVanillaDB and BTVanillaDB.snapToGrid then
+		adjustedLeft, adjustedTop = BTV:ComputeGridSnapAdjustment(
+			proposedLeft,
+			proposedTop,
+			boxWidth,
+			boxHeight,
+			scale
+		)
+	else
+		adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
+			proposedLeft,
+			proposedTop,
+			boxWidth,
+			boxHeight,
+			frame
+		)
+	end
 
 	if adjustedLeft then
 		pos.x = (adjustedLeft + ilPx) / scale
