@@ -488,6 +488,13 @@ function BTV:ApplyGlobalButtonStyle()
 			end
 		end
 	end
+
+	-- Stance Bar is a chain-anchored container of real Blizzard buttons,
+	-- not one of self.bars above - swept separately via its own
+	-- DefaultBars.lua-owned border-style function.
+	if self.ApplyStanceBarBorderStyle then
+		self:ApplyStanceBarBorderStyle()
+	end
 end
 
 -------------------------------------------------------------------------
