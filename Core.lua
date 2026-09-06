@@ -1756,6 +1756,33 @@ function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, h
 	local adjustedLeft = NearestOnAxis(proposedLeft + (width / 2), centerX) - (width / 2)
 	local adjustedTop = NearestOnAxis(proposedTop - (height / 2), centerY) + (height / 2)
 
+	-- TEMPORARY DIAGNOSTIC (diag28) - the Cast Bar is reported to still not
+	-- land its own center exactly on a grid line (the screen-center line in
+	-- particular) despite this function's math checking out on paper.
+	-- Dumps every value this function actually computed for the live drag,
+	-- so a mismatch between rawCenterX and centerX (input scale/units) vs.
+	-- a mismatch between snappedCenterX and centerX (the rounding itself)
+	-- can be told apart instead of guessed at. Throttled to at most once
+	-- every 0.3s (this function runs every OnUpdate tick while dragging,
+	-- easily 30-60 times a second unthrottled). Remove once confirmed.
+	local now = GetTime()
+
+	if not self.diag28LastPrint or (now - self.diag28LastPrint) >= 0.3 then
+		self.diag28LastPrint = now
+
+		BTV:Print(string.format(
+			"[diag28] scale=%.3f spacing=%.2f centerX=%.2f rawCenterX=%.2f snappedCenterX=%.2f | centerY=%.2f rawCenterY=%.2f snappedCenterY=%.2f",
+			scale or 1,
+			spacing,
+			centerX,
+			proposedLeft + (width / 2),
+			adjustedLeft + (width / 2),
+			centerY,
+			proposedTop - (height / 2),
+			adjustedTop + (height / 2)
+		))
+	end
+
 	return adjustedLeft, adjustedTop
 end
 
