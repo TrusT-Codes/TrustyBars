@@ -3630,6 +3630,91 @@ end
 
 BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
 
+-------------------------------------------------------------------------
+-- TEMPORARY DIAGNOSTIC (diag27) - Cast Bar external re-anchor trace
+--
+-- Always-on background trace, NOT a /btv slash command - the bug is
+-- reported as happening "randomly, after some time," so a manual
+-- on-demand check could easily miss the exact moment it happens; this
+-- installs once at file load and prints the instant anything external
+-- touches the frame.
+--
+-- Reported symptom: the Cast Bar randomly stretches from its custom
+-- position out into a long/distorted bar reaching roughly toward its
+-- original default position, sometimes with no cast in progress at all.
+-- The leading hypothesis: something OTHER than BTV:ApplyCastBarPosition
+-- calls SetPoint on the real CastingBarFrame without first calling
+-- ClearAllPoints, leaving two anchor points active at once - WoW's frame
+-- layout resolves that by implicitly re-deriving the frame's width/
+-- height from the gap between the two constrained points instead of
+-- erroring, which would look exactly like this (a bar that "stretches"
+-- toward wherever the second, uncleared point sits).
+--
+-- This wraps the real frame's own SetPoint/ClearAllPoints (capturing the
+-- native methods before overriding, same "capture before Mixin/override"
+-- discipline as this file's other native-method wraps) so every call
+-- that reaches them gets logged UNLESS it's our own
+-- (ApplyCastBarPosition above sets frame.btvApplyingCastBarPosition
+-- around its own ClearAllPoints+SetPoint pair specifically so this
+-- tracer can tell the two apart). Confirms or refutes the hypothesis
+-- directly instead of guessing at a fix - remove this whole block (and
+-- the btvApplyingCastBarPosition flag above) once the actual external
+-- caller and trigger are confirmed via live testing.
+-------------------------------------------------------------------------
+
+do
+	local frame = getglobal(BTV.CAST_BAR_FRAME_NAME)
+
+	if frame and not frame.btvCastBarDiag27Hooked then
+		local nativeSetPoint = frame.SetPoint
+		local nativeClearAllPoints = frame.ClearAllPoints
+
+		local function DescribeRelativeTo(relativeTo)
+			if not relativeTo then
+				return "nil"
+			end
+
+			if type(relativeTo) == "string" then
+				return relativeTo
+			end
+
+			if relativeTo.GetName and relativeTo:GetName() then
+				return relativeTo:GetName()
+			end
+
+			return tostring(relativeTo)
+		end
+
+		frame.SetPoint = function(self, point, relativeTo, relativePoint, x, y)
+			if not self.btvApplyingCastBarPosition then
+				BTV:Print(string.format(
+					"[diag27] EXTERNAL CastingBarFrame:SetPoint at %.2f - point=%s relativeTo=%s relativePoint=%s x=%s y=%s",
+					GetTime(),
+					tostring(point),
+					DescribeRelativeTo(relativeTo),
+					tostring(relativePoint),
+					tostring(x),
+					tostring(y)
+				))
+			end
+
+			return nativeSetPoint(self, point, relativeTo, relativePoint, x, y)
+		end
+
+		frame.ClearAllPoints = function(self)
+			if not self.btvApplyingCastBarPosition then
+				BTV:Print(string.format("[diag27] EXTERNAL CastingBarFrame:ClearAllPoints at %.2f", GetTime()))
+			end
+
+			return nativeClearAllPoints(self)
+		end
+
+		frame.btvCastBarDiag27Hooked = true
+
+		BTV:Print("[diag27] Cast Bar re-anchor tracer active.")
+	end
+end
+
 -- Mirrors CaptureLatencyBarPositionIfNeeded exactly. CastingBarFrame is
 -- normally hidden outside an active cast/channel, but a hidden frame's
 -- GetLeft()/GetTop() still resolve from its own SetPoint anchor
@@ -3690,6 +3775,11 @@ function BTV:ApplyCastBarPosition()
 	local pos = BTVanillaDB.castBarPosition
 
 	if pos then
+		-- Flag consumed by the diag27 tracer above - lets it tell our own
+		-- ClearAllPoints/SetPoint calls apart from anything else touching
+		-- this frame.
+		frame.btvApplyingCastBarPosition = true
+
 		frame:ClearAllPoints()
 		PixelSetPoint(
 			frame,
@@ -3699,6 +3789,8 @@ function BTV:ApplyCastBarPosition()
 			pos.x or 0,
 			pos.y or 0
 		)
+
+		frame.btvApplyingCastBarPosition = nil
 	end
 
 	-- enabledFlag is passed as a literal `true` (no independent enable
