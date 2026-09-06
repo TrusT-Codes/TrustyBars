@@ -1709,16 +1709,34 @@ function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height,
 	return adjustedLeft, adjustedTop
 end
 
--- Center-only variant of ComputeGridSnapAdjustment above, for an element
--- (the Cast Bar - DefaultBars.lua's ApplyDragSnap centerSnap parameter)
--- that should always align its own CENTER to a grid line, never an edge -
--- unlike the general 3-candidate (near edge/far edge/center) behavior
--- above, which picks whichever candidate keeps the element closest to the
--- cursor and can just as easily lock onto an edge. Same grid/spacing/
--- scale/screen-center-origin math as ComputeGridSnapAdjustment, just
--- without the BestSnapCandidate contest and without the screen-edge
--- candidates (those only make sense for an edge-snap, not a forced
--- center-snap).
+-- Real-pixel capture radius for ComputeCenterGridSnapAdjustment below -
+-- deliberately small and independent of grid spacing. Unlike the general
+-- round-to-nearest grid snap above (which always locks onto SOME line,
+-- leaving no free positioning anywhere), this element only gets pulled
+-- onto a line once dragged genuinely close to one, so there's a wide
+-- free zone left to fine-tune its position anywhere between two grid
+-- centers.
+local CENTER_GRID_SNAP_CAPTURE_PX = 10
+
+-- Center-only, HORIZONTAL-only variant of ComputeGridSnapAdjustment
+-- above, for an element (the Cast Bar - DefaultBars.lua's ApplyDragSnap
+-- centerSnap parameter) that should align its own horizontal CENTER to a
+-- grid line, never an edge, while staying completely free to move
+-- vertically - unlike the general 3-candidate (near edge/far edge/
+-- center) behavior above, which picks whichever candidate keeps the
+-- element closest to the cursor, snaps BOTH axes, and can just as easily
+-- lock onto an edge.
+--
+-- Vertical is deliberately left unadjusted (returns nil for Y) - this
+-- element is small, so forcing its top/bottom onto a horizontal grid
+-- line too left no room to freely fine-tune its height alongside its
+-- horizontal centering.
+--
+-- Horizontal only locks in within CENTER_GRID_SNAP_CAPTURE_PX of an
+-- actual line (returns nil otherwise, leaving the raw dragged X alone) -
+-- an unconditional round-to-nearest would map EVERY possible position to
+-- some line, leaving no gap to freely position the bar between two grid
+-- centers.
 function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
 	if IsShiftKeyDown and IsShiftKeyDown() then
 		return nil, nil
@@ -1740,23 +1758,29 @@ function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, h
 
 	spacing = spacing * (scale or 1)
 
-	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
+	local screenLeft, screenRight = GetRealScreenBounds(UIParent)
 
 	if not screenLeft then
 		return nil, nil
 	end
 
 	local centerX = (screenLeft + screenRight) / 2
-	local centerY = (screenTop + screenBottom) / 2
 
-	local function NearestOnAxis(point, origin)
-		return origin + RoundToNearestMultiple(point - origin, spacing)
+	local offsetX = (proposedLeft + (width / 2)) - centerX
+	local nearestOffsetX = RoundToNearestMultiple(offsetX, spacing)
+	local distanceX = offsetX - nearestOffsetX
+
+	if distanceX < 0 then
+		distanceX = -distanceX
 	end
 
-	local adjustedLeft = NearestOnAxis(proposedLeft + (width / 2), centerX) - (width / 2)
-	local adjustedTop = NearestOnAxis(proposedTop - (height / 2), centerY) + (height / 2)
+	local adjustedLeft
 
-	return adjustedLeft, adjustedTop
+	if distanceX <= CENTER_GRID_SNAP_CAPTURE_PX then
+		adjustedLeft = (centerX + nearestOffsetX) - (width / 2)
+	end
+
+	return adjustedLeft, nil
 end
 
 -------------------------------------------------------------------------

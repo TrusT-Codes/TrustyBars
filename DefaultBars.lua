@@ -934,12 +934,15 @@ end
 -- convert to/from screen pixels via this frame's effective scale alone,
 -- no anchor-point math needed.
 -- centerSnap (optional, Cast Bar only - see its dragKind branch below)
--- forces grid snapping to align this frame's own CENTER to a grid line
--- rather than contesting near-edge/far-edge/center candidates against the
--- cursor (Core.lua's BTV:ComputeCenterGridSnapAdjustment vs. the general
--- BTV:ComputeGridSnapAdjustment) - has no effect when Snap to Grid itself
--- is off (the Snap to Adjacent Elements branch below is unchanged either
--- way).
+-- switches grid snapping to Core.lua's BTV:ComputeCenterGridSnapAdjustment
+-- instead of the general BTV:ComputeGridSnapAdjustment - horizontal-only,
+-- aligning this frame's own CENTER to a grid line (never an edge) but
+-- only once dragged within its own small capture radius of one, leaving
+-- Y completely free and a real gap to fine-position X between two grid
+-- centers, rather than the general function's "always locks BOTH axes
+-- onto whichever of near-edge/far-edge/center is closest to the cursor."
+-- Has no effect when Snap to Grid itself is off (the Snap to Adjacent
+-- Elements branch below is unchanged either way).
 local function ApplyDragSnap(frame, pos, centerSnap)
 	if not frame or not pos then
 		return
@@ -1094,8 +1097,9 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
-			-- centerSnap = true: the Cast Bar always grid-snaps by its own
-			-- center, never an edge - see ApplyDragSnap's own comment.
+			-- centerSnap = true: the Cast Bar grid-snaps horizontally by its
+			-- own center only, within a small capture radius, Y left
+			-- completely free - see ApplyDragSnap's own comment.
 			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos, true)
 
 			BTV:ApplyCastBarPosition()
