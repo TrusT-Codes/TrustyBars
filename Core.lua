@@ -1713,8 +1713,35 @@ end
 local CENTER_GRID_SNAP_CAPTURE_PX_X = 10
 local CENTER_GRID_SNAP_CAPTURE_PX_Y = 2
 
--- Snaps proposedLeft/proposedTop's center to the nearest grid line per
--- axis, within each axis's own capture radius.
+-- Snaps a point to its nearest grid line if within capturePx, else nil.
+local function SnapPointWithinCapture(point, origin, spacing, capturePx)
+	local offset = point - origin
+	local nearestOffset = RoundToNearestMultiple(offset, spacing)
+	local distance = offset - nearestOffset
+
+	if distance < 0 then
+		distance = -distance
+	end
+
+	if distance <= capturePx then
+		return origin + nearestOffset
+	end
+
+	return nil
+end
+
+-- Appends `value` to `list` at index n+1 if non-nil, returns the new n.
+local function AppendCandidate(list, n, value)
+	if value then
+		list[n + 1] = value
+		return n + 1
+	end
+
+	return n
+end
+
+-- Snaps proposedLeft/proposedTop's near edge, far edge, or center - each
+-- only within its own capture radius - to the nearest grid line per axis.
 function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
 	if IsShiftKeyDown and IsShiftKeyDown() then
 		return nil, nil
@@ -1745,27 +1772,37 @@ function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, h
 	local centerX = (screenLeft + screenRight) / 2
 	local centerY = (screenTop + screenBottom) / 2
 
-	local function SnapAxis(point, origin, capturePx)
-		local offset = point - origin
-		local nearestOffset = RoundToNearestMultiple(offset, spacing)
-		local distance = offset - nearestOffset
+	local nearX = SnapPointWithinCapture(proposedLeft, centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
+	local farX = SnapPointWithinCapture(proposedLeft + width, centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
+	local midX = SnapPointWithinCapture(proposedLeft + (width / 2), centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
 
-		if distance < 0 then
-			distance = -distance
-		end
+	local xCandidates = {}
+	local xn = 0
+	xn = AppendCandidate(xCandidates, xn, nearX)
+	xn = AppendCandidate(xCandidates, xn, farX and (farX - width))
+	xn = AppendCandidate(xCandidates, xn, midX and (midX - (width / 2)))
 
-		if distance <= capturePx then
-			return origin + nearestOffset
-		end
+	local adjustedLeft
 
-		return nil
+	if xn > 0 then
+		adjustedLeft = BestSnapCandidate(proposedLeft, xCandidates)
 	end
 
-	local snappedCenterX = SnapAxis(proposedLeft + (width / 2), centerX, CENTER_GRID_SNAP_CAPTURE_PX_X)
-	local snappedCenterY = SnapAxis(proposedTop - (height / 2), centerY, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+	local nearY = SnapPointWithinCapture(proposedTop, centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+	local farY = SnapPointWithinCapture(proposedTop - height, centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+	local midY = SnapPointWithinCapture(proposedTop - (height / 2), centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
 
-	local adjustedLeft = snappedCenterX and (snappedCenterX - (width / 2))
-	local adjustedTop = snappedCenterY and (snappedCenterY + (height / 2))
+	local yCandidates = {}
+	local yn = 0
+	yn = AppendCandidate(yCandidates, yn, nearY)
+	yn = AppendCandidate(yCandidates, yn, farY and (farY + height))
+	yn = AppendCandidate(yCandidates, yn, midY and (midY + (height / 2)))
+
+	local adjustedTop
+
+	if yn > 0 then
+		adjustedTop = BestSnapCandidate(proposedTop, yCandidates)
+	end
 
 	return adjustedLeft, adjustedTop
 end
