@@ -933,7 +933,10 @@ end
 -- (the frame's local-unit offset from UIParent's BOTTOMLEFT corner)
 -- convert to/from screen pixels via this frame's effective scale alone,
 -- no anchor-point math needed.
-local function ApplyDragSnap(frame, pos)
+-- centerSnap (optional, Cast Bar only) switches grid snapping to
+-- Core.lua's BTV:ComputeCenterGridSnapAdjustment instead of
+-- BTV:ComputeGridSnapAdjustment.
+local function ApplyDragSnap(frame, pos, centerSnap)
 	if not frame or not pos then
 		return
 	end
@@ -970,13 +973,23 @@ local function ApplyDragSnap(frame, pos)
 	local adjustedLeft, adjustedTop
 
 	if BTVanillaDB and BTVanillaDB.snapToGrid then
-		adjustedLeft, adjustedTop = BTV:ComputeGridSnapAdjustment(
-			proposedLeft,
-			proposedTop,
-			boxWidth,
-			boxHeight,
-			scale
-		)
+		if centerSnap then
+			adjustedLeft, adjustedTop = BTV:ComputeCenterGridSnapAdjustment(
+				proposedLeft,
+				proposedTop,
+				boxWidth,
+				boxHeight,
+				scale
+			)
+		else
+			adjustedLeft, adjustedTop = BTV:ComputeGridSnapAdjustment(
+				proposedLeft,
+				proposedTop,
+				boxWidth,
+				boxHeight,
+				scale
+			)
+		end
 	else
 		adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
 			proposedLeft,
@@ -1069,6 +1082,17 @@ local function DefaultBarDrag_OnUpdate()
 			ApplyDragSnap(getglobal(BTV.EXP_BAR_FRAME_NAME), pos)
 
 			BTV:ApplyExpBarPosition()
+		end
+	elseif this.dragKind == "castBar" then
+		local pos = BTVanillaDB.castBarPosition
+
+		if pos then
+			pos.x = this.dragStartX + dx
+			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos, true)
+
+			BTV:ApplyCastBarPosition()
 		end
 	elseif this.dragKind == "pageIndicator" then
 		local pos = BTVanillaDB.mainBarPageIndicatorPosition
@@ -1780,6 +1804,50 @@ local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 	else
 		overlay:Hide()
 	end
+end
+
+-- Swallows SetPoint/ClearAllPoints on `frame` unless flagged via
+-- frame[flagName] (set by the element's own Apply*Position call).
+-- Must stay in place - native code re-anchors these frames without
+-- clearing the existing point first, corrupting their position.
+local function InstallReanchorGuard(frame, flagName)
+	if not frame or frame.btvReanchorGuarded then
+		return
+	end
+
+	local nativeSetPoint = frame.SetPoint
+	local nativeClearAllPoints = frame.ClearAllPoints
+
+	frame.SetPoint = function(self, ...)
+		if self[flagName] then
+			return nativeSetPoint(self, unpack(arg))
+		end
+	end
+
+	frame.ClearAllPoints = function(self)
+		if self[flagName] then
+			return nativeClearAllPoints(self)
+		end
+	end
+
+	frame.btvReanchorGuarded = true
+end
+
+-- Swallows Show() on `frame` unless isEnabledFn() returns true.
+local function InstallShowGuard(frame, isEnabledFn)
+	if not frame or frame.btvShowGuarded then
+		return
+	end
+
+	local nativeShow = frame.Show
+
+	frame.Show = function(self)
+		if isEnabledFn() then
+			return nativeShow(self)
+		end
+	end
+
+	frame.btvShowGuarded = true
 end
 
 -------------------------------------------------------------------------
@@ -3137,6 +3205,10 @@ end)
 
 BTV.KEYRING_BUTTON_NAME = "KeyRingButton"
 
+InstallShowGuard(getglobal(BTV.KEYRING_BUTTON_NAME), function()
+	return BTVanillaDB and BTVanillaDB.keyRingEnabled ~= false
+end)
+
 -- Mirrors CaptureLatencyBarPositionIfNeeded below exactly (GetLeft()/
 -- GetTop() rather than GetPoint(), for the same "sidesteps whatever this
 -- frame is really anchored to internally" reasoning) - captured lazily the
@@ -3382,6 +3454,8 @@ end
 
 BTV.LATENCY_BAR_FRAME_NAME = "MainMenuBarPerformanceBarFrame"
 
+InstallReanchorGuard(getglobal(BTV.LATENCY_BAR_FRAME_NAME), "btvApplyingLatencyBarPosition")
+
 -- Mirrors CaptureKeyRingPositionIfNeeded above exactly.
 function BTV:CaptureLatencyBarPositionIfNeeded()
 	self:EnsureDB()
@@ -3440,6 +3514,8 @@ function BTV:ApplyLatencyBarPosition()
 	local pos = BTVanillaDB.latencyBarPosition
 
 	if pos then
+		frame.btvApplyingLatencyBarPosition = true
+
 		frame:ClearAllPoints()
 		PixelSetPoint(
 			frame,
@@ -3449,6 +3525,8 @@ function BTV:ApplyLatencyBarPosition()
 			pos.x or 0,
 			pos.y or 0
 		)
+
+		frame.btvApplyingLatencyBarPosition = nil
 	end
 
 	EnsureContainerOverlay(frame, self.StartLatencyBarDrag, self.StopLatencyBarDrag, "latencybar", self.SetLatencyBarScale, nil, "Latency Bar")
@@ -3577,6 +3655,195 @@ function BTV:StopLatencyBarDrag()
 		self:RefreshBarSettingsPage("latencybar")
 	end
 end
+
+-------------------------------------------------------------------------
+-- Cast Bar (CastingBarFrame) - single native frame, no Spacing/
+-- Orientation/Enable, same Position/Scale/Reset/Drag treatment as the
+-- Latency Bar/Experience Bar above.
+-------------------------------------------------------------------------
+
+BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
+
+InstallReanchorGuard(getglobal(BTV.CAST_BAR_FRAME_NAME), "btvApplyingCastBarPosition")
+
+-- Mirrors CaptureLatencyBarPositionIfNeeded exactly.
+function BTV:CaptureCastBarPositionIfNeeded()
+	self:EnsureDB()
+
+	if BTVanillaDB.castBarPosition then
+		return
+	end
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if not frame then
+		return
+	end
+
+	local left = frame:GetLeft()
+	local top = frame:GetTop()
+
+	if not left or not top then
+		return
+	end
+
+	local anchor = {
+		point = "TOPLEFT",
+		relativePoint = "BOTTOMLEFT",
+		x = left,
+		y = top,
+	}
+
+	BTVanillaDB.castBarPosition = anchor
+
+	if not BTVanillaDB.castBarNativeAnchor then
+		BTVanillaDB.castBarNativeAnchor = {
+			point = anchor.point,
+			relativePoint = anchor.relativePoint,
+			x = anchor.x,
+			y = anchor.y,
+		}
+	end
+end
+
+-- Mirrors BTV:ApplyLatencyBarPosition exactly, minus the Enable branch.
+function BTV:ApplyCastBarPosition()
+	self:CaptureCastBarPositionIfNeeded()
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if not frame then
+		return
+	end
+
+	local pos = BTVanillaDB.castBarPosition
+
+	if pos then
+		frame.btvApplyingCastBarPosition = true
+
+		frame:ClearAllPoints()
+		PixelSetPoint(
+			frame,
+			pos.point or "TOPLEFT",
+			UIParent,
+			pos.relativePoint or "BOTTOMLEFT",
+			pos.x or 0,
+			pos.y or 0
+		)
+
+		frame.btvApplyingCastBarPosition = nil
+	end
+
+	EnsureContainerOverlay(frame, self.StartCastBarDrag, self.StopCastBarDrag, "castbar", self.SetCastBarScale, nil, "Cast Bar")
+end
+
+function BTV:SetCastBarPosition(x, y)
+	x = tonumber(x)
+	y = tonumber(y)
+
+	if not x or not y or not BTVanillaDB.castBarPosition then
+		return
+	end
+
+	BTVanillaDB.castBarPosition.x = x
+	BTVanillaDB.castBarPosition.y = y
+
+	self:ApplyCastBarPosition()
+end
+
+-- Mirrors SetLatencyBarScale's exact clamp/write/apply template.
+function BTV:SetCastBarScale(scale)
+	self:EnsureDB()
+
+	scale = tonumber(scale)
+
+	if not scale then
+		return
+	end
+
+	scale = math.floor((scale * 10) + 0.5) / 10
+
+	if scale < 0.5 then
+		scale = 0.5
+	end
+
+	if scale > 2.0 then
+		scale = 2.0
+	end
+
+	BTVanillaDB.castBarScale = scale
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if frame then
+		frame:SetScale(scale)
+	end
+end
+
+-- Mirrors ResetLatencyBarLayout's position+scale bundling.
+function BTV:ResetCastBarLayout()
+	local native = BTVanillaDB.castBarNativeAnchor
+
+	if native then
+		BTVanillaDB.castBarPosition = {
+			point = native.point,
+			relativePoint = native.relativePoint,
+			x = native.x,
+			y = native.y,
+		}
+
+		self:ApplyCastBarPosition()
+	end
+
+	self:SetCastBarScale(1)
+end
+
+function BTV:StartCastBarDrag()
+	self:CaptureCastBarPositionIfNeeded()
+
+	local pos = BTVanillaDB.castBarPosition
+
+	if not pos then
+		return
+	end
+
+	local cx, cy = GetCursorPositionUIScale()
+
+	local frame = EnsureDragFrame()
+
+	frame.dragKind = "castBar"
+	frame.dragStartCursorX = cx
+	frame.dragStartCursorY = cy
+	frame.dragStartX = pos.x or 0
+	frame.dragStartY = pos.y or 0
+
+	frame:SetScript("OnUpdate", DefaultBarDrag_OnUpdate)
+	frame:Show()
+end
+
+function BTV:StopCastBarDrag()
+	if not dragFrame then
+		return
+	end
+
+	dragFrame:SetScript("OnUpdate", nil)
+	dragFrame:Hide()
+
+	if self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage("castbar")
+	end
+end
+
+-- Re-attempts position capture the first time CastingBarFrame becomes
+-- visible this session.
+local castBarEventFrame = CreateFrame("Frame", "BTVanillaCastBarEventFrame")
+castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_START")
+castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
+castBarEventFrame:SetScript("OnEvent", function()
+	if not BTVanillaDB or not BTVanillaDB.castBarPosition then
+		BTV:ApplyCastBarPosition()
+	end
+end)
 
 -------------------------------------------------------------------------
 -- Experience Bar
@@ -5116,6 +5383,8 @@ function BTV:ApplyDefaultLayoutEditVisual()
 	-- as Key Ring/Latency Bar above.
 	ApplyContainerOverlayVisual(getglobal(self.EXP_BAR_FRAME_NAME), BTVanillaDB.expBarEnabled, show)
 
+	ApplyContainerOverlayVisual(getglobal(self.CAST_BAR_FRAME_NAME), true, show)
+
 	-- Page Indicator (Part 4) - same generic ApplyContainerOverlayVisual
 	-- treatment, gated on mainBarPaginationEnabled instead of an
 	-- independent enable flag (this element has none of its own - see
@@ -5598,6 +5867,8 @@ local function ReassertNativeElementPositions()
 	-- Bar/Key Ring above (MainMenuExpBar isn't reparented into a
 	-- TrustyBars-owned container) - reasserted here for the same reason.
 	BTV:ApplyExpBarPosition()
+
+	BTV:ApplyCastBarPosition()
 
 	BTV:ApplyPageIndicatorPosition()
 	BTV:ApplyPageIndicatorShape()

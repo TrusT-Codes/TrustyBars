@@ -1252,6 +1252,10 @@ function BTV:EnsureDB()
 		BTVanillaDB.expBarScale = 1
 	end
 
+	if BTVanillaDB.castBarScale == nil then
+		BTVanillaDB.castBarScale = 1
+	end
+
 	if BTVanillaDB.betterExpBarEnabled == nil then
 		BTVanillaDB.betterExpBarEnabled = false
 	end
@@ -1705,6 +1709,104 @@ function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height,
 	return adjustedLeft, adjustedTop
 end
 
+-- Per-axis real-pixel capture radius for ComputeCenterGridSnapAdjustment.
+local CENTER_GRID_SNAP_CAPTURE_PX_X = 10
+local CENTER_GRID_SNAP_CAPTURE_PX_Y = 2
+
+-- Snaps a point to its nearest grid line if within capturePx, else nil.
+local function SnapPointWithinCapture(point, origin, spacing, capturePx)
+	local offset = point - origin
+	local nearestOffset = RoundToNearestMultiple(offset, spacing)
+	local distance = offset - nearestOffset
+
+	if distance < 0 then
+		distance = -distance
+	end
+
+	if distance <= capturePx then
+		return origin + nearestOffset
+	end
+
+	return nil
+end
+
+-- Appends `value` to `list` at index n+1 if non-nil, returns the new n.
+local function AppendCandidate(list, n, value)
+	if value then
+		list[n + 1] = value
+		return n + 1
+	end
+
+	return n
+end
+
+-- Snaps proposedLeft/proposedTop's near edge, far edge, or center - each
+-- only within its own capture radius - to the nearest grid line per axis.
+function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
+	if IsShiftKeyDown and IsShiftKeyDown() then
+		return nil, nil
+	end
+
+	if not BTVanillaDB or not BTVanillaDB.snapToGrid then
+		return nil, nil
+	end
+
+	if not proposedLeft or not proposedTop or not width or not height then
+		return nil, nil
+	end
+
+	local spacing = self:GetLayoutGridSpacing()
+
+	if not spacing or spacing <= 0 then
+		return nil, nil
+	end
+
+	spacing = spacing * (scale or 1)
+
+	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
+
+	if not screenLeft then
+		return nil, nil
+	end
+
+	local centerX = (screenLeft + screenRight) / 2
+	local centerY = (screenTop + screenBottom) / 2
+
+	local nearX = SnapPointWithinCapture(proposedLeft, centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
+	local farX = SnapPointWithinCapture(proposedLeft + width, centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
+	local midX = SnapPointWithinCapture(proposedLeft + (width / 2), centerX, spacing, CENTER_GRID_SNAP_CAPTURE_PX_X)
+
+	local xCandidates = {}
+	local xn = 0
+	xn = AppendCandidate(xCandidates, xn, nearX)
+	xn = AppendCandidate(xCandidates, xn, farX and (farX - width))
+	xn = AppendCandidate(xCandidates, xn, midX and (midX - (width / 2)))
+
+	local adjustedLeft
+
+	if xn > 0 then
+		adjustedLeft = BestSnapCandidate(proposedLeft, xCandidates)
+	end
+
+	local nearY = SnapPointWithinCapture(proposedTop, centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+	local farY = SnapPointWithinCapture(proposedTop - height, centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+	local midY = SnapPointWithinCapture(proposedTop - (height / 2), centerY, spacing, CENTER_GRID_SNAP_CAPTURE_PX_Y)
+
+	local yCandidates = {}
+	local yn = 0
+	yn = AppendCandidate(yCandidates, yn, nearY)
+	yn = AppendCandidate(yCandidates, yn, farY and (farY + height))
+	yn = AppendCandidate(yCandidates, yn, midY and (midY + (height / 2)))
+
+	local adjustedTop
+
+	if yn > 0 then
+		adjustedTop = BestSnapCandidate(proposedTop, yCandidates)
+	end
+
+	return adjustedLeft, adjustedTop
+end
+
 -------------------------------------------------------------------------
 -- Global border/spacing style
 -------------------------------------------------------------------------
@@ -1990,6 +2092,9 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:SetExpBarEnabled(BTVanillaDB.expBarEnabled ~= false)
 	BTV:SetExpBarScale(BTVanillaDB.expBarScale or 1)
 	BTV:ApplyExpBarPosition()
+
+	BTV:SetCastBarScale(BTVanillaDB.castBarScale or 1)
+	BTV:ApplyCastBarPosition()
 
 	BTV:ApplyExpBarColors()
 
