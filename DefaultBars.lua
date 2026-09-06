@@ -941,6 +941,30 @@ end
 -- is off (the Snap to Adjacent Elements branch below is unchanged either
 -- way).
 local function ApplyDragSnap(frame, pos, centerSnap)
+	-- TEMPORARY DIAGNOSTIC (diag29) - diag28 (Core.lua, inside
+	-- ComputeCenterGridSnapAdjustment) never fired while dragging the Cast
+	-- Bar, meaning that function isn't even being reached. This traces the
+	-- one call site that's supposed to reach it (centerSnap == true, i.e.
+	-- the Cast Bar's own dragKind branch below) to see whether
+	-- ApplyDragSnap runs at all for that drag, what `frame`/`pos` actually
+	-- are, and whether BTVanillaDB.snapToGrid is really on - throttled to
+	-- 0.3s since this runs every OnUpdate tick while dragging. Remove once
+	-- confirmed.
+	if centerSnap then
+		local now = GetTime()
+
+		if not BTV.diag29LastPrint or (now - BTV.diag29LastPrint) >= 0.3 then
+			BTV.diag29LastPrint = now
+
+			BTV:Print(string.format(
+				"[diag29] ApplyDragSnap centerSnap entry: frame=%s pos=%s snapToGrid=%s",
+				frame and (frame.GetName and frame:GetName() or tostring(frame)) or "nil",
+				pos and ("x=" .. tostring(pos.x) .. " y=" .. tostring(pos.y)) or "nil",
+				tostring(BTVanillaDB and BTVanillaDB.snapToGrid)
+			))
+		end
+	end
+
 	if not frame or not pos then
 		return
 	end
