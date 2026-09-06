@@ -1059,6 +1059,17 @@ local function DefaultBarDrag_OnUpdate()
 
 			BTV:ApplyLatencyBarPosition()
 		end
+	elseif this.dragKind == "tooltipArea" then
+		local pos = BTVanillaDB.tooltipAreaPosition
+
+		if pos then
+			pos.x = this.dragStartX + dx
+			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(BTV.tooltipAreaFrame, pos)
+
+			BTV:ApplyTooltipAreaPosition()
+		end
 	elseif this.dragKind == "expBar" then
 		local pos = BTVanillaDB.expBarPosition
 
@@ -1717,7 +1728,7 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	end)
 
 	overlay:SetScript("OnMouseUp", function()
-		if arg1 == "RightButton" then
+		if arg1 == "RightButton" and settingsKey then
 			BTV:OpenBarSettingsByKey(settingsKey)
 		end
 	end)
@@ -3579,6 +3590,284 @@ function BTV:StopLatencyBarDrag()
 end
 
 -------------------------------------------------------------------------
+-- Tooltip Area
+--
+-- Synthetic anchor frame (no real Blizzard frame backs it) that GameTooltip
+-- repositions itself against (BTV:HookGameTooltipReposition below), sized
+-- to a representative tooltip footprint so its edit-mode overlay renders as
+-- a visible box. settingsKey is nil (EnsureContainerOverlay's OnMouseUp
+-- skips right-click-to-settings entirely when nil) since this element has
+-- no dedicated settings sub-page.
+-------------------------------------------------------------------------
+
+function BTV:EnsureTooltipAreaFrame()
+	if self.tooltipAreaFrame then
+		return self.tooltipAreaFrame
+	end
+
+	local frame = CreateFrame("Frame", "BTVanillaTooltipArea", UIParent)
+	frame:SetWidth(200)
+	frame:SetHeight(100)
+
+	self.tooltipAreaFrame = frame
+
+	return frame
+end
+
+function BTV:ApplyTooltipAreaPosition()
+	self:EnsureDB()
+
+	local frame = self:EnsureTooltipAreaFrame()
+	local pos = BTVanillaDB.tooltipAreaPosition
+
+	if pos then
+		frame:ClearAllPoints()
+		PixelSetPoint(
+			frame,
+			pos.point or "CENTER",
+			UIParent,
+			pos.relativePoint or "CENTER",
+			pos.x or 0,
+			pos.y or 0
+		)
+	end
+
+	frame:SetScale(BTVanillaDB.tooltipAreaScale or 1)
+
+	EnsureContainerOverlay(frame, self.StartTooltipAreaDrag, self.StopTooltipAreaDrag, nil, self.SetTooltipAreaScale, nil, "Tooltip Area")
+end
+
+-- Mirrors SetLatencyBarScale's exact clamp/write/apply template.
+function BTV:SetTooltipAreaScale(scale)
+	self:EnsureDB()
+
+	scale = tonumber(scale)
+
+	if not scale then
+		return
+	end
+
+	scale = math.floor((scale * 10) + 0.5) / 10
+
+	if scale < 0.5 then
+		scale = 0.5
+	end
+
+	if scale > 2.0 then
+		scale = 2.0
+	end
+
+	BTVanillaDB.tooltipAreaScale = scale
+
+	local frame = self:EnsureTooltipAreaFrame()
+	frame:SetScale(scale)
+end
+
+function BTV:StartTooltipAreaDrag()
+	local pos = BTVanillaDB.tooltipAreaPosition
+
+	if not pos then
+		return
+	end
+
+	local cx, cy = GetCursorPositionUIScale()
+
+	local frame = EnsureDragFrame()
+
+	frame.dragKind = "tooltipArea"
+	frame.dragStartCursorX = cx
+	frame.dragStartCursorY = cy
+	frame.dragStartX = pos.x or 0
+	frame.dragStartY = pos.y or 0
+
+	frame:SetScript("OnUpdate", DefaultBarDrag_OnUpdate)
+	frame:Show()
+end
+
+function BTV:StopTooltipAreaDrag()
+	if not dragFrame then
+		return
+	end
+
+	dragFrame:SetScript("OnUpdate", nil)
+	dragFrame:Hide()
+end
+
+-- Repositions GameTooltip away from whatever anchor its owner just set,
+-- either to the Tooltip Area frame or to the mouse cursor
+-- (BTVanillaDB.tooltipAlwaysShowOnCursor). Runs every frame GameTooltip is
+-- shown, via a separate dedicated frame's OnUpdate rather than wrapping
+-- GameTooltip's own OnUpdate/SetOwner: many tooltip owners (e.g. quest-node
+-- tooltips) call SetOwner(..., "ANCHOR_NONE") then set their own point
+-- afterward, so a SetOwner hook fires too early and its point just gets
+-- added alongside theirs, stretching the frame between both anchors.
+-- Re-clearing and re-setting the point every frame instead always wins,
+-- regardless of when or how anything else last anchored it.
+--
+-- Tooltips whose owner explicitly requested ANCHOR_CURSOR (e.g. chat item
+-- links) are left untouched - they already track the mouse natively, and
+-- that's a deliberate per-tooltip choice by its owner, not the "fixed
+-- location" case this feature repositions. A lightweight SetOwner hook
+-- only records the last anchor type requested (never touches the tooltip's
+-- point itself, so it can't race with the owner's own SetPoint call).
+local tooltipRepositionFrame
+local tooltipLastAnchorType
+local tooltipFadeState
+local suppressFadeHideHook = false
+
+function BTV:HookGameTooltipReposition()
+	if tooltipRepositionFrame then
+		return
+	end
+
+	hooksecurefunc(GameTooltip, "SetOwner", function(self, owner, anchorType)
+		-- TEMP diag27 - remove once the real call sequence around hide is confirmed. No dedup - every call prints.
+		if BTVanilla.debugTooltipAnchor then
+			local ownerName = owner and owner.GetName and owner:GetName()
+
+			BTV:Print(
+				"diag27 t=" .. tostring(GetTime()) ..
+				" anchorType=" .. tostring(anchorType) ..
+				" owner=" .. tostring(owner) ..
+				" ownerName=" .. tostring(ownerName)
+			)
+		end
+
+		-- ANCHOR_PRESERVE means "keep whatever anchor is already active" -
+		-- leave the previously recorded anchor type as-is.
+		if anchorType ~= "ANCHOR_PRESERVE" then
+			tooltipLastAnchorType = anchorType
+		end
+
+		-- TEMP diag29 - remove once confirmed whether a stray SetOwner cancels the fade early.
+		if BTVanilla.debugTooltipAnchor and tooltipFadeState then
+			BTV:Print("diag29 fade cancelled by new SetOwner, anchorType=" .. tostring(anchorType))
+		end
+
+		-- New content wants to show now - drop any fade left over from a
+		-- previous hide instead of continuing to fade out fresh content.
+		tooltipFadeState = nil
+	end)
+
+	-- Directly reassigning GameTooltip.Hide does not intercept real :Hide()
+	-- calls on this client (confirmed live - the reassigned function never
+	-- ran). hooksecurefunc does fire, but only after the native Hide()
+	-- already completed, so by then the tooltip is already invisible -
+	-- undoing that (re-Show, reset alpha to 1) and fading it down
+	-- ourselves via tooltipRepositionFrame's OnUpdate is the only way left
+	-- to get a visible fade. suppressFadeHideHook guards the real Hide()
+	-- call this same hook makes once the fade completes, so it doesn't
+	-- restart another fade on itself.
+	hooksecurefunc(GameTooltip, "Hide", function(self)
+		-- TEMP diag28 - remove once confirmed the Hide hook actually fires.
+		if BTVanilla.debugTooltipAnchor then
+			BTV:Print(
+				"diag28 t=" .. tostring(GetTime()) ..
+				" Hide hook fired, fadeTime=" .. tostring(BTVanillaDB.tooltipFadeTime) ..
+				" lastAnchorType=" .. tostring(tooltipLastAnchorType)
+			)
+		end
+
+		if suppressFadeHideHook then
+			return
+		end
+
+		-- Fade only applies to the tooltips this feature redirects
+		-- (ANCHOR_NONE, whether that goes to the Tooltip Area or to the
+		-- cursor via tooltipAlwaysShowOnCursor) - every widget-relative
+		-- tooltip (action buttons, bag items, character slots) keeps
+		-- vanilla's own instant hide, completely untouched.
+		if tooltipLastAnchorType ~= "ANCHOR_NONE" then
+			return
+		end
+
+		local fadeTime = BTVanillaDB.tooltipFadeTime or 0
+
+		if fadeTime <= 0 then
+			return
+		end
+
+		self:Show()
+		self:SetAlpha(1)
+
+		tooltipFadeState = {
+			startTime = GetTime(),
+			duration = fadeTime,
+		}
+
+		-- TEMP diag30 - remove once confirmed the fade actually starts and stays shown.
+		if BTVanilla.debugTooltipAnchor then
+			BTV:Print(
+				"diag30 t=" .. tostring(GetTime()) ..
+				" fade started, isShown=" .. tostring(self:IsShown()) ..
+				" alpha=" .. tostring(self:GetAlpha())
+			)
+		end
+	end)
+
+	tooltipRepositionFrame = CreateFrame("Frame")
+
+	local diag31WasRedirecting = false
+
+	tooltipRepositionFrame:SetScript("OnUpdate", function()
+		if tooltipFadeState then
+			local elapsed = GetTime() - tooltipFadeState.startTime
+			local duration = tooltipFadeState.duration
+
+			if elapsed >= duration then
+				tooltipFadeState = nil
+
+				suppressFadeHideHook = true
+				GameTooltip:Hide()
+				suppressFadeHideHook = false
+			else
+				GameTooltip:SetAlpha(1 - (elapsed / duration))
+			end
+		end
+
+		if not GameTooltip:IsShown() then
+			diag31WasRedirecting = false
+			return
+		end
+
+		-- ANCHOR_NONE is vanilla's own "no widget-relative anchor, fall back
+		-- to a fixed default position" signal (used by NPC/quest tooltips) -
+		-- the "fixed location" case this feature redirects. Every other
+		-- anchor type (ANCHOR_RIGHT/LEFT/TOP/etc) anchors relative to the
+		-- specific widget under the cursor (action buttons, bag items,
+		-- character slots) and is left untouched - confirmed live, none of
+		-- those ever use ANCHOR_CURSOR.
+		if tooltipLastAnchorType ~= "ANCHOR_NONE" then
+			diag31WasRedirecting = false
+			return
+		end
+
+		-- TEMP diag31 - remove once confirmed exactly when the redirect kicks in.
+		if BTVanilla.debugTooltipAnchor and not diag31WasRedirecting then
+			diag31WasRedirecting = true
+			BTV:Print("diag31 t=" .. tostring(GetTime()) .. " redirect started, lastAnchorType=" .. tostring(tooltipLastAnchorType))
+		end
+
+		if BTVanillaDB.tooltipAlwaysShowOnCursor then
+			local x, y = GetCursorPosition()
+			local scale = UIParent:GetEffectiveScale()
+
+			GameTooltip:ClearAllPoints()
+			GameTooltip:SetPoint("BOTTOMLEFT", UIParent, "BOTTOMLEFT", x / scale + 16, y / scale + 16)
+			return
+		end
+
+		if not BTV.tooltipAreaFrame then
+			return
+		end
+
+		GameTooltip:ClearAllPoints()
+		GameTooltip:SetPoint("TOPLEFT", BTV.tooltipAreaFrame, "TOPLEFT", 0, 0)
+		GameTooltip:SetScale(BTVanillaDB.tooltipAreaScale or 1)
+	end)
+end
+
+-------------------------------------------------------------------------
 -- Experience Bar
 --
 -- MainMenuExpBar - the real vanilla 1.12.1 FrameXML name for the
@@ -5124,6 +5413,15 @@ function BTV:ApplyDefaultLayoutEditVisual()
 		self.pageIndicatorContainer,
 		BTVanillaDB.mainBarPaginationEnabled,
 		show
+	)
+
+	-- Tooltip Area - hidden outright whenever "Always show Tooltip on
+	-- Cursor" is on, regardless of edit mode, since it's unused in that
+	-- mode (Settings.lua's General tab checkbox).
+	ApplyContainerOverlayVisual(
+		self.tooltipAreaFrame,
+		true,
+		show and not BTVanillaDB.tooltipAlwaysShowOnCursor
 	)
 end
 

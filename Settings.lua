@@ -4792,6 +4792,9 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeSlider)
 	n = AppendCandidate(candidates, n, panel.globalButtonSizeValueText)
 	n = AppendCandidate(candidates, n, panel.bypassBar2DepCheckbox)
+	n = AppendCandidate(candidates, n, panel.alwaysShowTooltipOnCursorCheckbox)
+	n = AppendCandidate(candidates, n, panel.tooltipFadeTimeSlider)
+	n = AppendCandidate(candidates, n, panel.tooltipFadeTimeValueText)
 
 	-- "Enable Better Experience Bar" lives on the Experience Bar's own
 	-- settings page - see FitSettingsWindowToBarPage for its candidate
@@ -6472,6 +6475,110 @@ function BTV:GetOrCreateGeneralPanel()
 	-- settings page (CreateSimpleBarPage's "if key == 'expbar'" block)
 	-- alongside its text-toggle checkboxes and color pickers.
 
+	-- Always show Tooltip on Cursor (DefaultBars.lua's Tooltip Area /
+	-- HookGameTooltipReposition) - hides the Edit Mode Tooltip Area overlay
+	-- and pins GameTooltip to the mouse cursor instead of that overlay.
+	local alwaysShowTooltipOnCursorCheckbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaGeneralAlwaysShowTooltipOnCursorCheckbox",
+		panel,
+		"UICheckButtonTemplate"
+	)
+
+	alwaysShowTooltipOnCursorCheckbox:SetWidth(24)
+	alwaysShowTooltipOnCursorCheckbox:SetHeight(24)
+
+	alwaysShowTooltipOnCursorCheckbox:SetPoint(
+		"TOPLEFT",
+		bypassBar2DepCheckbox,
+		"BOTTOMLEFT",
+		0,
+		-14
+	)
+
+	alwaysShowTooltipOnCursorCheckbox:SetScript(
+		"OnClick",
+		function()
+			local checked = this:GetChecked() and true or false
+
+			BTVanillaDB.tooltipAlwaysShowOnCursor = checked
+
+			BTV:ApplyDefaultLayoutEditVisual()
+		end
+	)
+
+	local alwaysShowTooltipOnCursorLabel = getglobal(
+		alwaysShowTooltipOnCursorCheckbox:GetName() .. "Text"
+	)
+
+	if alwaysShowTooltipOnCursorLabel then
+		alwaysShowTooltipOnCursorLabel:SetText("Always show Tooltip on Cursor")
+	end
+
+	panel.alwaysShowTooltipOnCursorCheckbox = alwaysShowTooltipOnCursorCheckbox
+
+	-- Tooltip Fadeout Time (DefaultBars.lua's HookGameTooltipReposition) - 0
+	-- keeps GameTooltip's native instant hide.
+	local tooltipFadeTimeSlider = CreateSettingSlider(
+		panel,
+		"BTVanillaGeneralTooltipFadeTimeSlider",
+		290
+	)
+
+	tooltipFadeTimeSlider:SetPoint(
+		"TOPLEFT",
+		alwaysShowTooltipOnCursorCheckbox,
+		"BOTTOMLEFT",
+		20,
+		-28
+	)
+
+	tooltipFadeTimeSlider:SetMinMaxValues(0, 2)
+	tooltipFadeTimeSlider:SetValueStep(0.1)
+	SetSliderLabel(tooltipFadeTimeSlider, "Tooltip Fadeout Time")
+
+	local tooltipFadeTimeSliderLow = getglobal(tooltipFadeTimeSlider:GetName() .. "Low")
+	local tooltipFadeTimeSliderHigh = getglobal(tooltipFadeTimeSlider:GetName() .. "High")
+
+	if tooltipFadeTimeSliderLow then
+		tooltipFadeTimeSliderLow:SetText("0s")
+	end
+
+	if tooltipFadeTimeSliderHigh then
+		tooltipFadeTimeSliderHigh:SetText("2s")
+	end
+
+	local tooltipFadeTimeValueText = panel:CreateFontString(
+		nil, "OVERLAY", "GameFontNormalSmall"
+	)
+
+	tooltipFadeTimeValueText:SetPoint("TOP", tooltipFadeTimeSlider, "BOTTOM", 0, -2)
+	tooltipFadeTimeValueText:SetText("0.0s")
+
+	tooltipFadeTimeSlider:SetScript(
+		"OnValueChanged",
+		function()
+			local value = this:GetValue()
+
+			if not value then
+				return
+			end
+
+			value = math.floor((value * 10) + 0.5) / 10
+
+			tooltipFadeTimeValueText:SetText(tostring(value) .. "s")
+
+			if not this.suppressApply then
+				BTVanillaDB.tooltipFadeTime = value
+			end
+		end
+	)
+
+	panel.tooltipFadeTimeSlider = tooltipFadeTimeSlider
+	panel.tooltipFadeTimeSliderLow = tooltipFadeTimeSliderLow
+	panel.tooltipFadeTimeSliderHigh = tooltipFadeTimeSliderHigh
+	panel.tooltipFadeTimeValueText = tooltipFadeTimeValueText
+
 	panel:Hide()
 
 	settingsFrame.generalPanel = panel
@@ -7355,6 +7462,17 @@ function BTV:RefreshGeneralPanel()
 	BTV:ReflowGeneralOverrideSliders(panel)
 
 	panel.bypassBar2DepCheckbox:SetChecked(BTVanillaDB.bypassRightActionBar2Dependency == true)
+
+	-- Default false (Core.lua's EnsureDB) - only an explicit true ever
+	-- checks this.
+	panel.alwaysShowTooltipOnCursorCheckbox:SetChecked(
+		BTVanillaDB.tooltipAlwaysShowOnCursor == true
+	)
+
+	panel.tooltipFadeTimeSlider.suppressApply = true
+	panel.tooltipFadeTimeSlider:SetValue(BTVanillaDB.tooltipFadeTime or 0)
+	panel.tooltipFadeTimeSlider.suppressApply = nil
+	panel.tooltipFadeTimeValueText:SetText(tostring(BTVanillaDB.tooltipFadeTime or 0) .. "s")
 
 	-- Default true (Core.lua's EnsureDB) - only an explicit false ever
 	-- unchecks this.

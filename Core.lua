@@ -1383,6 +1383,24 @@ function BTV:EnsureDB()
 		BTVanillaDB.bars = {}
 	end
 
+	if not BTVanillaDB.tooltipAreaPosition then
+		BTVanillaDB.tooltipAreaPosition = {
+			point = "CENTER",
+			relativePoint = "CENTER",
+			x = 0,
+			y = 150,
+		}
+	end
+	if BTVanillaDB.tooltipAreaScale == nil then
+		BTVanillaDB.tooltipAreaScale = 1
+	end
+	if BTVanillaDB.tooltipAlwaysShowOnCursor == nil then
+		BTVanillaDB.tooltipAlwaysShowOnCursor = false
+	end
+	if BTVanillaDB.tooltipFadeTime == nil then
+		BTVanillaDB.tooltipFadeTime = 0
+	end
+
 	self:EnsureExtraBars()
 
 	-- Force hoverbind off once per session, not on every EnsureDB call
@@ -1508,6 +1526,7 @@ function BTV:GetAllSnapTargetBoxes(excludeElement)
 	AddBox(getglobal(self.KEYRING_BUTTON_NAME))
 	AddBox(getglobal(self.LATENCY_BAR_FRAME_NAME))
 	AddBox(getglobal(self.EXP_BAR_FRAME_NAME))
+	AddBox(self.tooltipAreaFrame)
 
 	return boxes
 end
@@ -1994,6 +2013,9 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:ApplyExpBarColors()
 
 	BTV:ApplyBetterExpBarVisual()
+
+	BTV:ApplyTooltipAreaPosition()
+	BTV:HookGameTooltipReposition()
 
 	BTV:ApplyBlizzardArtVisibility()
 
