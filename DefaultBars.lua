@@ -1813,6 +1813,85 @@ local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 end
 
 -------------------------------------------------------------------------
+-- External re-anchor guard (single native frame elements)
+--
+-- Live-confirmed on the Cast Bar (diag27 trace): this client's own native
+-- code can call SetPoint on one of these wrapped native frames WITHOUT
+-- calling ClearAllPoints first, at unpredictable times (a zone-load
+-- loading screen confirmed once; also reported with no player input at
+-- all). Left unguarded, that adds a SECOND anchor point alongside our own
+-- custom one - WoW's frame layout resolves two simultaneously active
+-- anchors by implicitly re-deriving the frame's width/height from the
+-- distance between them, which reads as the frame (or, just as visibly,
+-- its EnsureContainerOverlay edit-mode hitbox, which tracks the frame's
+-- now-distorted box via SetAllPoints) stretching from its custom position
+-- toward whatever the native reset's own point sits at.
+--
+-- Fix: permanently swallow any SetPoint/ClearAllPoints call on `frame`
+-- that isn't flagged via frame[flagName] (set true by the element's own
+-- Apply*Position function around its own ClearAllPoints+SetPoint pair,
+-- nil otherwise) instead of forwarding it to the real method - the last-
+-- applied anchor is left completely untouched regardless of what
+-- triggers the native reset. Must stay in place per element it's
+-- installed on - removing it brings that element's stretch bug back the
+-- next time the native reset fires.
+-------------------------------------------------------------------------
+
+local function InstallReanchorGuard(frame, flagName)
+	if not frame or frame.btvReanchorGuarded then
+		return
+	end
+
+	local nativeSetPoint = frame.SetPoint
+	local nativeClearAllPoints = frame.ClearAllPoints
+
+	frame.SetPoint = function(self, ...)
+		if self[flagName] then
+			return nativeSetPoint(self, unpack(arg))
+		end
+	end
+
+	frame.ClearAllPoints = function(self)
+		if self[flagName] then
+			return nativeClearAllPoints(self)
+		end
+	end
+
+	frame.btvReanchorGuarded = true
+end
+
+-------------------------------------------------------------------------
+-- External re-show guard (single native frame elements the user can
+-- disable)
+--
+-- Sibling problem to the re-anchor guard above, but for visibility
+-- instead of position: live-confirmed on Key Ring, which pops back
+-- visible on its own even while BTVanillaDB.keyRingEnabled is false -
+-- some native code re-Show()'s it independent of our own Hide() call.
+-- Same class of bug as HideBonusActionBarFrame's permanent Show-neuter
+-- further up this file, except this element's enabled state is a live,
+-- user-togglable setting rather than an always-off constant, so the
+-- guard has to consult `isEnabledFn` on every call instead of neutering
+-- Show unconditionally.
+-------------------------------------------------------------------------
+
+local function InstallShowGuard(frame, isEnabledFn)
+	if not frame or frame.btvShowGuarded then
+		return
+	end
+
+	local nativeShow = frame.Show
+
+	frame.Show = function(self)
+		if isEnabledFn() then
+			return nativeShow(self)
+		end
+	end
+
+	frame.btvShowGuarded = true
+end
+
+-------------------------------------------------------------------------
 -- Bag Bar position/enable
 -------------------------------------------------------------------------
 
@@ -3167,6 +3246,14 @@ end)
 
 BTV.KEYRING_BUTTON_NAME = "KeyRingButton"
 
+-- See InstallShowGuard's own section header above for the bug this
+-- defends against (Key Ring popping back visible on its own while
+-- disabled). Installed once, at file load, since KeyRingButton is a
+-- fixed, always-present real Blizzard global.
+InstallShowGuard(getglobal(BTV.KEYRING_BUTTON_NAME), function()
+	return BTVanillaDB and BTVanillaDB.keyRingEnabled ~= false
+end)
+
 -- Mirrors CaptureLatencyBarPositionIfNeeded below exactly (GetLeft()/
 -- GetTop() rather than GetPoint(), for the same "sidesteps whatever this
 -- frame is really anchored to internally" reasoning) - captured lazily the
@@ -3412,6 +3499,15 @@ end
 
 BTV.LATENCY_BAR_FRAME_NAME = "MainMenuBarPerformanceBarFrame"
 
+-- See InstallReanchorGuard's own section header above for the bug this
+-- defends against (live-confirmed on the Cast Bar; reported to also
+-- affect this element - position randomly resetting, with the
+-- edit-mode overlay hitbox visibly stretching between the old and new
+-- position in the process). Installed once, at file load, since
+-- MainMenuBarPerformanceBarFrame is a fixed, always-present real
+-- Blizzard global.
+InstallReanchorGuard(getglobal(BTV.LATENCY_BAR_FRAME_NAME), "btvApplyingLatencyBarPosition")
+
 -- Mirrors CaptureKeyRingPositionIfNeeded above exactly.
 function BTV:CaptureLatencyBarPositionIfNeeded()
 	self:EnsureDB()
@@ -3470,6 +3566,11 @@ function BTV:ApplyLatencyBarPosition()
 	local pos = BTVanillaDB.latencyBarPosition
 
 	if pos then
+		-- Flag consumed by the external re-anchor guard above - lets it
+		-- allow OUR OWN ClearAllPoints/SetPoint calls through while
+		-- swallowing anything else touching this frame.
+		frame.btvApplyingLatencyBarPosition = true
+
 		frame:ClearAllPoints()
 		PixelSetPoint(
 			frame,
@@ -3479,6 +3580,8 @@ function BTV:ApplyLatencyBarPosition()
 			pos.x or 0,
 			pos.y or 0
 		)
+
+		frame.btvApplyingLatencyBarPosition = nil
 	end
 
 	EnsureContainerOverlay(frame, self.StartLatencyBarDrag, self.StopLatencyBarDrag, "latencybar", self.SetLatencyBarScale, nil, "Latency Bar")
@@ -3631,51 +3734,16 @@ end
 BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
 
 -------------------------------------------------------------------------
--- Cast Bar external re-anchor guard
---
--- Live-confirmed via the diag27 trace: this client's own native code
--- calls CastingBarFrame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 100) -
+-- See InstallReanchorGuard's own section header above for the bug this
+-- defends against - live-confirmed here via the diag27 trace: this
+-- client's own native code calls
+-- CastingBarFrame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 100) -
 -- CastingBarFrame's real vanilla default anchor - WITHOUT calling
 -- ClearAllPoints first, at unpredictable times (confirmed once right
 -- after a zone-transition loading screen; also reported to happen with
--- no player input at all). Left unguarded, that adds a SECOND anchor
--- point alongside our own custom one - WoW's frame layout resolves two
--- simultaneously active anchors by implicitly re-deriving the frame's
--- width/height from the distance between them instead of erroring,
--- which is exactly the "stretches into a long, distorted bar reaching
--- toward its default position" symptom reported.
---
--- Fix: permanently swallow any SetPoint/ClearAllPoints call on this
--- frame that didn't come from BTV:ApplyCastBarPosition itself (flagged
--- via frame.btvApplyingCastBarPosition) instead of forwarding it to the
--- real method - our last-applied anchor is left completely untouched
--- regardless of what triggers the native reset. Must stay in place -
--- removing it brings the stretch bug back the next time that native
--- reset fires.
--------------------------------------------------------------------------
-
-do
-	local frame = getglobal(BTV.CAST_BAR_FRAME_NAME)
-
-	if frame and not frame.btvCastBarReanchorGuarded then
-		local nativeSetPoint = frame.SetPoint
-		local nativeClearAllPoints = frame.ClearAllPoints
-
-		frame.SetPoint = function(self, ...)
-			if self.btvApplyingCastBarPosition then
-				return nativeSetPoint(self, unpack(arg))
-			end
-		end
-
-		frame.ClearAllPoints = function(self)
-			if self.btvApplyingCastBarPosition then
-				return nativeClearAllPoints(self)
-			end
-		end
-
-		frame.btvCastBarReanchorGuarded = true
-	end
-end
+-- no player input at all). Installed once, at file load, since
+-- CastingBarFrame is a fixed, always-present real Blizzard global.
+InstallReanchorGuard(getglobal(BTV.CAST_BAR_FRAME_NAME), "btvApplyingCastBarPosition")
 
 -- Mirrors CaptureLatencyBarPositionIfNeeded exactly. CastingBarFrame is
 -- normally hidden outside an active cast/channel, but a hidden frame's
