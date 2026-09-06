@@ -1709,6 +1709,56 @@ function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height,
 	return adjustedLeft, adjustedTop
 end
 
+-- Center-only variant of ComputeGridSnapAdjustment above, for an element
+-- (the Cast Bar - DefaultBars.lua's ApplyDragSnap centerSnap parameter)
+-- that should always align its own CENTER to a grid line, never an edge -
+-- unlike the general 3-candidate (near edge/far edge/center) behavior
+-- above, which picks whichever candidate keeps the element closest to the
+-- cursor and can just as easily lock onto an edge. Same grid/spacing/
+-- scale/screen-center-origin math as ComputeGridSnapAdjustment, just
+-- without the BestSnapCandidate contest and without the screen-edge
+-- candidates (those only make sense for an edge-snap, not a forced
+-- center-snap).
+function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
+	if IsShiftKeyDown and IsShiftKeyDown() then
+		return nil, nil
+	end
+
+	if not BTVanillaDB or not BTVanillaDB.snapToGrid then
+		return nil, nil
+	end
+
+	if not proposedLeft or not proposedTop or not width or not height then
+		return nil, nil
+	end
+
+	local spacing = self:GetLayoutGridSpacing()
+
+	if not spacing or spacing <= 0 then
+		return nil, nil
+	end
+
+	spacing = spacing * (scale or 1)
+
+	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
+
+	if not screenLeft then
+		return nil, nil
+	end
+
+	local centerX = (screenLeft + screenRight) / 2
+	local centerY = (screenTop + screenBottom) / 2
+
+	local function NearestOnAxis(point, origin)
+		return origin + RoundToNearestMultiple(point - origin, spacing)
+	end
+
+	local adjustedLeft = NearestOnAxis(proposedLeft + (width / 2), centerX) - (width / 2)
+	local adjustedTop = NearestOnAxis(proposedTop - (height / 2), centerY) + (height / 2)
+
+	return adjustedLeft, adjustedTop
+end
+
 -------------------------------------------------------------------------
 -- Global border/spacing style
 -------------------------------------------------------------------------

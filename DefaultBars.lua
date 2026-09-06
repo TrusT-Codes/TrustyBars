@@ -933,7 +933,14 @@ end
 -- (the frame's local-unit offset from UIParent's BOTTOMLEFT corner)
 -- convert to/from screen pixels via this frame's effective scale alone,
 -- no anchor-point math needed.
-local function ApplyDragSnap(frame, pos)
+-- centerSnap (optional, Cast Bar only - see its dragKind branch below)
+-- forces grid snapping to align this frame's own CENTER to a grid line
+-- rather than contesting near-edge/far-edge/center candidates against the
+-- cursor (Core.lua's BTV:ComputeCenterGridSnapAdjustment vs. the general
+-- BTV:ComputeGridSnapAdjustment) - has no effect when Snap to Grid itself
+-- is off (the Snap to Adjacent Elements branch below is unchanged either
+-- way).
+local function ApplyDragSnap(frame, pos, centerSnap)
 	if not frame or not pos then
 		return
 	end
@@ -970,13 +977,23 @@ local function ApplyDragSnap(frame, pos)
 	local adjustedLeft, adjustedTop
 
 	if BTVanillaDB and BTVanillaDB.snapToGrid then
-		adjustedLeft, adjustedTop = BTV:ComputeGridSnapAdjustment(
-			proposedLeft,
-			proposedTop,
-			boxWidth,
-			boxHeight,
-			scale
-		)
+		if centerSnap then
+			adjustedLeft, adjustedTop = BTV:ComputeCenterGridSnapAdjustment(
+				proposedLeft,
+				proposedTop,
+				boxWidth,
+				boxHeight,
+				scale
+			)
+		else
+			adjustedLeft, adjustedTop = BTV:ComputeGridSnapAdjustment(
+				proposedLeft,
+				proposedTop,
+				boxWidth,
+				boxHeight,
+				scale
+			)
+		end
 	else
 		adjustedLeft, adjustedTop = BTV:ComputeSnapAdjustment(
 			proposedLeft,
@@ -1077,7 +1094,9 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
-			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos)
+			-- centerSnap = true: the Cast Bar always grid-snaps by its own
+			-- center, never an edge - see ApplyDragSnap's own comment.
+			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos, true)
 
 			BTV:ApplyCastBarPosition()
 		end
