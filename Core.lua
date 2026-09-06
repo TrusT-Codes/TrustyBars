@@ -1709,32 +1709,12 @@ function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height,
 	return adjustedLeft, adjustedTop
 end
 
--- Real-pixel capture radii for ComputeCenterGridSnapAdjustment below -
--- deliberately small and independent of grid spacing. Unlike the general
--- round-to-nearest grid snap above (which always locks onto SOME line,
--- leaving no free positioning anywhere), this element only gets pulled
--- onto a line once dragged genuinely close to one, so there's a wide
--- free zone left to fine-tune its position anywhere between two grid
--- centers. Y's radius is deliberately much smaller than X's - this
--- element is small, so a full-size vertical capture zone left no room to
--- freely fine-tune its height alongside its horizontal centering; a
--- tiny one keeps vertical snap technically active (a pixel-perfect
--- alignment still locks in) without it fighting free movement.
+-- Per-axis real-pixel capture radius for ComputeCenterGridSnapAdjustment.
 local CENTER_GRID_SNAP_CAPTURE_PX_X = 10
-local CENTER_GRID_SNAP_CAPTURE_PX_Y = 1
+local CENTER_GRID_SNAP_CAPTURE_PX_Y = 2
 
--- Center variant of ComputeGridSnapAdjustment above, for an element (the
--- Cast Bar - DefaultBars.lua's ApplyDragSnap centerSnap parameter) that
--- should align its own CENTER to a grid line, never an edge, on both
--- axes - unlike the general 3-candidate (near edge/far edge/center)
--- behavior above, which picks whichever candidate keeps the element
--- closest to the cursor and can just as easily lock onto an edge.
---
--- Each axis only locks in within its own CENTER_GRID_SNAP_CAPTURE_PX_*
--- of an actual line (leaving the raw dragged value alone otherwise) -
--- an unconditional round-to-nearest would map EVERY possible position to
--- some line, leaving no gap to freely position the bar between two grid
--- centers.
+-- Snaps proposedLeft/proposedTop's center to the nearest grid line per
+-- axis, within each axis's own capture radius.
 function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, height, scale)
 	if IsShiftKeyDown and IsShiftKeyDown() then
 		return nil, nil

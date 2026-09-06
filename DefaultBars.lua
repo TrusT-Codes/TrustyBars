@@ -933,18 +933,9 @@ end
 -- (the frame's local-unit offset from UIParent's BOTTOMLEFT corner)
 -- convert to/from screen pixels via this frame's effective scale alone,
 -- no anchor-point math needed.
--- centerSnap (optional, Cast Bar only - see its dragKind branch below)
--- switches grid snapping to Core.lua's BTV:ComputeCenterGridSnapAdjustment
--- instead of the general BTV:ComputeGridSnapAdjustment - aligning this
--- frame's own CENTER to a grid line on both axes (never an edge), but
--- only once dragged within a small capture radius of one per axis
--- (X's radius much larger than Y's, so height stays practically free to
--- fine-tune while X still snaps readily), leaving a real gap either way
--- to park the bar between two grid centers - rather than the general
--- function's "always locks BOTH axes onto whichever of near-edge/
--- far-edge/center is closest to the cursor." Has no effect when Snap to
--- Grid itself is off (the Snap to Adjacent Elements branch below is
--- unchanged either way).
+-- centerSnap (optional, Cast Bar only) switches grid snapping to
+-- Core.lua's BTV:ComputeCenterGridSnapAdjustment instead of
+-- BTV:ComputeGridSnapAdjustment.
 local function ApplyDragSnap(frame, pos, centerSnap)
 	if not frame or not pos then
 		return
@@ -1099,9 +1090,6 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
-			-- centerSnap = true: the Cast Bar grid-snaps by its own center
-			-- on both axes, each within its own small capture radius (Y's
-			-- much smaller than X's) - see ApplyDragSnap's own comment.
 			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos, true)
 
 			BTV:ApplyCastBarPosition()
@@ -1818,31 +1806,10 @@ local function ApplyContainerOverlayVisual(container, enabledFlag, show)
 	end
 end
 
--------------------------------------------------------------------------
--- External re-anchor guard (single native frame elements)
---
--- Live-confirmed on the Cast Bar (diag27 trace): this client's own native
--- code can call SetPoint on one of these wrapped native frames WITHOUT
--- calling ClearAllPoints first, at unpredictable times (a zone-load
--- loading screen confirmed once; also reported with no player input at
--- all). Left unguarded, that adds a SECOND anchor point alongside our own
--- custom one - WoW's frame layout resolves two simultaneously active
--- anchors by implicitly re-deriving the frame's width/height from the
--- distance between them, which reads as the frame (or, just as visibly,
--- its EnsureContainerOverlay edit-mode hitbox, which tracks the frame's
--- now-distorted box via SetAllPoints) stretching from its custom position
--- toward whatever the native reset's own point sits at.
---
--- Fix: permanently swallow any SetPoint/ClearAllPoints call on `frame`
--- that isn't flagged via frame[flagName] (set true by the element's own
--- Apply*Position function around its own ClearAllPoints+SetPoint pair,
--- nil otherwise) instead of forwarding it to the real method - the last-
--- applied anchor is left completely untouched regardless of what
--- triggers the native reset. Must stay in place per element it's
--- installed on - removing it brings that element's stretch bug back the
--- next time the native reset fires.
--------------------------------------------------------------------------
-
+-- Swallows SetPoint/ClearAllPoints on `frame` unless flagged via
+-- frame[flagName] (set by the element's own Apply*Position call).
+-- Must stay in place - native code re-anchors these frames without
+-- clearing the existing point first, corrupting their position.
 local function InstallReanchorGuard(frame, flagName)
 	if not frame or frame.btvReanchorGuarded then
 		return
@@ -1866,21 +1833,7 @@ local function InstallReanchorGuard(frame, flagName)
 	frame.btvReanchorGuarded = true
 end
 
--------------------------------------------------------------------------
--- External re-show guard (single native frame elements the user can
--- disable)
---
--- Sibling problem to the re-anchor guard above, but for visibility
--- instead of position: live-confirmed on Key Ring, which pops back
--- visible on its own even while BTVanillaDB.keyRingEnabled is false -
--- some native code re-Show()'s it independent of our own Hide() call.
--- Same class of bug as HideBonusActionBarFrame's permanent Show-neuter
--- further up this file, except this element's enabled state is a live,
--- user-togglable setting rather than an always-off constant, so the
--- guard has to consult `isEnabledFn` on every call instead of neutering
--- Show unconditionally.
--------------------------------------------------------------------------
-
+-- Swallows Show() on `frame` unless isEnabledFn() returns true.
 local function InstallShowGuard(frame, isEnabledFn)
 	if not frame or frame.btvShowGuarded then
 		return
@@ -3252,10 +3205,6 @@ end)
 
 BTV.KEYRING_BUTTON_NAME = "KeyRingButton"
 
--- See InstallShowGuard's own section header above for the bug this
--- defends against (Key Ring popping back visible on its own while
--- disabled). Installed once, at file load, since KeyRingButton is a
--- fixed, always-present real Blizzard global.
 InstallShowGuard(getglobal(BTV.KEYRING_BUTTON_NAME), function()
 	return BTVanillaDB and BTVanillaDB.keyRingEnabled ~= false
 end)
@@ -3505,13 +3454,6 @@ end
 
 BTV.LATENCY_BAR_FRAME_NAME = "MainMenuBarPerformanceBarFrame"
 
--- See InstallReanchorGuard's own section header above for the bug this
--- defends against (live-confirmed on the Cast Bar; reported to also
--- affect this element - position randomly resetting, with the
--- edit-mode overlay hitbox visibly stretching between the old and new
--- position in the process). Installed once, at file load, since
--- MainMenuBarPerformanceBarFrame is a fixed, always-present real
--- Blizzard global.
 InstallReanchorGuard(getglobal(BTV.LATENCY_BAR_FRAME_NAME), "btvApplyingLatencyBarPosition")
 
 -- Mirrors CaptureKeyRingPositionIfNeeded above exactly.
@@ -3572,9 +3514,6 @@ function BTV:ApplyLatencyBarPosition()
 	local pos = BTVanillaDB.latencyBarPosition
 
 	if pos then
-		-- Flag consumed by the external re-anchor guard above - lets it
-		-- allow OUR OWN ClearAllPoints/SetPoint calls through while
-		-- swallowing anything else touching this frame.
 		frame.btvApplyingLatencyBarPosition = true
 
 		frame:ClearAllPoints()
@@ -3718,46 +3657,16 @@ function BTV:StopLatencyBarDrag()
 end
 
 -------------------------------------------------------------------------
--- Cast Bar
---
--- CastingBarFrame - the real vanilla 1.12.1 FrameXML name for the
--- player's own cast/channel bar - is structurally the same kind of
--- element as MainMenuBarPerformanceBarFrame/MainMenuExpBar above: a
--- single self-contained real Blizzard frame, not a TrustyBars-owned
--- chain, so it gets the exact same Position/Scale/Reset/Drag treatment
--- with no Spacing/Orientation (nothing real to drive) and no Enable
--- toggle (unlike Latency Bar/Experience Bar, this element's own
--- shown/hidden state is driven entirely by the player's live cast/
--- channel state via native UNIT_SPELLCAST_* handling - there is no
--- "always on" state to toggle).
---
--- Every accessor is defensively nil-checked via getglobal, matching
--- every other optional-native-element accessor in this file - degrades
--- gracefully (feature simply never builds/applies) if this name is ever
--- wrong on some other client build.
+-- Cast Bar (CastingBarFrame) - single native frame, no Spacing/
+-- Orientation/Enable, same Position/Scale/Reset/Drag treatment as the
+-- Latency Bar/Experience Bar above.
 -------------------------------------------------------------------------
 
 BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
 
--------------------------------------------------------------------------
--- See InstallReanchorGuard's own section header above for the bug this
--- defends against - live-confirmed here via the diag27 trace: this
--- client's own native code calls
--- CastingBarFrame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 100) -
--- CastingBarFrame's real vanilla default anchor - WITHOUT calling
--- ClearAllPoints first, at unpredictable times (confirmed once right
--- after a zone-transition loading screen; also reported to happen with
--- no player input at all). Installed once, at file load, since
--- CastingBarFrame is a fixed, always-present real Blizzard global.
 InstallReanchorGuard(getglobal(BTV.CAST_BAR_FRAME_NAME), "btvApplyingCastBarPosition")
 
--- Mirrors CaptureLatencyBarPositionIfNeeded exactly. CastingBarFrame is
--- normally hidden outside an active cast/channel, but a hidden frame's
--- GetLeft()/GetTop() still resolve from its own SetPoint anchor
--- regardless of Shown state - no different from every other Capture*
--- IfNeeded in this file. Re-attempted on every ApplyCastBarPosition call
--- (login, UNIT_SPELLCAST_START, edit-mode toggle) until it succeeds, the
--- same retry-by-recall pattern every other Capture*IfNeeded already uses.
+-- Mirrors CaptureLatencyBarPositionIfNeeded exactly.
 function BTV:CaptureCastBarPositionIfNeeded()
 	self:EnsureDB()
 
@@ -3797,8 +3706,7 @@ function BTV:CaptureCastBarPositionIfNeeded()
 	end
 end
 
--- Mirrors BTV:ApplyLatencyBarPosition exactly - no Enable flag branch,
--- since this element has none (see this section's header comment).
+-- Mirrors BTV:ApplyLatencyBarPosition exactly, minus the Enable branch.
 function BTV:ApplyCastBarPosition()
 	self:CaptureCastBarPositionIfNeeded()
 
@@ -3811,9 +3719,6 @@ function BTV:ApplyCastBarPosition()
 	local pos = BTVanillaDB.castBarPosition
 
 	if pos then
-		-- Flag consumed by the external re-anchor guard above - lets it
-		-- allow OUR OWN ClearAllPoints/SetPoint calls through while
-		-- swallowing anything else touching this frame.
 		frame.btvApplyingCastBarPosition = true
 
 		frame:ClearAllPoints()
@@ -3829,10 +3734,6 @@ function BTV:ApplyCastBarPosition()
 		frame.btvApplyingCastBarPosition = nil
 	end
 
-	-- enabledFlag is passed as a literal `true` (no independent enable
-	-- flag exists for this element) so the overlay's interactivity depends
-	-- only on edit-mode/useDefaultLayout, mirroring the Page Indicator's
-	-- own no-independent-enable-flag treatment.
 	EnsureContainerOverlay(frame, self.StartCastBarDrag, self.StopCastBarDrag, "castbar", self.SetCastBarScale, nil, "Cast Bar")
 end
 
@@ -3879,9 +3780,7 @@ function BTV:SetCastBarScale(scale)
 	end
 end
 
--- Settings.lua's Cast Bar page "Reset to Blizzard Default" button -
--- restores position AND scale in one call, mirroring
--- ResetLatencyBarLayout's own position+scale bundling.
+-- Mirrors ResetLatencyBarLayout's position+scale bundling.
 function BTV:ResetCastBarLayout()
 	local native = BTVanillaDB.castBarNativeAnchor
 
@@ -3935,12 +3834,8 @@ function BTV:StopCastBarDrag()
 	end
 end
 
--- Re-attempts CaptureCastBarPositionIfNeeded/ApplyCastBarPosition the
--- first time CastingBarFrame actually becomes visible this session -
--- covers the case where login happened while the frame was hidden (not
--- casting) and GetLeft()/GetTop() genuinely hadn't resolved yet at that
--- point, the one retry point every other single-native-frame element
--- here doesn't need since none of them are ever hidden by default.
+-- Re-attempts position capture the first time CastingBarFrame becomes
+-- visible this session.
 local castBarEventFrame = CreateFrame("Frame", "BTVanillaCastBarEventFrame")
 castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_START")
 castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
@@ -5488,10 +5383,6 @@ function BTV:ApplyDefaultLayoutEditVisual()
 	-- as Key Ring/Latency Bar above.
 	ApplyContainerOverlayVisual(getglobal(self.EXP_BAR_FRAME_NAME), BTVanillaDB.expBarEnabled, show)
 
-	-- Cast Bar - same generic ApplyContainerOverlayVisual treatment, but
-	-- passed a literal `true` enabledFlag (this element has no independent
-	-- enable flag of its own - see its own section's header comment), so
-	-- overlay interactivity depends only on `show`.
 	ApplyContainerOverlayVisual(getglobal(self.CAST_BAR_FRAME_NAME), true, show)
 
 	-- Page Indicator (Part 4) - same generic ApplyContainerOverlayVisual
@@ -5977,8 +5868,6 @@ local function ReassertNativeElementPositions()
 	-- TrustyBars-owned container) - reasserted here for the same reason.
 	BTV:ApplyExpBarPosition()
 
-	-- Cast Bar: same single-native-frame risk class as the Latency Bar/
-	-- Experience Bar above.
 	BTV:ApplyCastBarPosition()
 
 	BTV:ApplyPageIndicatorPosition()

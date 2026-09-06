@@ -3994,12 +3994,7 @@ simpleBarPageConfigs["expbar"] = {
 	setScale = function(v) BTV:SetExpBarScale(v) end,
 }
 
--- Cast Bar: Position + Scale only, no Enable checkbox and no Reset's
--- own hasEnable field - unlike Latency Bar/Experience Bar, this
--- element's shown/hidden state is driven entirely by the player's live
--- cast/channel state (native UNIT_SPELLCAST_* handling), not a toggle a
--- user would flip - see DefaultBars.lua's "Cast Bar" section header
--- comment.
+-- Cast Bar: Position + Scale only, no Enable checkbox.
 simpleBarPageConfigs["castbar"] = {
 	title = "Cast Bar",
 	getPosition = function() return BTVanillaDB.castBarPosition end,
@@ -7887,8 +7882,7 @@ function BTV:RefreshBarList()
 		-- some other client build. The Experience Bar gets the same
 		-- defensive check - MainMenuExpBar's presence on this specific
 		-- modded client build is unconfirmed (see DefaultBars.lua's own
-		-- header comment on this element). The Cast Bar gets the same
-		-- defensive check against CastingBarFrame for the same reason.
+		-- header comment on this element). Same check for the Cast Bar.
 		local exists = true
 
 		if key == "bagbar" then
