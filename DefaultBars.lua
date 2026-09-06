@@ -3631,87 +3631,49 @@ end
 BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
 
 -------------------------------------------------------------------------
--- TEMPORARY DIAGNOSTIC (diag27) - Cast Bar external re-anchor trace
+-- Cast Bar external re-anchor guard
 --
--- Always-on background trace, NOT a /btv slash command - the bug is
--- reported as happening "randomly, after some time," so a manual
--- on-demand check could easily miss the exact moment it happens; this
--- installs once at file load and prints the instant anything external
--- touches the frame.
+-- Live-confirmed via the diag27 trace: this client's own native code
+-- calls CastingBarFrame:SetPoint("BOTTOM", UIParent, "BOTTOM", 0, 100) -
+-- CastingBarFrame's real vanilla default anchor - WITHOUT calling
+-- ClearAllPoints first, at unpredictable times (confirmed once right
+-- after a zone-transition loading screen; also reported to happen with
+-- no player input at all). Left unguarded, that adds a SECOND anchor
+-- point alongside our own custom one - WoW's frame layout resolves two
+-- simultaneously active anchors by implicitly re-deriving the frame's
+-- width/height from the distance between them instead of erroring,
+-- which is exactly the "stretches into a long, distorted bar reaching
+-- toward its default position" symptom reported.
 --
--- Reported symptom: the Cast Bar randomly stretches from its custom
--- position out into a long/distorted bar reaching roughly toward its
--- original default position, sometimes with no cast in progress at all.
--- The leading hypothesis: something OTHER than BTV:ApplyCastBarPosition
--- calls SetPoint on the real CastingBarFrame without first calling
--- ClearAllPoints, leaving two anchor points active at once - WoW's frame
--- layout resolves that by implicitly re-deriving the frame's width/
--- height from the gap between the two constrained points instead of
--- erroring, which would look exactly like this (a bar that "stretches"
--- toward wherever the second, uncleared point sits).
---
--- This wraps the real frame's own SetPoint/ClearAllPoints (capturing the
--- native methods before overriding, same "capture before Mixin/override"
--- discipline as this file's other native-method wraps) so every call
--- that reaches them gets logged UNLESS it's our own
--- (ApplyCastBarPosition above sets frame.btvApplyingCastBarPosition
--- around its own ClearAllPoints+SetPoint pair specifically so this
--- tracer can tell the two apart). Confirms or refutes the hypothesis
--- directly instead of guessing at a fix - remove this whole block (and
--- the btvApplyingCastBarPosition flag above) once the actual external
--- caller and trigger are confirmed via live testing.
+-- Fix: permanently swallow any SetPoint/ClearAllPoints call on this
+-- frame that didn't come from BTV:ApplyCastBarPosition itself (flagged
+-- via frame.btvApplyingCastBarPosition) instead of forwarding it to the
+-- real method - our last-applied anchor is left completely untouched
+-- regardless of what triggers the native reset. Must stay in place -
+-- removing it brings the stretch bug back the next time that native
+-- reset fires.
 -------------------------------------------------------------------------
 
 do
 	local frame = getglobal(BTV.CAST_BAR_FRAME_NAME)
 
-	if frame and not frame.btvCastBarDiag27Hooked then
+	if frame and not frame.btvCastBarReanchorGuarded then
 		local nativeSetPoint = frame.SetPoint
 		local nativeClearAllPoints = frame.ClearAllPoints
 
-		local function DescribeRelativeTo(relativeTo)
-			if not relativeTo then
-				return "nil"
+		frame.SetPoint = function(self, ...)
+			if self.btvApplyingCastBarPosition then
+				return nativeSetPoint(self, unpack(arg))
 			end
-
-			if type(relativeTo) == "string" then
-				return relativeTo
-			end
-
-			if relativeTo.GetName and relativeTo:GetName() then
-				return relativeTo:GetName()
-			end
-
-			return tostring(relativeTo)
-		end
-
-		frame.SetPoint = function(self, point, relativeTo, relativePoint, x, y)
-			if not self.btvApplyingCastBarPosition then
-				BTV:Print(string.format(
-					"[diag27] EXTERNAL CastingBarFrame:SetPoint at %.2f - point=%s relativeTo=%s relativePoint=%s x=%s y=%s",
-					GetTime(),
-					tostring(point),
-					DescribeRelativeTo(relativeTo),
-					tostring(relativePoint),
-					tostring(x),
-					tostring(y)
-				))
-			end
-
-			return nativeSetPoint(self, point, relativeTo, relativePoint, x, y)
 		end
 
 		frame.ClearAllPoints = function(self)
-			if not self.btvApplyingCastBarPosition then
-				BTV:Print(string.format("[diag27] EXTERNAL CastingBarFrame:ClearAllPoints at %.2f", GetTime()))
+			if self.btvApplyingCastBarPosition then
+				return nativeClearAllPoints(self)
 			end
-
-			return nativeClearAllPoints(self)
 		end
 
-		frame.btvCastBarDiag27Hooked = true
-
-		BTV:Print("[diag27] Cast Bar re-anchor tracer active.")
+		frame.btvCastBarReanchorGuarded = true
 	end
 end
 
@@ -3775,9 +3737,9 @@ function BTV:ApplyCastBarPosition()
 	local pos = BTVanillaDB.castBarPosition
 
 	if pos then
-		-- Flag consumed by the diag27 tracer above - lets it tell our own
-		-- ClearAllPoints/SetPoint calls apart from anything else touching
-		-- this frame.
+		-- Flag consumed by the external re-anchor guard above - lets it
+		-- allow OUR OWN ClearAllPoints/SetPoint calls through while
+		-- swallowing anything else touching this frame.
 		frame.btvApplyingCastBarPosition = true
 
 		frame:ClearAllPoints()
