@@ -103,6 +103,7 @@ local SIMPLE_BAR_NAMES = {
 	micromenu = "Micro Menu",
 	latencybar = "Latency Bar",
 	expbar = "Experience Bar",
+	castbar = "Cast Bar",
 }
 
 -- Populated later in this file (CreateSimpleBarPage) once
@@ -2498,10 +2499,11 @@ function BTV:RefreshDefaultLayoutGatingOnAllPages()
 		end
 	end
 
-	-- Stance Bar / Bag Bar / Micro Menu / Latency Bar / Experience Bar are
-	-- also gated on useDefaultLayout (RefreshSimpleBarPage below), so
-	-- their pages need the same live refresh if already built/cached.
-	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar" }
+	-- Stance Bar / Bag Bar / Micro Menu / Latency Bar / Experience Bar /
+	-- Cast Bar are also gated on useDefaultLayout (RefreshSimpleBarPage
+	-- below), so their pages need the same live refresh if already
+	-- built/cached.
+	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do
@@ -3990,6 +3992,24 @@ simpleBarPageConfigs["expbar"] = {
 	hasScale = true,
 	getScale = function() return BTVanillaDB.expBarScale end,
 	setScale = function(v) BTV:SetExpBarScale(v) end,
+}
+
+-- Cast Bar: Position + Scale only, no Enable checkbox and no Reset's
+-- own hasEnable field - unlike Latency Bar/Experience Bar, this
+-- element's shown/hidden state is driven entirely by the player's live
+-- cast/channel state (native UNIT_SPELLCAST_* handling), not a toggle a
+-- user would flip - see DefaultBars.lua's "Cast Bar" section header
+-- comment.
+simpleBarPageConfigs["castbar"] = {
+	title = "Cast Bar",
+	getPosition = function() return BTVanillaDB.castBarPosition end,
+	setPosition = function(x, y) BTV:SetCastBarPosition(x, y) end,
+	reset = function()
+		BTV:ResetCastBarLayout()
+	end,
+	hasScale = true,
+	getScale = function() return BTVanillaDB.castBarScale end,
+	setScale = function(v) BTV:SetCastBarScale(v) end,
 }
 
 simpleBarPageConfigs["micromenu"] = {
@@ -7849,7 +7869,7 @@ function BTV:RefreshBarList()
 	-- stay visible and just grey out rather than disappearing.
 	-------------------------------------------------------------------------
 
-	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar" }
+	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do
@@ -7867,7 +7887,8 @@ function BTV:RefreshBarList()
 		-- some other client build. The Experience Bar gets the same
 		-- defensive check - MainMenuExpBar's presence on this specific
 		-- modded client build is unconfirmed (see DefaultBars.lua's own
-		-- header comment on this element).
+		-- header comment on this element). The Cast Bar gets the same
+		-- defensive check against CastingBarFrame for the same reason.
 		local exists = true
 
 		if key == "bagbar" then
@@ -7876,6 +7897,8 @@ function BTV:RefreshBarList()
 			exists = BTV.microMenuContainer ~= nil
 		elseif key == "latencybar" then
 			exists = getglobal(BTV.LATENCY_BAR_FRAME_NAME) ~= nil
+		elseif key == "castbar" then
+			exists = getglobal(BTV.CAST_BAR_FRAME_NAME) ~= nil
 		elseif key == "expbar" then
 			exists = getglobal(BTV.EXP_BAR_FRAME_NAME) ~= nil
 		end

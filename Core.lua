@@ -1252,6 +1252,10 @@ function BTV:EnsureDB()
 		BTVanillaDB.expBarScale = 1
 	end
 
+	if BTVanillaDB.castBarScale == nil then
+		BTVanillaDB.castBarScale = 1
+	end
+
 	if BTVanillaDB.betterExpBarEnabled == nil then
 		BTVanillaDB.betterExpBarEnabled = false
 	end
@@ -1990,6 +1994,9 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:SetExpBarEnabled(BTVanillaDB.expBarEnabled ~= false)
 	BTV:SetExpBarScale(BTVanillaDB.expBarScale or 1)
 	BTV:ApplyExpBarPosition()
+
+	BTV:SetCastBarScale(BTVanillaDB.castBarScale or 1)
+	BTV:ApplyCastBarPosition()
 
 	BTV:ApplyExpBarColors()
 

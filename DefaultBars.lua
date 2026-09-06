@@ -1070,6 +1070,17 @@ local function DefaultBarDrag_OnUpdate()
 
 			BTV:ApplyExpBarPosition()
 		end
+	elseif this.dragKind == "castBar" then
+		local pos = BTVanillaDB.castBarPosition
+
+		if pos then
+			pos.x = this.dragStartX + dx
+			pos.y = this.dragStartY + dy
+
+			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos)
+
+			BTV:ApplyCastBarPosition()
+		end
 	elseif this.dragKind == "pageIndicator" then
 		local pos = BTVanillaDB.mainBarPageIndicatorPosition
 
@@ -3579,6 +3590,220 @@ function BTV:StopLatencyBarDrag()
 end
 
 -------------------------------------------------------------------------
+-- Cast Bar
+--
+-- CastingBarFrame - the real vanilla 1.12.1 FrameXML name for the
+-- player's own cast/channel bar - is structurally the same kind of
+-- element as MainMenuBarPerformanceBarFrame/MainMenuExpBar above: a
+-- single self-contained real Blizzard frame, not a TrustyBars-owned
+-- chain, so it gets the exact same Position/Scale/Reset/Drag treatment
+-- with no Spacing/Orientation (nothing real to drive) and no Enable
+-- toggle (unlike Latency Bar/Experience Bar, this element's own
+-- shown/hidden state is driven entirely by the player's live cast/
+-- channel state via native UNIT_SPELLCAST_* handling - there is no
+-- "always on" state to toggle).
+--
+-- Every accessor is defensively nil-checked via getglobal, matching
+-- every other optional-native-element accessor in this file - degrades
+-- gracefully (feature simply never builds/applies) if this name is ever
+-- wrong on some other client build.
+-------------------------------------------------------------------------
+
+BTV.CAST_BAR_FRAME_NAME = "CastingBarFrame"
+
+-- Mirrors CaptureLatencyBarPositionIfNeeded exactly. CastingBarFrame is
+-- normally hidden outside an active cast/channel, but a hidden frame's
+-- GetLeft()/GetTop() still resolve from its own SetPoint anchor
+-- regardless of Shown state - no different from every other Capture*
+-- IfNeeded in this file. Re-attempted on every ApplyCastBarPosition call
+-- (login, UNIT_SPELLCAST_START, edit-mode toggle) until it succeeds, the
+-- same retry-by-recall pattern every other Capture*IfNeeded already uses.
+function BTV:CaptureCastBarPositionIfNeeded()
+	self:EnsureDB()
+
+	if BTVanillaDB.castBarPosition then
+		return
+	end
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if not frame then
+		return
+	end
+
+	local left = frame:GetLeft()
+	local top = frame:GetTop()
+
+	if not left or not top then
+		return
+	end
+
+	local anchor = {
+		point = "TOPLEFT",
+		relativePoint = "BOTTOMLEFT",
+		x = left,
+		y = top,
+	}
+
+	BTVanillaDB.castBarPosition = anchor
+
+	if not BTVanillaDB.castBarNativeAnchor then
+		BTVanillaDB.castBarNativeAnchor = {
+			point = anchor.point,
+			relativePoint = anchor.relativePoint,
+			x = anchor.x,
+			y = anchor.y,
+		}
+	end
+end
+
+-- Mirrors BTV:ApplyLatencyBarPosition exactly - no Enable flag branch,
+-- since this element has none (see this section's header comment).
+function BTV:ApplyCastBarPosition()
+	self:CaptureCastBarPositionIfNeeded()
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if not frame then
+		return
+	end
+
+	local pos = BTVanillaDB.castBarPosition
+
+	if pos then
+		frame:ClearAllPoints()
+		PixelSetPoint(
+			frame,
+			pos.point or "TOPLEFT",
+			UIParent,
+			pos.relativePoint or "BOTTOMLEFT",
+			pos.x or 0,
+			pos.y or 0
+		)
+	end
+
+	-- enabledFlag is passed as a literal `true` (no independent enable
+	-- flag exists for this element) so the overlay's interactivity depends
+	-- only on edit-mode/useDefaultLayout, mirroring the Page Indicator's
+	-- own no-independent-enable-flag treatment.
+	EnsureContainerOverlay(frame, self.StartCastBarDrag, self.StopCastBarDrag, "castbar", self.SetCastBarScale, nil, "Cast Bar")
+end
+
+function BTV:SetCastBarPosition(x, y)
+	x = tonumber(x)
+	y = tonumber(y)
+
+	if not x or not y or not BTVanillaDB.castBarPosition then
+		return
+	end
+
+	BTVanillaDB.castBarPosition.x = x
+	BTVanillaDB.castBarPosition.y = y
+
+	self:ApplyCastBarPosition()
+end
+
+-- Mirrors SetLatencyBarScale's exact clamp/write/apply template.
+function BTV:SetCastBarScale(scale)
+	self:EnsureDB()
+
+	scale = tonumber(scale)
+
+	if not scale then
+		return
+	end
+
+	scale = math.floor((scale * 10) + 0.5) / 10
+
+	if scale < 0.5 then
+		scale = 0.5
+	end
+
+	if scale > 2.0 then
+		scale = 2.0
+	end
+
+	BTVanillaDB.castBarScale = scale
+
+	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if frame then
+		frame:SetScale(scale)
+	end
+end
+
+-- Settings.lua's Cast Bar page "Reset to Blizzard Default" button -
+-- restores position AND scale in one call, mirroring
+-- ResetLatencyBarLayout's own position+scale bundling.
+function BTV:ResetCastBarLayout()
+	local native = BTVanillaDB.castBarNativeAnchor
+
+	if native then
+		BTVanillaDB.castBarPosition = {
+			point = native.point,
+			relativePoint = native.relativePoint,
+			x = native.x,
+			y = native.y,
+		}
+
+		self:ApplyCastBarPosition()
+	end
+
+	self:SetCastBarScale(1)
+end
+
+function BTV:StartCastBarDrag()
+	self:CaptureCastBarPositionIfNeeded()
+
+	local pos = BTVanillaDB.castBarPosition
+
+	if not pos then
+		return
+	end
+
+	local cx, cy = GetCursorPositionUIScale()
+
+	local frame = EnsureDragFrame()
+
+	frame.dragKind = "castBar"
+	frame.dragStartCursorX = cx
+	frame.dragStartCursorY = cy
+	frame.dragStartX = pos.x or 0
+	frame.dragStartY = pos.y or 0
+
+	frame:SetScript("OnUpdate", DefaultBarDrag_OnUpdate)
+	frame:Show()
+end
+
+function BTV:StopCastBarDrag()
+	if not dragFrame then
+		return
+	end
+
+	dragFrame:SetScript("OnUpdate", nil)
+	dragFrame:Hide()
+
+	if self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage("castbar")
+	end
+end
+
+-- Re-attempts CaptureCastBarPositionIfNeeded/ApplyCastBarPosition the
+-- first time CastingBarFrame actually becomes visible this session -
+-- covers the case where login happened while the frame was hidden (not
+-- casting) and GetLeft()/GetTop() genuinely hadn't resolved yet at that
+-- point, the one retry point every other single-native-frame element
+-- here doesn't need since none of them are ever hidden by default.
+local castBarEventFrame = CreateFrame("Frame", "BTVanillaCastBarEventFrame")
+castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_START")
+castBarEventFrame:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
+castBarEventFrame:SetScript("OnEvent", function()
+	if not BTVanillaDB or not BTVanillaDB.castBarPosition then
+		BTV:ApplyCastBarPosition()
+	end
+end)
+
+-------------------------------------------------------------------------
 -- Experience Bar
 --
 -- MainMenuExpBar - the real vanilla 1.12.1 FrameXML name for the
@@ -5116,6 +5341,12 @@ function BTV:ApplyDefaultLayoutEditVisual()
 	-- as Key Ring/Latency Bar above.
 	ApplyContainerOverlayVisual(getglobal(self.EXP_BAR_FRAME_NAME), BTVanillaDB.expBarEnabled, show)
 
+	-- Cast Bar - same generic ApplyContainerOverlayVisual treatment, but
+	-- passed a literal `true` enabledFlag (this element has no independent
+	-- enable flag of its own - see its own section's header comment), so
+	-- overlay interactivity depends only on `show`.
+	ApplyContainerOverlayVisual(getglobal(self.CAST_BAR_FRAME_NAME), true, show)
+
 	-- Page Indicator (Part 4) - same generic ApplyContainerOverlayVisual
 	-- treatment, gated on mainBarPaginationEnabled instead of an
 	-- independent enable flag (this element has none of its own - see
@@ -5598,6 +5829,10 @@ local function ReassertNativeElementPositions()
 	-- Bar/Key Ring above (MainMenuExpBar isn't reparented into a
 	-- TrustyBars-owned container) - reasserted here for the same reason.
 	BTV:ApplyExpBarPosition()
+
+	-- Cast Bar: same single-native-frame risk class as the Latency Bar/
+	-- Experience Bar above.
+	BTV:ApplyCastBarPosition()
 
 	BTV:ApplyPageIndicatorPosition()
 	BTV:ApplyPageIndicatorShape()
