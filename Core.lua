@@ -1709,31 +1709,29 @@ function BTV:ComputeGridSnapAdjustment(proposedLeft, proposedTop, width, height,
 	return adjustedLeft, adjustedTop
 end
 
--- Real-pixel capture radius for ComputeCenterGridSnapAdjustment below -
+-- Real-pixel capture radii for ComputeCenterGridSnapAdjustment below -
 -- deliberately small and independent of grid spacing. Unlike the general
 -- round-to-nearest grid snap above (which always locks onto SOME line,
 -- leaving no free positioning anywhere), this element only gets pulled
 -- onto a line once dragged genuinely close to one, so there's a wide
 -- free zone left to fine-tune its position anywhere between two grid
--- centers.
-local CENTER_GRID_SNAP_CAPTURE_PX = 10
+-- centers. Y's radius is deliberately much smaller than X's - this
+-- element is small, so a full-size vertical capture zone left no room to
+-- freely fine-tune its height alongside its horizontal centering; a
+-- tiny one keeps vertical snap technically active (a pixel-perfect
+-- alignment still locks in) without it fighting free movement.
+local CENTER_GRID_SNAP_CAPTURE_PX_X = 10
+local CENTER_GRID_SNAP_CAPTURE_PX_Y = 1
 
--- Center-only, HORIZONTAL-only variant of ComputeGridSnapAdjustment
--- above, for an element (the Cast Bar - DefaultBars.lua's ApplyDragSnap
--- centerSnap parameter) that should align its own horizontal CENTER to a
--- grid line, never an edge, while staying completely free to move
--- vertically - unlike the general 3-candidate (near edge/far edge/
--- center) behavior above, which picks whichever candidate keeps the
--- element closest to the cursor, snaps BOTH axes, and can just as easily
--- lock onto an edge.
+-- Center variant of ComputeGridSnapAdjustment above, for an element (the
+-- Cast Bar - DefaultBars.lua's ApplyDragSnap centerSnap parameter) that
+-- should align its own CENTER to a grid line, never an edge, on both
+-- axes - unlike the general 3-candidate (near edge/far edge/center)
+-- behavior above, which picks whichever candidate keeps the element
+-- closest to the cursor and can just as easily lock onto an edge.
 --
--- Vertical is deliberately left unadjusted (returns nil for Y) - this
--- element is small, so forcing its top/bottom onto a horizontal grid
--- line too left no room to freely fine-tune its height alongside its
--- horizontal centering.
---
--- Horizontal only locks in within CENTER_GRID_SNAP_CAPTURE_PX of an
--- actual line (returns nil otherwise, leaving the raw dragged X alone) -
+-- Each axis only locks in within its own CENTER_GRID_SNAP_CAPTURE_PX_*
+-- of an actual line (leaving the raw dragged value alone otherwise) -
 -- an unconditional round-to-nearest would map EVERY possible position to
 -- some line, leaving no gap to freely position the bar between two grid
 -- centers.
@@ -1758,29 +1756,38 @@ function BTV:ComputeCenterGridSnapAdjustment(proposedLeft, proposedTop, width, h
 
 	spacing = spacing * (scale or 1)
 
-	local screenLeft, screenRight = GetRealScreenBounds(UIParent)
+	local screenLeft, screenRight, screenTop, screenBottom = GetRealScreenBounds(UIParent)
 
 	if not screenLeft then
 		return nil, nil
 	end
 
 	local centerX = (screenLeft + screenRight) / 2
+	local centerY = (screenTop + screenBottom) / 2
 
-	local offsetX = (proposedLeft + (width / 2)) - centerX
-	local nearestOffsetX = RoundToNearestMultiple(offsetX, spacing)
-	local distanceX = offsetX - nearestOffsetX
+	local function SnapAxis(point, origin, capturePx)
+		local offset = point - origin
+		local nearestOffset = RoundToNearestMultiple(offset, spacing)
+		local distance = offset - nearestOffset
 
-	if distanceX < 0 then
-		distanceX = -distanceX
+		if distance < 0 then
+			distance = -distance
+		end
+
+		if distance <= capturePx then
+			return origin + nearestOffset
+		end
+
+		return nil
 	end
 
-	local adjustedLeft
+	local snappedCenterX = SnapAxis(proposedLeft + (width / 2), centerX, CENTER_GRID_SNAP_CAPTURE_PX_X)
+	local snappedCenterY = SnapAxis(proposedTop - (height / 2), centerY, CENTER_GRID_SNAP_CAPTURE_PX_Y)
 
-	if distanceX <= CENTER_GRID_SNAP_CAPTURE_PX then
-		adjustedLeft = (centerX + nearestOffsetX) - (width / 2)
-	end
+	local adjustedLeft = snappedCenterX and (snappedCenterX - (width / 2))
+	local adjustedTop = snappedCenterY and (snappedCenterY + (height / 2))
 
-	return adjustedLeft, nil
+	return adjustedLeft, adjustedTop
 end
 
 -------------------------------------------------------------------------

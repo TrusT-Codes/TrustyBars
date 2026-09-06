@@ -935,14 +935,16 @@ end
 -- no anchor-point math needed.
 -- centerSnap (optional, Cast Bar only - see its dragKind branch below)
 -- switches grid snapping to Core.lua's BTV:ComputeCenterGridSnapAdjustment
--- instead of the general BTV:ComputeGridSnapAdjustment - horizontal-only,
--- aligning this frame's own CENTER to a grid line (never an edge) but
--- only once dragged within its own small capture radius of one, leaving
--- Y completely free and a real gap to fine-position X between two grid
--- centers, rather than the general function's "always locks BOTH axes
--- onto whichever of near-edge/far-edge/center is closest to the cursor."
--- Has no effect when Snap to Grid itself is off (the Snap to Adjacent
--- Elements branch below is unchanged either way).
+-- instead of the general BTV:ComputeGridSnapAdjustment - aligning this
+-- frame's own CENTER to a grid line on both axes (never an edge), but
+-- only once dragged within a small capture radius of one per axis
+-- (X's radius much larger than Y's, so height stays practically free to
+-- fine-tune while X still snaps readily), leaving a real gap either way
+-- to park the bar between two grid centers - rather than the general
+-- function's "always locks BOTH axes onto whichever of near-edge/
+-- far-edge/center is closest to the cursor." Has no effect when Snap to
+-- Grid itself is off (the Snap to Adjacent Elements branch below is
+-- unchanged either way).
 local function ApplyDragSnap(frame, pos, centerSnap)
 	if not frame or not pos then
 		return
@@ -1097,9 +1099,9 @@ local function DefaultBarDrag_OnUpdate()
 			pos.x = this.dragStartX + dx
 			pos.y = this.dragStartY + dy
 
-			-- centerSnap = true: the Cast Bar grid-snaps horizontally by its
-			-- own center only, within a small capture radius, Y left
-			-- completely free - see ApplyDragSnap's own comment.
+			-- centerSnap = true: the Cast Bar grid-snaps by its own center
+			-- on both axes, each within its own small capture radius (Y's
+			-- much smaller than X's) - see ApplyDragSnap's own comment.
 			ApplyDragSnap(getglobal(BTV.CAST_BAR_FRAME_NAME), pos, true)
 
 			BTV:ApplyCastBarPosition()
