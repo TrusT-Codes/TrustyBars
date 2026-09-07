@@ -667,7 +667,9 @@ function BTVButtonMixin:UpdateBackdropVisibility()
 	-- button's own frame stays Shown for despite being empty (the Pet Bar's
 	-- petBarShowEmpty case in UpdateGridVisibility), since every other bar
 	-- already Hides the whole frame (and so this border with it) instead.
-	if self.border then
+	-- Guarded on hasNativeBorder too, or a leftover vanilla-style texture
+	-- reappears here after switching to modern style.
+	if self.border and self.hasNativeBorder then
 		if shown then
 			self.border:Show()
 		else
