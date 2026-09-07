@@ -8,13 +8,16 @@
 -- (TRUSTYBARSBIND1-48, one per free action slot 73-120), each invoking
 -- TrustyBars_HoverBindFire(N). Styled Pet Bar slots (bar 10) use their own
 -- TRUSTYBARSPETBIND1-10/TrustyBars_PetHoverBindFire(N), keyed directly by
--- pet slot 1-10 - the "Use Vanilla Pet Bar" native container's real
--- PetActionButton1-10 aren't Bar.lua/Button.lua pool buttons at all, so
--- they're outside this whole system (same as Stance Bar/Bag Bar/Micro
--- Menu already are) and keybind only through native Blizzard Keybindings.
--- Do not use SetBindingClick or SetBinding(key, "BONUSACTIONBUTTON1") for
--- custom slots - both record in the binding system but the client's input
--- dispatcher never fires them on this client.
+-- pet slot 1-10. Styled Stance Bar slots (bar 11) use their own
+-- TRUSTYBARSSTANCEBIND1-10/TrustyBars_StanceHoverBindFire(N), keyed
+-- directly by shapeshift form index 1-10. The "Use Vanilla Pet/Stance Bar"
+-- native containers' real PetActionButton1-10/ShapeshiftButton1-N aren't
+-- Bar.lua/Button.lua pool buttons at all, so they're outside this whole
+-- system (same as Bag Bar/Micro Menu already are) and keybind only through
+-- native Blizzard Keybindings. Do not use SetBindingClick or
+-- SetBinding(key, "BONUSACTIONBUTTON1") for custom slots - both record in
+-- the binding system but the client's input dispatcher never fires them on
+-- this client.
 
 local BTV = BTVanilla
 
@@ -27,6 +30,10 @@ BTV.customBindTargets = {}
 -- bindings.xml's TRUSTYBARSPETBIND1-10). Styled Pet Bar only - see the
 -- file header.
 BTV.petBindTargets = {}
+
+-- Same, for the styled Stance Bar - keyed by shapeshift form index 1-10
+-- directly (matching bindings.xml's TRUSTYBARSSTANCEBIND1-10).
+BTV.stanceBindTargets = {}
 
 -- Must be a bare global function, not a BTV: method - bindings.xml's
 -- TRUSTYBARSBIND1-48 bodies can only invoke a plain global function name.
@@ -45,15 +52,26 @@ function TrustyBars_PetHoverBindFire(petSlot)
 	end
 end
 
+-- Same as TrustyBars_HoverBindFire, for bindings.xml's TRUSTYBARSSTANCEBIND1-10.
+function TrustyBars_StanceHoverBindFire(stanceIndex)
+	local btn = BTV.stanceBindTargets and BTV.stanceBindTargets[stanceIndex]
+	if btn then
+		btn:Click()
+	end
+end
+
 -- Single source of truth for a button's real binding-action name: default-
 -- bar buttons use their precomputed native name, styled Pet Bar slots use
--- TRUSTYBARSPETBIND<petSlot>, everything else (real custom bars 6+) uses
--- TRUSTYBARSBIND<actionSlot-72>.
+-- TRUSTYBARSPETBIND<petSlot>, styled Stance Bar slots use
+-- TRUSTYBARSSTANCEBIND<formIndex>, everything else (real custom bars 6+)
+-- uses TRUSTYBARSBIND<actionSlot-72>.
 function BTV:GetHoverBindingId(btn)
 	if btn.nativeBindingId then
 		return btn.nativeBindingId
 	elseif btn.isPetSlot then
 		return "TRUSTYBARSPETBIND" .. tostring(btn.actionSlot)
+	elseif btn.isStanceSlot then
+		return "TRUSTYBARSSTANCEBIND" .. tostring(btn.actionSlot)
 	else
 		return "TRUSTYBARSBIND" .. tostring(btn.actionSlot - 72)
 	end
