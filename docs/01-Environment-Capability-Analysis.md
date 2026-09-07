@@ -825,6 +825,23 @@ So the "shine" is a genuine 3D model viewport (`CreateFrame("Model", ...)`) load
 
 **Practical upshot:** to reproduce a native-look animated effect on a custom (non-native) button on this client, check whether the effect you want already exists as a `Model` child on some real Blizzard frame and reuse its exact `GetModel()` path on your own `CreateFrame("Model", nil, parent)` child, anchored the same way (TOPLEFT/BOTTOMRIGHT, 0,0, matching the button's own bounds) — this gets you the *exact* real animation for free, pixel-identical, with no manual `OnUpdate` tweening needed. Don't assume a hand-rolled `OnUpdate`-driven texture animation is the only option before checking for this first; it very likely produces a worse-looking, non-authentic approximation of something the client can already render correctly on its own.
 
+## 5aj. Live confirmation: `GetShapeshiftFormInfo`/`GetShapeshiftFormCooldown` signatures, `GetShapeshiftForm()` returning `nil` while a form IS active, and `UPDATE_SHAPESHIFT_FORM`/`_FORMS` never firing on this client (Stance Bar styled-mode branch)
+
+**Return signatures, live-confirmed via a temporary `/btv stancediag` (now removed):**
+
+```
+GetShapeshiftFormInfo(index) = texture, name, isActive, isCastable, <5th always nil in testing>
+GetShapeshiftFormCooldown(index) = start, duration, enable  -- same plain shape as GetActionCooldown, no truncation-bug risk
+```
+
+This matches what this codebase's own pre-existing `DefaultBars.lua` function `BTV:GetActiveStanceIndex()` already assumed (`icon, name, isActive`) — that function was already correct; only the newly-written `Button.lua` `isStanceSlot` content methods needed confirming.
+
+**`GetShapeshiftForm()` returns `nil` on this client even while a form IS active** (confirmed live: `GetShapeshiftFormInfo`'s own `isActive` was `1` for one slot while `GetShapeshiftForm()` read `nil` at the exact same moment, across two separate test rounds) — not the documented `0`/index behavior. Any "is this the active form" check must use `GetShapeshiftFormInfo(index)`'s own `isActive` return instead, never `GetShapeshiftForm()`, on this client.
+
+**`UPDATE_SHAPESHIFT_FORM` and `UPDATE_SHAPESHIFT_FORMS` never fire on this client when toggling a form on/off** — confirmed live via a temporary event-trace diagnostic (`/btv stanceevents`, now removed) that registered both plus several spellcast/aura events and logged every fire while the user toggled Hunter Aspects several times: `SPELLCAST_STOP`, `UNIT_SPELLCAST_SUCCEEDED`, and `PLAYER_AURAS_CHANGED` fired every single toggle; neither `UPDATE_SHAPESHIFT_FORM` nor `UPDATE_SHAPESHIFT_FORMS` fired even once. `Button.lua`'s `isStanceSlot` buttons now refresh on `PLAYER_AURAS_CHANGED` instead (the most targeted of the three that did fire) — the `UPDATE_SHAPESHIFT_*` registrations were left in place as harmless no-ops rather than removed, in case some other trigger (not exercised in this test) does fire them.
+
+Also observed, unexplained and not chased further (not blocking, no user-visible symptom traced to it): whichever form was the *active* one at query time consistently returned a texture (`Interface\Icons\Spell_Nature_WispSplode`) that did not match that ability's own real icon (confirmed correct while inactive) — the same placeholder-looking texture regardless of which of the two abilities was active. Worth re-testing if a future icon-related Stance Bar bug surfaces, but not investigated further this round since no reported symptom traced back to it once the event-firing fix landed.
+
 ## 6. Summary: what to build vs. what to reuse
 
 

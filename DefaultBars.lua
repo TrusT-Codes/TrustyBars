@@ -27,6 +27,11 @@ BTV.DEFAULT_BAR_FRAME_PREFIXES = {
 	                                      -- at first missing frame" loop
 	                                      -- naturally returns a 10-length
 	                                      -- table).
+	[BTV.STANCE_BAR_ID] = "ShapeshiftButton", -- Stance Bar (styled mode) -
+	                                      -- only for hide+neuter and the
+	                                      -- initial anchor/spacing capture;
+	                                      -- content is the shapeshift-form
+	                                      -- API instead (Button.lua isStanceSlot).
 }
 
 -- Real vanilla stance bars top out at 10 slots (ShapeshiftButton1-10).
@@ -566,6 +571,11 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		bar = self.petBarNativeContainer
 	end
 
+	-- Stance Bar native mode has no self.bars[id] pool bar - `bar` stays
+	-- nil, a no-op below. Unlike Pet Bar, its native visibility stays on
+	-- the pre-existing separate BTVanillaDB.stanceBarEnabled flag/call
+	-- chain, not this function's cfg.enabled (styled mode only).
+
 	if bar then
 		-- Pet Bar additionally requires a real controllable pet action bar
 		-- right now (PetHasActionBar) on top of the user's own enabled
@@ -889,6 +899,9 @@ function BTV:CreateFixedSlotDefaultBars()
 		-- those must stay genuinely shown/clickable, not neutered below.
 		if id == self.PET_BAR_ID and cfg and self:IsPetBarNativeModeEffective() then
 			-- Handled by CreatePetBarNativeContainer.
+		elseif id == self.STANCE_BAR_ID and cfg and self:IsStanceBarNativeModeEffective() then
+			-- Handled by CreateStanceBarContainer - the pre-existing native
+			-- machinery, entirely separate from this pool-button path.
 		elseif cfg and (cfg.fixedActionSlots or cfg.dynamicMainBar) and not self.bars[id] then
 			local nativeButtons = self:GetDefaultBarButtons(id)
 
@@ -2922,6 +2935,15 @@ end
 function BTV:CreateStanceBarContainer()
 	self:EnsureDB()
 
+	-- Styled mode (cfg.useNativeStanceBar false): the real ShapeshiftButtonN
+	-- frames are hidden+neutered and driven instead by Button.lua's own
+	-- isStanceSlot pool (CreateFixedSlotDefaultBars) - this native container
+	-- must not build (or rebuild) over them. Mirrors
+	-- CreatePetBarNativeContainer's own guard exactly.
+	if not self:IsStanceBarNativeModeEffective() then
+		return
+	end
+
 	if self.stanceBarContainer then
 		return
 	end
@@ -3006,6 +3028,12 @@ end
 function BTV:RebuildStanceBarContainer()
 	self:EnsureDB()
 
+	-- Styled mode: this native rebuild must not run - see
+	-- CreateStanceBarContainer's own guard above for why.
+	if not self:IsStanceBarNativeModeEffective() then
+		return
+	end
+
 	-- Vanilla's own ShapeshiftBar_Update() also runs off this same
 	-- UPDATE_SHAPESHIFT_FORMS event and re-Shows ShapeshiftBarFrame - see
 	-- HideShapeshiftBarFrame's own comment above.
@@ -3080,7 +3108,7 @@ function BTV:ApplyStanceBarPosition()
 		pos.y or 0
 	)
 
-	EnsureContainerOverlay(container, self.StartStanceBarDrag, self.StopStanceBarDrag, "stance", self.SetStanceBarScale, nil, "Stance Bar")
+	EnsureContainerOverlay(container, self.StartStanceBarDrag, self.StopStanceBarDrag, self.STANCE_BAR_ID, self.SetStanceBarScale, nil, "Stance Bar")
 end
 
 -- Settings.lua's Stance Bar page X/Y sliders write through this.
@@ -3223,7 +3251,7 @@ function BTV:ReflowStanceBarForBar2Toggle(bar2Enabled)
 	self:ApplyStanceBarPosition()
 
 	if self.RefreshBarSettingsPage then
-		self:RefreshBarSettingsPage("stance")
+		self:RefreshBarSettingsPage(self.STANCE_BAR_ID)
 	end
 end
 
@@ -3417,8 +3445,8 @@ function BTV:SetStanceBarOrientation(vertical)
 end
 
 -- Settings.lua's Stance Bar page reset flow calls this alongside
--- ResetStanceBarPosition (simpleBarPageConfigs["stance"].reset) - restores
--- spacing/scale/orientation to their native baseline, mirroring
+-- ResetStanceBarPosition (simpleBarPageConfigs[BTV.STANCE_BAR_ID].reset) -
+-- restores spacing/scale/orientation to their native baseline, mirroring
 -- ResetBagBarLayout.
 function BTV:ResetStanceBarLayout()
 	self:EnsureDB()
@@ -3463,7 +3491,7 @@ function BTV:StopStanceBarDrag()
 	dragFrame:Hide()
 
 	if self.RefreshBarSettingsPage then
-		self:RefreshBarSettingsPage("stance")
+		self:RefreshBarSettingsPage(self.STANCE_BAR_ID)
 	end
 end
 
@@ -3476,6 +3504,22 @@ local stanceFormEventFrame = CreateFrame("Frame", "BTVanillaStanceFormEventFrame
 stanceFormEventFrame:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
 stanceFormEventFrame:SetScript("OnEvent", function()
 	BTV:RebuildStanceBarContainer()
+
+	-- Styled mode: re-syncs cfg.buttonCount/cols/rows against the new live
+	-- form count and re-lays-out the pool bar's grid if it actually
+	-- changed - the styled-mode equivalent of RebuildStanceBarContainer
+	-- above (which only affects native mode).
+	if BTV:ApplyStanceBarLiveShape() then
+		local styledBar = BTV.bars and BTV.bars[BTV.STANCE_BAR_ID]
+
+		if styledBar then
+			BTV:ApplyBarShape(styledBar)
+		end
+
+		if BTV.RefreshBarSettingsPage then
+			BTV:RefreshBarSettingsPage(BTV.STANCE_BAR_ID)
+		end
+	end
 
 	-- Stance/Page Bar Assignment feature, Part 2: the General panel's
 	-- per-stance assignment rows are built from this same

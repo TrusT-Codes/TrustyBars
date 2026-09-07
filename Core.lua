@@ -284,10 +284,20 @@ end
 -- real action slots. Extra Bars occupy ids 6-9, so 10 is free.
 BTV.PET_BAR_ID = 10
 
+-- Stance Bar: a 7th "default bar" family member, styled-mode-only entry.
+-- This id (and its BTVanillaDB.defaultBars[STANCE_BAR_ID] cfg) drives ONLY
+-- the opt-in custom-styled grid mode (Button.lua's isStanceSlot branch) -
+-- the pre-existing native mode (ShapeshiftButton1-N reparented into
+-- BTV.stanceBarContainer, DefaultBars.lua) keeps using its own separate
+-- top-level BTVanillaDB.stanceBar* fields entirely untouched. Which mode is
+-- actually active is cfg.useNativeStanceBar (default true), resolved
+-- through BTV:IsStanceBarNativeModeEffective().
+BTV.STANCE_BAR_ID = 11
+
 -- Every default-bar-family id, in display order. Loops that need to cover
--- "the whole default-bar family" (bars 1-5 plus the Pet Bar) iterate this
--- instead of a hardcoded 1-5 range.
-BTV.DEFAULT_BAR_IDS = { 1, 2, 3, 4, 5, BTV.PET_BAR_ID }
+-- "the whole default-bar family" (bars 1-5, Pet Bar, Stance Bar) iterate
+-- this instead of a hardcoded 1-5 range.
+BTV.DEFAULT_BAR_IDS = { 1, 2, 3, 4, 5, BTV.PET_BAR_ID, BTV.STANCE_BAR_ID }
 
 -- True for any id in BTV.DEFAULT_BAR_IDS - the shared predicate every
 -- useDefaultLayout-lock/"is this a default bar" check reads instead of a
@@ -316,7 +326,16 @@ BTV.DEFAULT_BAR_GRID = {
 	[3] = { cols = 12, rows = 1, enabled = false },      -- Bottom Right.
 	[4] = { cols = 1,  rows = 12, enabled = false },     -- Right.
 	[5] = { cols = 1,  rows = 12, enabled = false },     -- Right 2.
-	[BTV.PET_BAR_ID] = { cols = 10, rows = 1, enabled = false }, -- Pet Bar.
+	-- Pet Bar/Stance Bar default enabled (unlike bars 2-5, which are
+	-- genuinely opt-in extras) - both have a native-mode counterpart that's
+	-- always shown with no enable/disable concept of its own, so switching
+	-- to styled mode should keep showing the bar, not hide it.
+	[BTV.PET_BAR_ID] = { cols = 10, rows = 1, enabled = true }, -- Pet Bar.
+	-- Stance Bar (styled mode): base preset only - SeedOneDefaultBar
+	-- overrides cols/rows/buttonCount from the live GetNumShapeshiftForms()
+	-- count right after using this table for the initial anchor/spacing
+	-- capture's horizontal-orientation guess.
+	[BTV.STANCE_BAR_ID] = { cols = 10, rows = 1, enabled = true },
 }
 
 -- Native FrameXML global backing each default bar's own Interface Options
@@ -339,6 +358,7 @@ BTV.DEFAULT_BAR_NAMES = {
 	[4] = "Right Action Bar 1",
 	[5] = "Right Action Bar 2",
 	[BTV.PET_BAR_ID] = "Pet Bar",
+	[BTV.STANCE_BAR_ID] = "Stance Bar",
 }
 
 -- Extra Bars (ids EXTRA_BAR_ID_START..+COUNT-1) are numbered from 1 for
@@ -366,6 +386,9 @@ local FALLBACK_ANCHOR = {
 	[4] = { point = "RIGHT", relativePoint = "RIGHT", x = -18, y = 0 },
 	[5] = { point = "RIGHT", relativePoint = "RIGHT", x = -58, y = 0 },
 	[BTV.PET_BAR_ID] = { point = "BOTTOM", relativePoint = "BOTTOM", x = -200, y = 130 },
+	-- Only used if CaptureNativeAnchor can't read a real ShapeshiftButton1
+	-- this session (e.g. a class with zero learned forms at first login).
+	[BTV.STANCE_BAR_ID] = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 90 },
 }
 
 -- Builds one default-bar-family id's fresh saved config, capturing its
@@ -483,6 +506,41 @@ local function SeedOneDefaultBar(self, id)
 		-- Default off: matches real vanilla's own Pet Bar, which always
 		-- shows all 10 slots blank where unassigned.
 		cfg.condenseEmptyPetSlots = false
+	end
+
+	-- Stance Bar (styled mode): pool index N always drives shapeshift form
+	-- index N directly (no "empty slot" concept - see Button.lua's
+	-- isStanceSlot IsSlotFilled). Pool is a fixed MAX_STANCE_BUTTONS (10)
+	-- slots so it never needs growing at runtime; cfg.buttonCount tracks
+	-- the LIVE GetNumShapeshiftForms() count instead, and gets recomputed
+	-- on UPDATE_SHAPESHIFT_FORMS (DefaultBars.lua) whenever that changes.
+	if id == self.STANCE_BAR_ID then
+		cfg.isStanceBar = true
+
+		local stanceSlots = {}
+		local ss
+
+		for ss = 1, self.MAX_STANCE_BUTTONS do
+			stanceSlots[ss] = ss
+		end
+
+		cfg.fixedActionSlots = stanceSlots
+
+		local liveCount = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+
+		if liveCount > self.MAX_STANCE_BUTTONS then
+			liveCount = self.MAX_STANCE_BUTTONS
+		end
+
+		cfg.cols = liveCount > 0 and liveCount or 1
+		cfg.rows = 1
+		cfg.buttonCount = liveCount
+
+		-- Defaults on: today's only behavior (real ShapeshiftButton1-N),
+		-- so an existing user sees no change until they opt into styled mode.
+		if cfg.useNativeStanceBar == nil then
+			cfg.useNativeStanceBar = true
+		end
 	end
 
 	return cfg
@@ -1491,6 +1549,38 @@ function BTV:EnsureDB()
 		end
 	end
 
+	-- Migration-safe: an existing save from before the Stance Bar's styled
+	-- mode existed has no entry for BTV.STANCE_BAR_ID - seed just that one
+	-- id, same treatment as the Pet Bar migration above. This is purely
+	-- additive - the pre-existing native-mode BTVanillaDB.stanceBar* fields
+	-- are never touched here.
+	if not BTVanillaDB.defaultBars[self.STANCE_BAR_ID] then
+		BTVanillaDB.defaultBars[self.STANCE_BAR_ID] = SeedOneDefaultBar(self, self.STANCE_BAR_ID)
+	end
+
+	-- Structural constants for the Stance Bar cfg, re-asserted every call so
+	-- a save from before this field existed self-heals without a reseed.
+	do
+		local stanceCfg = BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+		stanceCfg.isStanceBar = true
+
+		local stanceSlots = {}
+		local ss
+
+		for ss = 1, self.MAX_STANCE_BUTTONS do
+			stanceSlots[ss] = ss
+		end
+
+		stanceCfg.fixedActionSlots = stanceSlots
+
+		-- User-editable, so nil-checked rather than reasserted every call -
+		-- an existing choice persists.
+		if stanceCfg.useNativeStanceBar == nil then
+			stanceCfg.useNativeStanceBar = true
+		end
+	end
+
 	if not BTVanillaDB.bars then
 		BTVanillaDB.bars = {}
 	end
@@ -1942,6 +2032,59 @@ function BTV:IsPetBarNativeModeEffective()
 	return cfg and cfg.useNativePetBar == true
 end
 
+-- Single source of truth for whether the Stance Bar is effectively in
+-- native (real ShapeshiftButton1-N) mode - forces native while default
+-- layout is on, regardless of the user's stored preference. Mirrors
+-- BTV:IsPetBarNativeModeEffective exactly.
+function BTV:IsStanceBarNativeModeEffective()
+	if BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+		return true
+	end
+
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+	return cfg and cfg.useNativeStanceBar == true
+end
+
+-- Re-syncs the Stance Bar (styled mode) cfg's buttonCount/cols/rows against
+-- the LIVE GetNumShapeshiftForms() count - called at login and on every
+-- UPDATE_SHAPESHIFT_FORMS (DefaultBars.lua's stanceFormEventFrame). A no-op
+-- (returns false) only when both buttonCount matches AND cols*rows still
+-- exactly accounts for it - checking cols*rows too (not just buttonCount)
+-- matters: a cfg can have a matching buttonCount but a stale cols/rows from
+-- an earlier mismatch, which a buttonCount-only check would never self-heal.
+-- A legitimate custom shape (e.g. 2x2 for 4 forms) is left alone. Returns
+-- true when it changed something, so the caller knows to re-layout/refresh.
+function BTV:ApplyStanceBarLiveShape()
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+	if not cfg then
+		return false
+	end
+
+	local liveCount = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+
+	if liveCount > self.MAX_STANCE_BUTTONS then
+		liveCount = self.MAX_STANCE_BUTTONS
+	end
+
+	local shapeValid = cfg.cols and cfg.rows and (cfg.cols * cfg.rows) == liveCount
+
+	if cfg.buttonCount == liveCount and shapeValid then
+		return false
+	end
+
+	cfg.buttonCount = liveCount
+	-- Resets to a sensible default Nx1 shape - the old cols/rows may no
+	-- longer be a valid factor pair of the new count at all.
+	cfg.cols = liveCount > 0 and liveCount or 1
+	cfg.rows = 1
+
+	return true
+end
+
 -- Single source of truth for whether the Pet Bar should hide empty slots -
 -- real vanilla never does, so this is forced false while default layout is
 -- on regardless of the user's stored preference.
@@ -2185,6 +2328,13 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	BTV:ResolveActiveProfile()
 
 	BTV:EnsureDB()
+
+	-- Must run before CreateFixedSlotDefaultBars builds the Stance Bar's
+	-- styled-mode button pool, so cfg.buttonCount already reflects the
+	-- live form count this session (covers a class that learned/lost a
+	-- form between two logins).
+	BTV:ApplyStanceBarLiveShape()
+
 	BTV:CreateAllBars()
 
 	-- Must run before CreateFixedSlotDefaultBars, which hides bar 2's

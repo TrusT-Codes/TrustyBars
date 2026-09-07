@@ -46,10 +46,45 @@ local PET_BAR_GRID_PRESETS = {
 	{ rows = 10, cols = 1  },
 }
 
+-- Stance Bar's usable form count varies per class/talent/session (commonly
+-- 0-4, but not hardcoded to that range) - unlike Pet Bar's fixed 10, its
+-- preset list can't be a static table. Returns every exact factor-pair
+-- (rows, cols) of the given live count N, e.g. N=4 -> 4x1, 2x2, 1x4; N=3 ->
+-- 3x1, 1x3; N=1 -> 1x1. Empty table for N <= 0 (no stances available).
+local function GetStanceBarGridOptions(count)
+	local presets = {}
+	local n = 0
+
+	if not count or count <= 0 then
+		return presets
+	end
+
+	local d
+
+	for d = 1, count do
+		if count - (math.floor(count / d) * d) == 0 then
+			n = n + 1
+			presets[n] = { rows = d, cols = count / d }
+		end
+	end
+
+	return presets
+end
+
 -- Which preset list a given bar's page builds its Grid Layout swatches from.
 local function GetGridPresetsForBar(barId)
 	if barId == BTV.PET_BAR_ID then
 		return PET_BAR_GRID_PRESETS
+	end
+
+	if barId == BTV.STANCE_BAR_ID then
+		local liveCount = GetNumShapeshiftForms and GetNumShapeshiftForms() or 0
+
+		if liveCount > BTV.MAX_STANCE_BUTTONS then
+			liveCount = BTV.MAX_STANCE_BUTTONS
+		end
+
+		return GetStanceBarGridOptions(liveCount)
 	end
 
 	return GRID_PRESETS
@@ -113,11 +148,13 @@ end
 -- BTV.DEFAULT_BAR_NAMES (Core.lua). GetBarDisplayName below delegates to
 -- BTV:GetBarDisplayName for the default-bar/Extra-Bar case.
 
--- Friendly names for the Stance Bar / Bag Bar / Micro Menu pages, keyed by
--- string ("stance"/"bagbar"/"micromenu") so they never collide with the
--- numeric default-bar (1-5)/custom-bar (6+) id scheme.
+-- Friendly names for the Bag Bar / Micro Menu pages, keyed by string
+-- ("bagbar"/"micromenu") so they never collide with the numeric
+-- default-bar (1-5)/custom-bar (6+) id scheme. The Stance Bar (like the
+-- Pet Bar) is keyed by its own numeric BTV.STANCE_BAR_ID instead, and gets
+-- its display name from BTV:GetBarDisplayName (Core.lua's
+-- DEFAULT_BAR_NAMES) via the fallthrough below.
 local SIMPLE_BAR_NAMES = {
-	stance = "Stance Bar",
 	bagbar = "Bag Bar",
 	micromenu = "Micro Menu",
 	latencybar = "Latency Bar",
@@ -142,6 +179,14 @@ local function IsPetBarNativeMode()
 	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
 
 	return cfg and cfg.useNativePetBar == true
+end
+
+-- Same role as IsPetBarNativeMode above, for the Stance Bar's own
+-- styled-mode-only toggle (cfg.useNativeStanceBar).
+local function IsStanceBarNativeMode()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+
+	return cfg and cfg.useNativeStanceBar == true
 end
 
 -- Extra Bars use internal ids 6-9 (BTV.EXTRA_BAR_ID_START/EXTRA_BAR_COUNT,
@@ -240,6 +285,86 @@ local function CreateUseVanillaPetBarCheckbox(page, y)
 	end)
 
 	page.useVanillaPetBarCheckbox = checkbox
+
+	return checkbox
+end
+
+-- Mirrors CreateUseVanillaPetBarCheckbox exactly, for the Stance Bar's own
+-- styled-mode-only toggle (cfg.useNativeStanceBar). Added to both the
+-- Stance Bar's full grid page and its native/simple page, same as Pet Bar.
+local function CreateUseVanillaStanceBarCheckbox(page, y)
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaStanceBarUseVanillaCheckbox",
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	checkbox:SetScript("OnClick", function()
+		local checked = this:GetChecked() and true or false
+		local clickedCheckbox = this
+
+		BTV:ShowDialog({
+			title = "Use Vanilla Stance Bar",
+			message = "Switching the Stance Bar's style rebuilds its buttons and requires a UI reload. " ..
+				"While enabled, this addon's Hoverbind mode cannot bind keys on the Stance Bar - use " ..
+				"the real Blizzard Keybindings menu instead, or disable this option.",
+			mode = "confirm",
+			buttons = {
+				{
+					text = "Reload Now",
+					isDefault = true,
+					onClick = function()
+						local cfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+
+						if cfg then
+							cfg.useNativeStanceBar = checked
+						end
+
+						ReloadUI()
+					end,
+				},
+				{
+					text = "Cancel",
+					onClick = function()
+						clickedCheckbox:SetChecked(not checked)
+					end,
+				},
+			},
+		})
+	end)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText("Use Vanilla Stance Bar")
+	end
+
+	-- Native mode's real ShapeshiftButton1-N aren't Bar.lua/Button.lua pool
+	-- buttons, so they're outside Hoverbind's dispatch system entirely
+	-- (same as Bag Bar/Micro Menu already are).
+	checkbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use Vanilla Stance Bar", 1, 1, 1)
+		GameTooltip:AddLine(
+			"While enabled, this addon's Hoverbind mode cannot bind keys on " ..
+			"the Stance Bar. Use the real Blizzard Keybindings menu instead, or " ..
+			"disable this option.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	checkbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
+	page.useVanillaStanceBarCheckbox = checkbox
 
 	return checkbox
 end
@@ -603,6 +728,79 @@ local function GridSwatch_OnClick()
 	end
 
 	BTV:RefreshBarSettingsPage(barId)
+end
+
+-- Builds (or rebuilds) a page's Grid Layout swatch row at a fixed Y anchor,
+-- from GetGridPresetsForBar(barId). Stance Bar's preset list is live
+-- (GetStanceBarGridOptions) rather than a fixed table, so unlike every
+-- other bar kind its swatches must be torn down and rebuilt on every page
+-- refresh, not just once at page creation - see RefreshBarSettingsPage's
+-- own Stance Bar branch, which calls this again on every page show.
+local function RebuildGridSwatches(page, barId, swatchY)
+	local i
+
+	if page.gridSwatches then
+		for i = 1, table.getn(page.gridSwatches) do
+			page.gridSwatches[i]:Hide()
+			page.gridSwatches[i]:ClearAllPoints()
+		end
+	end
+
+	if page.noStancesText then
+		page.noStancesText:Hide()
+		page.noStancesText = nil
+	end
+
+	page.gridSwatches = {}
+
+	local gridPresets = GetGridPresetsForBar(barId)
+
+	if barId == BTV.STANCE_BAR_ID and table.getn(gridPresets) == 0 then
+		local noStancesText = page:CreateFontString(
+			nil,
+			"OVERLAY",
+			"GameFontNormalSmall"
+		)
+
+		noStancesText:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			INDENT_CONTROL,
+			swatchY
+		)
+
+		noStancesText:SetText("No stances currently available.")
+
+		page.noStancesText = noStancesText
+	end
+
+	local xOffset = INDENT_CONTROL
+
+	for i = 1, table.getn(gridPresets) do
+		local preset = gridPresets[i]
+
+		local swatch = CreateGridSwatch(page, preset)
+
+		swatch:SetPoint(
+			"TOPLEFT",
+			page,
+			"TOPLEFT",
+			xOffset,
+			swatchY
+		)
+
+		swatch.page = page
+
+		swatch:SetScript(
+			"OnClick",
+			GridSwatch_OnClick
+		)
+
+		page.gridSwatches[i] = swatch
+
+		xOffset = xOffset + SWATCH_SIZE + SWATCH_GAP
+	end
 end
 
 -- Highlights whichever swatch matches the bar's current cols/rows.
@@ -1352,12 +1550,19 @@ function BTV:GetOrCreateBarPage(barId)
 		return self:GetOrCreateSimpleBarPage(barId)
 	end
 
-	-- Stance Bar / Bag Bar / Micro Menu (features 2/3): dispatched out to
-	-- the shared "simple" page builder further down this file (Position +
-	-- optional Enable + Reset only) rather than through the full grid/
-	-- spacing/button-size/buttonCount/delete page builder below - none of
-	-- these three elements is a TrustyBars-owned button grid.
-	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID then
+	-- Stance Bar, same dispatch as the Pet Bar branch above - the SAME
+	-- numeric id can route to either page builder depending on
+	-- cfg.useNativeStanceBar.
+	if barId == BTV.STANCE_BAR_ID and IsStanceBarNativeMode() then
+		return self:GetOrCreateSimpleBarPage(barId)
+	end
+
+	-- Bag Bar / Micro Menu (features 2/3): dispatched out to the shared
+	-- "simple" page builder further down this file (Position + optional
+	-- Enable + Reset only) rather than through the full grid/spacing/
+	-- button-size/buttonCount/delete page builder below - neither element
+	-- is a TrustyBars-owned button grid.
+	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID and barId ~= BTV.STANCE_BAR_ID then
 		return self:GetOrCreateSimpleBarPage(barId)
 	end
 
@@ -1452,6 +1657,16 @@ function BTV:GetOrCreateBarPage(barId)
 		positionStartY = positionStartY - (24 + 14) * 3
 	end
 
+	-- Stance Bar only: "Use Vanilla Stance Bar" reserves one more row right
+	-- below Enabled - no condense/autocast equivalent (see Button.lua's
+	-- isStanceSlot header comment for why).
+	local isStanceBarPage = barId == BTV.STANCE_BAR_ID
+	local useVanillaStanceBarY = positionStartY
+
+	if isStanceBarPage then
+		positionStartY = positionStartY - (24 + 14)
+	end
+
 	local xLabelY = positionStartY
 	local xSliderY = xLabelY + 4
 	local yLabelY = xSliderY - 40
@@ -1518,6 +1733,14 @@ function BTV:GetOrCreateBarPage(barId)
 		CreateUseVanillaPetBarCheckbox(page, useVanillaPetBarY)
 		CreateCondenseEmptyPetSlotsCheckbox(page, condenseEmptyPetSlotsY)
 		CreateAnimateAutoCastGlowCheckbox(page, animateAutoCastGlowY)
+	end
+
+	-------------------------------------------------------------------------
+	-- Use Vanilla Stance Bar (Stance Bar page only)
+	-------------------------------------------------------------------------
+
+	if isStanceBarPage then
+		CreateUseVanillaStanceBarCheckbox(page, useVanillaStanceBarY)
 	end
 
 	-------------------------------------------------------------------------
@@ -2081,37 +2304,12 @@ function BTV:GetOrCreateBarPage(barId)
 
 	gridTitle:SetText("Grid Layout")
 
-	page.gridSwatches = {}
+	-- Stored so RefreshBarSettingsPage can rebuild this row later (Stance
+	-- Bar's live preset list only - every other bar's swatches are static
+	-- once built).
+	page.gridSwatchY = swatchY
 
-	local gridPresets = GetGridPresetsForBar(barId)
-
-	local i
-	local xOffset = INDENT_CONTROL
-
-	for i = 1, table.getn(gridPresets) do
-		local preset = gridPresets[i]
-
-		local swatch = CreateGridSwatch(page, preset)
-
-		swatch:SetPoint(
-			"TOPLEFT",
-			page,
-			"TOPLEFT",
-			xOffset,
-			swatchY
-		)
-
-		swatch.page = page
-
-		swatch:SetScript(
-			"OnClick",
-			GridSwatch_OnClick
-		)
-
-		page.gridSwatches[i] = swatch
-
-		xOffset = xOffset + SWATCH_SIZE + SWATCH_GAP
-	end
+	RebuildGridSwatches(page, barId, swatchY)
 
 	-------------------------------------------------------------------------
 	-- Button count stepper (custom bars only) - default bars always show
@@ -2605,7 +2803,7 @@ local PROFILE_LOCK_CONTROL_NAMES = {
 	"expBarFontSizeSlider", "earnedColorSwatch", "restedColorSwatch",
 	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
 	"useVanillaPetBarCheckbox", "condenseEmptyPetSlotsCheckbox",
-	"animateAutoCastGlowCheckbox",
+	"animateAutoCastGlowCheckbox", "useVanillaStanceBarCheckbox",
 }
 
 -- alsoCheckLayoutLock: true on the pages the Default-layout lock also
@@ -2755,11 +2953,12 @@ function BTV:RefreshDefaultLayoutGatingOnAllPages()
 		end
 	end
 
-	-- Stance Bar / Bag Bar / Micro Menu / Latency Bar / Experience Bar /
-	-- Cast Bar are also gated on useDefaultLayout (RefreshSimpleBarPage
-	-- below), so their pages need the same live refresh if already
-	-- built/cached.
-	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
+	-- Bag Bar / Micro Menu / Latency Bar / Experience Bar / Cast Bar are
+	-- also gated on useDefaultLayout (RefreshSimpleBarPage below), so their
+	-- pages need the same live refresh if already built/cached. The Stance
+	-- Bar (like the Pet Bar) is covered by the BTV.DEFAULT_BAR_IDS loop
+	-- above instead, since it's keyed by its own numeric id now.
+	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do
@@ -3067,6 +3266,14 @@ local function CreateSimpleBarPage(key)
 		topY = topY - 24 - 14
 
 		CreateCondenseEmptyPetSlotsCheckbox(page, topY)
+
+		topY = topY - 24 - 14
+	end
+
+	-- Use Vanilla Stance Bar (Stance Bar native page only) - lets the user
+	-- switch to the custom-styled grid mode from here too.
+	if key == BTV.STANCE_BAR_ID then
+		CreateUseVanillaStanceBarCheckbox(page, topY)
 
 		topY = topY - 24 - 14
 	end
@@ -3978,6 +4185,13 @@ function BTV:RefreshSimpleBarPage(key)
 		end
 	end
 
+	-- Same collapse idiom, for the Stance Bar's own toggle.
+	if page.useVanillaStanceBarCheckbox then
+		local stanceLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
+
+		page.useVanillaStanceBarCheckbox:SetChecked(stanceLocked or IsStanceBarNativeMode())
+	end
+
 	-- Show Key Ring (Bag Bar page only) - independent of config.getEnabled
 	-- above (that's the Bag Bar's OWN enable flag), reads
 	-- BTVanillaDB.keyRingEnabled directly since it has no
@@ -4176,13 +4390,19 @@ end
 -- CreateBarListRow above (via the simpleBarPageConfigs upvalue declared
 -- near SIMPLE_BAR_NAMES) and GetOrCreateBarPage/RefreshBarSettingsPage's
 -- dispatch checks.
--- Stance Bar gets an enable checkbox matching Bag Bar/Micro Menu
--- (BTV:SetStanceBarEnabled mirrors SetBagBarEnabled's exact structure -
--- DefaultBars.lua), plus the same Spacing/Scale/Orientation controls,
--- since it's built from the same BuildChainAnchoredContainer/
+-- Stance Bar native mode: keyed by the numeric BTV.STANCE_BAR_ID (not a
+-- string), same treatment as the Pet Bar's own numeric-keyed entry below -
+-- only reached via GetOrCreateBarPage/RefreshBarSettingsPage's explicit
+-- IsStanceBarNativeMode() dispatch. Gets an enable checkbox matching Bag
+-- Bar/Micro Menu (BTV:SetStanceBarEnabled mirrors SetBagBarEnabled's exact
+-- structure - DefaultBars.lua), plus the same Spacing/Scale/Orientation
+-- controls, since it's built from the same BuildChainAnchoredContainer/
 -- ApplyChainAnchoredShape machinery (DefaultBars.lua) rather than wrapping
--- ShapeshiftBarFrame's own native layout directly.
-simpleBarPageConfigs["stance"] = {
+-- ShapeshiftBarFrame's own native layout directly. This config drives the
+-- pre-existing native-mode BTVanillaDB.stanceBar* fields ONLY - entirely
+-- separate from BTVanillaDB.defaultBars[STANCE_BAR_ID], the styled mode's
+-- own cfg (see Core.lua's BTV.STANCE_BAR_ID header comment).
+simpleBarPageConfigs[BTV.STANCE_BAR_ID] = {
 	title = "Stance Bar",
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.stanceBarPosition end,
@@ -4378,7 +4598,12 @@ function BTV:RefreshBarSettingsPage(barId)
 		return
 	end
 
-	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID then
+	if barId == BTV.STANCE_BAR_ID and IsStanceBarNativeMode() then
+		self:RefreshSimpleBarPage(barId)
+		return
+	end
+
+	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID and barId ~= BTV.STANCE_BAR_ID then
 		self:RefreshSimpleBarPage(barId)
 		return
 	end
@@ -4507,7 +4732,15 @@ function BTV:RefreshBarSettingsPage(barId)
 
 	-------------------------------------------------------------------------
 	-- Grid preset selection
+	--
+	-- Stance Bar only: its preset list is live (GetStanceBarGridOptions),
+	-- so the swatch row itself is torn down and rebuilt here every time the
+	-- page is shown - see RebuildGridSwatches' own comment.
 	-------------------------------------------------------------------------
+
+	if barId == BTV.STANCE_BAR_ID and page.gridSwatchY then
+		RebuildGridSwatches(page, barId, page.gridSwatchY)
+	end
 
 	RefreshGridSwatchSelection(
 		page,
@@ -4557,6 +4790,17 @@ function BTV:RefreshBarSettingsPage(barId)
 		local petLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
 
 		page.condenseEmptyPetSlotsCheckbox:SetChecked((not petLocked) and cfg.condenseEmptyPetSlots == true)
+	end
+
+	-------------------------------------------------------------------------
+	-- Use Vanilla Stance Bar (Stance Bar page only) - same lock/collapse
+	-- idiom as Use Vanilla Pet Bar above.
+	-------------------------------------------------------------------------
+
+	if page.useVanillaStanceBarCheckbox then
+		local stanceLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
+
+		page.useVanillaStanceBarCheckbox:SetChecked(stanceLocked or cfg.useNativeStanceBar == true)
 	end
 
 	if page.animateAutoCastGlowCheckbox then
@@ -5069,6 +5313,12 @@ function BTV:FitSettingsWindowToBarPage(barId)
 			n = AppendCandidate(candidates, n, swatch.caption)
 		end
 	end
+
+	-- Stance Bar's "no stances currently available" message (0 live forms)
+	-- takes the grid swatches' place - same candidate treatment.
+	n = AppendCandidate(candidates, n, page.noStancesText)
+
+	n = AppendCandidate(candidates, n, page.useVanillaStanceBarCheckbox)
 
 	-- Measured/fitted SEPARATELY from the page's own candidates above (own
 	-- listCandidates table, not appended into `candidates`) - the bar-list
@@ -5653,6 +5903,19 @@ function BTV:GetOrCreateGeneralPanel()
 					if petCfg then
 						petCfg.useNativePetBar = true
 						petCfg.condenseEmptyPetSlots = false
+					end
+				end
+
+				-- Same treatment for the Stance Bar's own styled-mode-only
+				-- toggle - BTV:IsStanceBarNativeModeEffective() already
+				-- forces this at runtime while useDefaultLayout is on, this
+				-- just persists it into the stored cfg too so it doesn't
+				-- silently diverge from what's actually applied.
+				do
+					local stanceCfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+
+					if stanceCfg then
+						stanceCfg.useNativeStanceBar = true
 					end
 				end
 
@@ -8053,7 +8316,22 @@ local function CreateBarListRow(barId, isDefault, cfg)
 	local checkedState = false
 	local onToggle = nil
 
-	if isDefault and type(barId) == "number" and barId ~= 1 then
+	-- Stance Bar: BTVanillaDB.stanceBarEnabled (native) and
+	-- BTVanillaDB.defaultBars[STANCE_BAR_ID].enabled (styled) are two
+	-- deliberately separate flags (see Core.lua's BTV.STANCE_BAR_ID header
+	-- comment) - checked BEFORE the generic numeric-default-bar branch
+	-- below so the list row's one checkbox always reflects/drives whichever
+	-- flag is actually active, mirroring the full/simple settings page
+	-- dispatch (IsStanceBarNativeMode()).
+	if barId == BTV.STANCE_BAR_ID and IsStanceBarNativeMode() then
+		local stanceConfig = simpleBarPageConfigs[BTV.STANCE_BAR_ID]
+
+		wantsCheckbox = true
+		checkedState = stanceConfig.getEnabled and stanceConfig.getEnabled() ~= false
+		onToggle = function(checked)
+			stanceConfig.setEnabled(checked)
+		end
+	elseif isDefault and type(barId) == "number" and barId ~= 1 then
 		wantsCheckbox = true
 		checkedState = cfg and cfg.enabled == true
 		onToggle = function(checked)
@@ -8227,17 +8505,19 @@ function BTV:RefreshBarList()
 	end
 
 	-------------------------------------------------------------------------
-	-- Stance Bar / Bag Bar / Micro Menu - distinct string keys, not
-	-- numbered default/custom bars. Grouped here with the default bars
-	-- above the divider since they're equally native-backed, not
-	-- user-created. Always shown in the list, never hidden entirely -
-	-- drag/position-slider interactivity is gated separately by
-	-- useDefaultLayout (ApplyDefaultLayoutGating, reused by
-	-- RefreshSimpleBarPage below), exactly mirroring how default bars 1-5
-	-- stay visible and just grey out rather than disappearing.
+	-- Bag Bar / Micro Menu - distinct string keys, not numbered
+	-- default/custom bars. Grouped here with the default bars above the
+	-- divider since they're equally native-backed, not user-created.
+	-- Always shown in the list, never hidden entirely - drag/position-
+	-- slider interactivity is gated separately by useDefaultLayout
+	-- (ApplyDefaultLayoutGating, reused by RefreshSimpleBarPage below),
+	-- exactly mirroring how default bars 1-5 stay visible and just grey
+	-- out rather than disappearing. The Stance Bar (like the Pet Bar) is
+	-- covered by the BTV.DEFAULT_BAR_IDS loop above instead, since it's
+	-- keyed by its own numeric id now.
 	-------------------------------------------------------------------------
 
-	local specialKeys = { "stance", "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
+	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do
@@ -8247,9 +8527,7 @@ function BTV:RefreshBarList()
 		-- container was successfully built (BTV:CreateBagBarAndMicroMenu,
 		-- DefaultBars.lua) - degrades gracefully (row simply absent) if
 		-- discovery failed this session, the same tolerance default bars
-		-- 2-5 already have for a failed fixedActionSlots discovery. The
-		-- Stance Bar has no equivalent "did this fail" case - ShapeshiftBarFrame
-		-- is a fixed, always-present real Blizzard global. The Latency Bar
+		-- 2-5 already have for a failed fixedActionSlots discovery. The Latency Bar
 		-- is defensively checked too, even though MainMenuBarPerformanceBarFrame
 		-- is confirmed to exist on this client, in case it's ever missing on
 		-- some other client build. The Experience Bar gets the same

@@ -173,6 +173,12 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	-- every action-slot-system call below branches on this flag instead.
 	self.isPetSlot = parent.config and parent.config.isPetBar and true or false
 
+	-- Stance Bar (styled mode) buttons: self.actionSlot holds a shapeshift
+	-- form index (1-10, GetShapeshiftFormInfo/CastShapeshiftForm/
+	-- GetShapeshiftFormCooldown), not a real vanilla action slot - every
+	-- action-slot-system call below branches on this flag instead.
+	self.isStanceSlot = parent.config and parent.config.isStanceBar and true or false
+
 	-- Sets frame strata explicitly rather than relying on inheriting it
 	-- from the parent bar frame, which is unconfirmed on this client.
 	self:SetFrameStrata("HIGH")
@@ -209,6 +215,13 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	if self.isPetSlot then
 		BTV.petBindTargets = BTV.petBindTargets or {}
 		BTV.petBindTargets[actionSlot] = self
+	end
+
+	-- Same, for HoverBind.lua's bindings.xml-driven TRUSTYBARSSTANCEBIND<n>
+	-- dispatch, keyed by shapeshift form index (1-10) directly.
+	if self.isStanceSlot then
+		BTV.stanceBindTargets = BTV.stanceBindTargets or {}
+		BTV.stanceBindTargets[actionSlot] = self
 	end
 
 	-- Equipped-item ring, quality-colored. CENTER-only anchor has no
@@ -447,6 +460,18 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		self:RegisterEvent("PET_BAR_UPDATE")
 		self:RegisterEvent("PET_BAR_UPDATE_COOLDOWN")
 		self:RegisterEvent("UNIT_PET")
+	end
+
+	-- Stance Bar content: UPDATE_SHAPESHIFT_FORM/_FORMS never fire on this
+	-- client when toggling a form - PLAYER_AURAS_CHANGED drives the live
+	-- refresh instead. The UPDATE_SHAPESHIFT_* events stay registered as
+	-- harmless no-ops in case some other trigger does fire them.
+	if self.isStanceSlot then
+		self:RegisterEvent("UPDATE_SHAPESHIFT_FORMS")
+		self:RegisterEvent("UPDATE_SHAPESHIFT_FORM")
+		self:RegisterEvent("UPDATE_SHAPESHIFT_COOLDOWN")
+		self:RegisterEvent("UPDATE_SHAPESHIFT_USABLE")
+		self:RegisterEvent("PLAYER_AURAS_CHANGED")
 	end
 
 	self:SetScript("OnEvent", BTVButtonMixin.OnEvent)
@@ -721,6 +746,14 @@ function BTVButtonMixin:IsSlotFilled()
 		return GetPetActionInfo and GetPetActionInfo(self.actionSlot) ~= nil
 	end
 
+	-- Stance Bar has no unassigned-slot concept (see Button.lua's
+	-- isStanceSlot header comment) - every visible pool button (slotVisible,
+	-- gated by cfg.buttonCount == the live form count) always corresponds
+	-- to a real, currently-available form.
+	if self.isStanceSlot then
+		return true
+	end
+
 	return HasAction and HasAction(self.actionSlot)
 end
 
@@ -765,6 +798,25 @@ function BTVButtonMixin:UpdateState()
 		return
 	end
 
+	-- Stance Bar: GetShapeshiftForm() returns nil on this client even while
+	-- a form is active - use GetShapeshiftFormInfo's own isActive instead.
+	if self.isStanceSlot then
+		local isActive
+
+		if GetShapeshiftFormInfo then
+			local _, _, activeVal = GetShapeshiftFormInfo(self.actionSlot)
+			isActive = activeVal
+		end
+
+		if isActive then
+			self.glow:Show()
+		else
+			self.glow:Hide()
+		end
+
+		return
+	end
+
 	-- Same logic real vanilla ActionButton_UpdateState uses, just driving
 	-- our own self.glow texture's visibility directly instead of going
 	-- through SetChecked/a CheckButton's built-in mechanism.
@@ -776,8 +828,8 @@ function BTVButtonMixin:UpdateState()
 end
 
 function BTVButtonMixin:UpdateEquipRing()
-	-- Pet actions have no equip-quality concept.
-	if self.isPetSlot then
+	-- Pet/stance actions have no equip-quality concept.
+	if self.isPetSlot or self.isStanceSlot then
 		self.equipRing:Hide()
 		return
 	end
@@ -809,8 +861,8 @@ function BTVButtonMixin:UpdateCount()
 
 	local text = ""
 
-	-- Pet actions never stack - no count concept.
-	if not self.isPetSlot and GetActionCount and self:IsSlotFilled() then
+	-- Pet/stance actions never stack - no count concept.
+	if not self.isPetSlot and not self.isStanceSlot and GetActionCount and self:IsSlotFilled() then
 		local count = GetActionCount(self.actionSlot)
 
 		if count and count > 1 then
@@ -935,8 +987,8 @@ function BTVButtonMixin:UpdateMacroText()
 		return
 	end
 
-	-- Pet actions have no macro/name-text concept shown on this button.
-	if self.isPetSlot or not (BTVanillaDB and BTVanillaDB.showMacroText) then
+	-- Pet/stance actions have no macro/name-text concept shown on this button.
+	if self.isPetSlot or self.isStanceSlot or not (BTVanillaDB and BTVanillaDB.showMacroText) then
 		self.macroText:Hide()
 		return
 	end
@@ -969,6 +1021,16 @@ function BTVButtonMixin:Refresh()
 			self.icon:SetTexture(nil)
 		end
 
+		self.equipRing:Hide()
+	elseif self.isStanceSlot then
+		-- GetShapeshiftFormInfo(index) = texture, name, isActive, isCastable.
+		local texture
+
+		if GetShapeshiftFormInfo then
+			texture = GetShapeshiftFormInfo(self.actionSlot)
+		end
+
+		self.icon:SetTexture(texture)
 		self.equipRing:Hide()
 	elseif self:IsSlotFilled() then
 		local texture = GetActionTexture(self.actionSlot)
@@ -1005,6 +1067,18 @@ function BTVButtonMixin:UpdateCooldown()
 		return
 	end
 
+	-- Stance Bar: GetShapeshiftFormCooldown returns a plain (start,
+	-- duration, enable) triple.
+	if self.isStanceSlot then
+		if not GetShapeshiftFormCooldown then
+			return
+		end
+
+		local start, duration, enable = GetShapeshiftFormCooldown(self.actionSlot)
+		CooldownFrame_SetTimer(self.cooldown, start or 0, duration or 0, enable or 0)
+		return
+	end
+
 	if not GetActionCooldown then
 		return
 	end
@@ -1024,6 +1098,15 @@ function BTVButtonMixin:UpdateRange()
 
 	-- Pet actions have no range/usability concept - icon stays plain white.
 	if self.isPetSlot then
+		self.icon:SetVertexColor(1, 1, 1)
+		self:ResetHotkeyRangeColor()
+		return
+	end
+
+	-- Stance actions: no range concept. Usability tinting (isCastable) is
+	-- deferred - no confirmed "not castable" case observed yet - icon
+	-- stays plain white for now.
+	if self.isStanceSlot then
 		self.icon:SetVertexColor(1, 1, 1)
 		self:ResetHotkeyRangeColor()
 		return
@@ -1090,9 +1173,9 @@ function BTVButtonMixin:ResetHotkeyRangeColor()
 end
 
 function BTVButtonMixin:PlaceCursor()
-	-- Pet Bar slots are fixed by the game (not drag-reassignable) - dropping
-	-- a spell/item/macro cursor onto one is a no-op.
-	if self.isPetSlot then
+	-- Pet/Stance Bar slots are fixed by the game (not drag-reassignable) -
+	-- dropping a spell/item/macro cursor onto one is a no-op.
+	if self.isPetSlot or self.isStanceSlot then
 		return
 	end
 
@@ -1133,6 +1216,19 @@ function BTVButtonMixin.OnEvent()
 		if arg1 == "player" then
 			this:Refresh()
 		end
+	elseif event == "UPDATE_SHAPESHIFT_FORMS" then
+		this:Refresh()
+	elseif event == "UPDATE_SHAPESHIFT_FORM" then
+		-- Full Refresh, not just UpdateState - some forms (e.g. Hunter
+		-- Aspects) swap their own icon art on activation, not just the
+		-- glow overlay.
+		this:Refresh()
+	elseif event == "UPDATE_SHAPESHIFT_COOLDOWN" then
+		this:UpdateCooldown()
+	elseif event == "UPDATE_SHAPESHIFT_USABLE" then
+		this:UpdateRange()
+	elseif event == "PLAYER_AURAS_CHANGED" then
+		this:Refresh()
 	end
 end
 
@@ -1161,6 +1257,12 @@ function BTVButtonMixin.OnClick()
 			end
 		elseif CastPetAction then
 			CastPetAction(this.actionSlot)
+		end
+
+		this:UpdateState()
+	elseif this.isStanceSlot then
+		if CastShapeshiftForm then
+			CastShapeshiftForm(this.actionSlot)
 		end
 
 		this:UpdateState()
@@ -1198,8 +1300,8 @@ function BTVButtonMixin.OnReceiveDrag()
 end
 
 function BTVButtonMixin.OnDragStart()
-	-- Pet Bar slots are fixed by the game, not drag-reassignable.
-	if this.isPetSlot then
+	-- Pet/Stance Bar slots are fixed by the game, not drag-reassignable.
+	if this.isPetSlot or this.isStanceSlot then
 		return
 	end
 
@@ -1266,6 +1368,21 @@ function BTVButtonMixin.OnEnter()
 			GameTooltip:SetPetAction(this.actionSlot)
 		else
 			GameTooltip:SetText("BTVanilla")
+		end
+	elseif this.isStanceSlot then
+		-- GameTooltip:SetShapeshift exists on this client; a hand-built
+		-- fallback covers the case where it doesn't.
+		if GameTooltip.SetShapeshift then
+			GameTooltip:SetShapeshift(this.actionSlot)
+		else
+			local name
+
+			if GetShapeshiftFormInfo then
+				local _, nameVal = GetShapeshiftFormInfo(this.actionSlot)
+				name = nameVal
+			end
+
+			GameTooltip:SetText(name or "BTVanilla", 1, 1, 1)
 		end
 	elseif this:IsSlotFilled() and GameTooltip.SetAction then
 		GameTooltip:SetAction(this.actionSlot)

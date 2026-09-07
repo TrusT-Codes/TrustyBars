@@ -173,4 +173,34 @@
   <Binding name='TRUSTYBARSPETBIND10'>
     TrustyBars_PetHoverBindFire(10)
   </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND1'>
+    TrustyBars_StanceHoverBindFire(1)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND2'>
+    TrustyBars_StanceHoverBindFire(2)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND3'>
+    TrustyBars_StanceHoverBindFire(3)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND4'>
+    TrustyBars_StanceHoverBindFire(4)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND5'>
+    TrustyBars_StanceHoverBindFire(5)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND6'>
+    TrustyBars_StanceHoverBindFire(6)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND7'>
+    TrustyBars_StanceHoverBindFire(7)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND8'>
+    TrustyBars_StanceHoverBindFire(8)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND9'>
+    TrustyBars_StanceHoverBindFire(9)
+  </Binding>
+  <Binding name='TRUSTYBARSSTANCEBIND10'>
+    TrustyBars_StanceHoverBindFire(10)
+  </Binding>
 </Bindings>
