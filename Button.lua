@@ -1,7 +1,10 @@
 -- Button.lua
 -- Single action-slot-backed button. Plain, non-secure frame backed by a
 -- real vanilla action slot, driven through native
--- UseAction/PlaceAction/PickupAction/HasAction.
+-- UseAction/PlaceAction/PickupAction/HasAction. Pet Bar buttons
+-- (self.isPetSlot) are the one exception - backed by a pet slot (1-10)
+-- instead, driven through CastPetAction/GetPetActionInfo/
+-- GetPetActionCooldown/TogglePetAutocast.
 --
 -- Engine-invoked script handlers (OnClick, OnEvent, OnEnter, OnLeave,
 -- OnDragStart, OnReceiveDrag) receive the frame via the global `this`, not
@@ -165,6 +168,11 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self.parentBar = parent
 	self.slotIndex = slotIndex
 
+	-- Pet Bar buttons: self.actionSlot holds a pet slot (1-10, GetPetActionInfo/
+	-- CastPetAction/GetPetActionCooldown), not a real vanilla action slot -
+	-- every action-slot-system call below branches on this flag instead.
+	self.isPetSlot = parent.config and parent.config.isPetBar and true or false
+
 	-- Sets frame strata explicitly rather than relying on inheriting it
 	-- from the parent bar frame, which is unconfirmed on this client.
 	self:SetFrameStrata("HIGH")
@@ -250,6 +258,52 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self.glow:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
 	self.glow:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
 	self.glow:Hide()
+
+	-- Pet Bar autocast-enabled indicator, gold-tinted so it reads
+	-- distinctly from the white "current action" glow above.
+	self.autoCastGlow = self:CreateTexture(nil, "OVERLAY")
+	self.autoCastGlow:SetTexture("Interface\\Buttons\\CheckButtonHilight")
+	self.autoCastGlow:SetBlendMode("ADD")
+	self.autoCastGlow:SetVertexColor(1, 0.82, 0)
+	self.autoCastGlow:SetPoint("TOPLEFT", self, "TOPLEFT", 0, 0)
+	self.autoCastGlow:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", 0, 0)
+	self.autoCastGlow:Hide()
+
+	-- Animated autocast glow, Pet Bar only: reparents the real native
+	-- PetActionButton<actionSlot>AutoCast Model onto this button instead of
+	-- creating a new one - a freshly created Model with SetModel+SetSequence
+	-- renders as a flat white plane instead of the glow.
+	if self.isPetSlot then
+		local nativeModel = getglobal("PetActionButton" .. tostring(actionSlot) .. "AutoCast")
+
+		if nativeModel then
+			-- Native size (~27px), not BTV.BUTTON_SIZE - used to scale the
+			-- glow proportionally in UpdateAutoCastGlowScale.
+			self.autoCastGlowModelNativeSize = nativeModel:GetWidth() or 27
+
+			-- Matches self.border's real (0, -1) vanilla-style offset, or
+			-- the backdrop border's own inset in modern style, instead of
+			-- self.icon's flush (0,0) framing.
+			local modelInset = self.hasNativeBorder and 0 or 1
+			local modelYShift = self.hasNativeBorder and -1 or 0
+
+			nativeModel:SetParent(self)
+			nativeModel:ClearAllPoints()
+			nativeModel:SetPoint("TOPLEFT", self, "TOPLEFT", modelInset, -modelInset + modelYShift)
+			nativeModel:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -modelInset, modelInset + modelYShift)
+			nativeModel:SetFrameStrata("HIGH")
+			nativeModel:SetFrameLevel(self:GetFrameLevel())
+
+			-- Never call :SetModel() on this frame again - it resets the
+			-- reparented model to a blank white plane. Use SetModelScale
+			-- (UpdateAutoCastGlowScale) to resize it instead.
+			nativeModel:Hide()
+
+			self.autoCastGlowModel = nativeModel
+
+			self:UpdateAutoCastGlowScale()
+		end
+	end
 
 	-- Vanilla 1.12's cooldown spiral is a Model frame using
 	-- CooldownFrameTemplate, not a "Cooldown" widget type.
@@ -377,6 +431,16 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 	self:RegisterEvent("CRAFT_CLOSE")
 	self:RegisterEvent("TRADE_SKILL_SHOW")
 	self:RegisterEvent("TRADE_SKILL_CLOSE")
+
+	-- Pet Bar content (GetPetActionInfo) has no equivalent to
+	-- ACTIONBAR_SLOT_CHANGED - PET_BAR_UPDATE/PET_BAR_UPDATE_COOLDOWN/
+	-- UNIT_PET drive its refresh instead.
+	if self.isPetSlot then
+		self:RegisterEvent("PET_BAR_UPDATE")
+		self:RegisterEvent("PET_BAR_UPDATE_COOLDOWN")
+		self:RegisterEvent("UNIT_PET")
+	end
+
 	self:SetScript("OnEvent", BTVButtonMixin.OnEvent)
 
 	self:Refresh()
@@ -412,6 +476,8 @@ function BTVButtonMixin:ApplySize(size)
 		self.border:SetHeight(borderSize)
 	end
 
+	self:UpdateAutoCastGlowScale()
+
 	-- Re-checks hotkey/count/macro truncation width against the new size.
 	if self.hotkey then
 		self:UpdateHotkeyText()
@@ -422,6 +488,19 @@ function BTVButtonMixin:ApplySize(size)
 	if self.macroText then
 		self:UpdateMacroText()
 	end
+end
+
+-- Rescales the reparented autocast glow Model to the button's current size
+-- via SetModelScale, which doesn't reload/reset the model like SetModel does.
+function BTVButtonMixin:UpdateAutoCastGlowScale()
+	if not self.autoCastGlowModel or not self.autoCastGlowModelNativeSize
+		or self.autoCastGlowModelNativeSize == 0
+		or not self.autoCastGlowModel.SetModelScale
+	then
+		return
+	end
+
+	self.autoCastGlowModel:SetModelScale((self.buttonSize or BTV.BUTTON_SIZE) / self.autoCastGlowModelNativeSize)
 end
 
 -- Re-anchors hotkey/count/macro text for the current border style
@@ -493,6 +572,17 @@ function BTVButtonMixin:ApplyBorderStyle()
 	self:SetBackdropColor(0, 0, 0, 0)
 	self:SetBackdropBorderColor(0, 0, 0, 0)
 
+	-- Matches the autocast glow Model's own Init-time anchor math (see
+	-- BTVButtonMixin:Init) for the border style now in effect.
+	if self.autoCastGlowModel then
+		local modelInset = self.hasNativeBorder and 0 or 1
+		local modelYShift = self.hasNativeBorder and -1 or 0
+
+		self.autoCastGlowModel:ClearAllPoints()
+		self.autoCastGlowModel:SetPoint("TOPLEFT", self, "TOPLEFT", modelInset, -modelInset + modelYShift)
+		self.autoCastGlowModel:SetPoint("BOTTOMRIGHT", self, "BOTTOMRIGHT", -modelInset, modelInset + modelYShift)
+	end
+
 	self:UpdateBackdropVisibility()
 end
 
@@ -521,12 +611,17 @@ function BTVButtonMixin:UpdateGridVisibility()
 	local isMainBar = self.parentBar and self.parentBar.config and self.parentBar.config.dynamicMainBar
 		and BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false
 
+	-- Real vanilla's own Pet Bar always shows all 10 slots, blank where
+	-- unassigned - condensing (hiding empty slots) is opt-in per
+	-- cfg.condenseEmptyPetSlots (BTV:ShouldCondensePetBarSlots).
+	local petBarShowEmpty = self.isPetSlot and not BTV:ShouldCondensePetBarSlots()
+
 	-- BTV.isShowingActionGrid makes an empty slot temporarily reappear
 	-- while something is picked up to place, matching native behavior.
 	-- BTV:IsEditMode() is ORed in too so every slot is interactable
 	-- (right-click-for-settings) while in edit mode, matching how default
 	-- bars' overlay owns mouse interaction across the whole bar area.
-	if self.slotVisible and (isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid or BTV:IsEditMode()) then
+	if self.slotVisible and (isMainBar or petBarShowEmpty or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid or BTV:IsEditMode()) then
 		self:Show()
 	else
 		self:Hide()
@@ -550,7 +645,9 @@ function BTVButtonMixin:UpdateBackdropVisibility()
 	local isMainBar = self.parentBar and self.parentBar.config and self.parentBar.config.dynamicMainBar
 		and BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false
 
-	if self.slotVisible and (isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid) then
+	local shown = self.slotVisible and (isMainBar or hasContent or IsAlwaysShowMultibars() or BTV.isShowingActionGrid)
+
+	if shown then
 		self:SetBackdropColor(0, 0, 0, 0.75)
 
 		-- Vanilla-style buttons have their own border texture (self.border)
@@ -563,6 +660,19 @@ function BTVButtonMixin:UpdateBackdropVisibility()
 	else
 		self:SetBackdropColor(0, 0, 0, 0)
 		self:SetBackdropBorderColor(0, 0, 0, 0)
+	end
+
+	-- self.border (vanilla-style only) is otherwise permanently Shown once
+	-- created, unlike the backdrop above - only matters for a slot the
+	-- button's own frame stays Shown for despite being empty (the Pet Bar's
+	-- petBarShowEmpty case in UpdateGridVisibility), since every other bar
+	-- already Hides the whole frame (and so this border with it) instead.
+	if self.border then
+		if shown then
+			self.border:Show()
+		else
+			self.border:Hide()
+		end
 	end
 end
 
@@ -594,12 +704,57 @@ end
 
 -- Named IsSlotFilled rather than HasAction to avoid any reader confusion
 -- with the global vanilla API function of the (near-)same name that this
--- method wraps.
+-- method wraps. Pet Bar buttons check GetPetActionInfo's name return
+-- instead - self.actionSlot holds a pet slot (1-10), not a real action slot.
 function BTVButtonMixin:IsSlotFilled()
+	if self.isPetSlot then
+		return GetPetActionInfo and GetPetActionInfo(self.actionSlot) ~= nil
+	end
+
 	return HasAction and HasAction(self.actionSlot)
 end
 
 function BTVButtonMixin:UpdateState()
+	-- Pet Bar: GetPetActionInfo's isActive is IsCurrentAction's equivalent.
+	if self.isPetSlot then
+		-- Call directly, not "X and X(...)" - "and"/"or" collapse a
+		-- multi-return call to one value.
+		local isActive, autoCastEnabled
+
+		if GetPetActionInfo then
+			local _, _, _, _, activeVal, _, autoCastVal = GetPetActionInfo(self.actionSlot)
+			isActive = activeVal
+			autoCastEnabled = autoCastVal
+		end
+
+		if isActive then
+			self.glow:Show()
+		else
+			self.glow:Hide()
+		end
+
+		local petCfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		local animate = petCfg and petCfg.animateAutoCastGlow == true
+
+		-- The Model self-animates once shown - just Show/Hide, no ticker.
+		if autoCastEnabled and animate and self.autoCastGlowModel then
+			self.autoCastGlow:Hide()
+			self.autoCastGlowModel:Show()
+		elseif autoCastEnabled then
+			if self.autoCastGlowModel then
+				self.autoCastGlowModel:Hide()
+			end
+			self.autoCastGlow:Show()
+		else
+			if self.autoCastGlowModel then
+				self.autoCastGlowModel:Hide()
+			end
+			self.autoCastGlow:Hide()
+		end
+
+		return
+	end
+
 	-- Same logic real vanilla ActionButton_UpdateState uses, just driving
 	-- our own self.glow texture's visibility directly instead of going
 	-- through SetChecked/a CheckButton's built-in mechanism.
@@ -611,6 +766,12 @@ function BTVButtonMixin:UpdateState()
 end
 
 function BTVButtonMixin:UpdateEquipRing()
+	-- Pet actions have no equip-quality concept.
+	if self.isPetSlot then
+		self.equipRing:Hide()
+		return
+	end
+
 	if not self.actionSlot or not IsEquippedAction or not IsEquippedAction(self.actionSlot) then
 		self.equipRing:Hide()
 		return
@@ -638,7 +799,8 @@ function BTVButtonMixin:UpdateCount()
 
 	local text = ""
 
-	if GetActionCount and self:IsSlotFilled() then
+	-- Pet actions never stack - no count concept.
+	if not self.isPetSlot and GetActionCount and self:IsSlotFilled() then
 		local count = GetActionCount(self.actionSlot)
 
 		if count and count > 1 then
@@ -716,6 +878,14 @@ function BTVButtonMixin:UpdateHotkeyText()
 		return
 	end
 
+	-- Pet Bar slots aren't wired into HoverBind.lua's custom-bar binding
+	-- table (out of scope - real PetActionButton1-10 keybinds keep working
+	-- natively regardless), so no hotkey text is shown here.
+	if self.isPetSlot then
+		self:SetTruncatedButtonText(self.hotkey, "")
+		return
+	end
+
 	local key
 
 	-- Fixed-slot default-bar buttons show their real native binding name
@@ -771,7 +941,8 @@ function BTVButtonMixin:UpdateMacroText()
 		return
 	end
 
-	if not (BTVanillaDB and BTVanillaDB.showMacroText) then
+	-- Pet actions have no macro/name-text concept shown on this button.
+	if self.isPetSlot or not (BTVanillaDB and BTVanillaDB.showMacroText) then
 		self.macroText:Hide()
 		return
 	end
@@ -782,7 +953,30 @@ function BTVButtonMixin:UpdateMacroText()
 end
 
 function BTVButtonMixin:Refresh()
-	if self:IsSlotFilled() then
+	if self.isPetSlot then
+		-- Call directly, not "X and X(...)" - "and"/"or" collapse a
+		-- multi-return call to one value. subtext (2nd) must stay captured
+		-- or texture (3rd) shifts by one position.
+		local name, texture, isToken
+
+		if GetPetActionInfo then
+			name, _, texture, isToken = GetPetActionInfo(self.actionSlot)
+		end
+
+		if name then
+			-- Special command slots (Attack/Follow/Wait/Stay/stances) return
+			-- global-name token strings instead of a real texture when
+			-- isToken is set; getglobal resolves the real path.
+			if isToken then
+				texture = getglobal(texture) or texture
+			end
+			self.icon:SetTexture(texture)
+		else
+			self.icon:SetTexture(nil)
+		end
+
+		self.equipRing:Hide()
+	elseif self:IsSlotFilled() then
 		local texture = GetActionTexture(self.actionSlot)
 		self.icon:SetTexture(texture)
 	else
@@ -803,9 +997,24 @@ function BTVButtonMixin:Refresh()
 end
 
 function BTVButtonMixin:UpdateCooldown()
-	if not self.actionSlot or not GetActionCooldown or not CooldownFrame_SetTimer then
+	if not self.actionSlot or not CooldownFrame_SetTimer then
 		return
 	end
+
+	if self.isPetSlot then
+		if not GetPetActionCooldown then
+			return
+		end
+
+		local start, duration, enable = GetPetActionCooldown(self.actionSlot)
+		CooldownFrame_SetTimer(self.cooldown, start or 0, duration or 0, enable or 0)
+		return
+	end
+
+	if not GetActionCooldown then
+		return
+	end
+
 	local start, duration, enable = GetActionCooldown(self.actionSlot)
 	CooldownFrame_SetTimer(self.cooldown, start or 0, duration or 0, enable or 0)
 end
@@ -816,6 +1025,13 @@ function BTVButtonMixin:UpdateRange()
 	-- tinting can't fight it. Normal tinting resumes as soon as hoverbind
 	-- mode turns off, since events keep calling UpdateRange throughout.
 	if BTV:IsHoverBindMode() then
+		return
+	end
+
+	-- Pet actions have no range/usability concept - icon stays plain white.
+	if self.isPetSlot then
+		self.icon:SetVertexColor(1, 1, 1)
+		self:ResetHotkeyRangeColor()
 		return
 	end
 
@@ -880,6 +1096,12 @@ function BTVButtonMixin:ResetHotkeyRangeColor()
 end
 
 function BTVButtonMixin:PlaceCursor()
+	-- Pet Bar slots are fixed by the game (not drag-reassignable) - dropping
+	-- a spell/item/macro cursor onto one is a no-op.
+	if self.isPetSlot then
+		return
+	end
+
 	if PlaceAction then
 		PlaceAction(self.actionSlot)
 		self:Refresh()
@@ -909,6 +1131,14 @@ function BTVButtonMixin.OnEvent()
 		end
 	elseif event == "PLAYER_ENTERING_WORLD" then
 		this:Refresh()
+	elseif event == "PET_BAR_UPDATE" then
+		this:Refresh()
+	elseif event == "PET_BAR_UPDATE_COOLDOWN" then
+		this:UpdateCooldown()
+	elseif event == "UNIT_PET" then
+		if arg1 == "player" then
+			this:Refresh()
+		end
 	end
 end
 
@@ -919,6 +1149,27 @@ function BTVButtonMixin.OnClick()
 	-- editing.
 	if BTV:ButtonHasCursor() then
 		this:PlaceCursor()
+	elseif this.isPetSlot then
+		-- Matches real vanilla PetActionButton_OnClick: left click casts,
+		-- right click toggles autocast (only while the action allows it).
+		if arg1 == "RightButton" then
+			-- Call directly, not "X and X(...)" - autoCastAllowed is the
+			-- 6th return value.
+			local autoCastAllowed
+
+			if GetPetActionInfo then
+				local _, _, _, _, _, allowedVal = GetPetActionInfo(this.actionSlot)
+				autoCastAllowed = allowedVal
+			end
+
+			if autoCastAllowed and TogglePetAutocast then
+				TogglePetAutocast(this.actionSlot)
+			end
+		elseif CastPetAction then
+			CastPetAction(this.actionSlot)
+		end
+
+		this:UpdateState()
 	elseif this:IsSlotFilled() and UseAction then
 		UseAction(this.actionSlot, 0, 0)
 		-- Matches real ActionButtonUp: update the checked/glow state
@@ -953,6 +1204,11 @@ function BTVButtonMixin.OnReceiveDrag()
 end
 
 function BTVButtonMixin.OnDragStart()
+	-- Pet Bar slots are fixed by the game, not drag-reassignable.
+	if this.isPetSlot then
+		return
+	end
+
 	-- Lock Action Bars gates whether dragging a filled button picks up its
 	-- action, backed by the real Blizzard global LOCK_ACTIONBAR.
 	if BTV:IsLockActionBars() then
@@ -979,12 +1235,12 @@ function BTVButtonMixin.OnMouseWheel()
 		return
 	end
 
-	-- Every default bar (1-5) respects useDefaultLayout's lock on
-	-- resizing. Custom bars (6+) have no such native-layout concept and
-	-- are never gated here.
+	-- Every default-bar-family bar (1-5, Pet Bar) respects useDefaultLayout's
+	-- lock on resizing. Custom bars (6+) have no such native-layout concept
+	-- and are never gated here.
 	local barId = bar.config.id
 
-	if barId and barId >= 1 and barId <= 5 and
+	if BTV:IsDefaultBarFamilyId(barId) and
 		BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
 		return
 	end
@@ -996,7 +1252,28 @@ end
 
 function BTVButtonMixin.OnEnter()
 	GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
-	if this:IsSlotFilled() and GameTooltip.SetAction then
+	if this.isPetSlot then
+		-- Special command slots are isToken actions, not real pet spells -
+		-- GameTooltip:SetPetAction only builds a correct tooltip for a real
+		-- spell, so isToken slots get their tooltip hand-built instead.
+		local name, subtext, isToken
+
+		if GetPetActionInfo then
+			name, subtext, _, isToken = GetPetActionInfo(this.actionSlot)
+		end
+
+		if isToken then
+			GameTooltip:SetText(getglobal(name) or name, 1, 1, 1)
+
+			if subtext then
+				GameTooltip:AddLine(getglobal(subtext) or subtext, 0.5, 0.5, 0.5)
+			end
+		elseif this:IsSlotFilled() and GameTooltip.SetPetAction then
+			GameTooltip:SetPetAction(this.actionSlot)
+		else
+			GameTooltip:SetText("BTVanilla")
+		end
+	elseif this:IsSlotFilled() and GameTooltip.SetAction then
 		GameTooltip:SetAction(this.actionSlot)
 	else
 		GameTooltip:SetText("BTVanilla")

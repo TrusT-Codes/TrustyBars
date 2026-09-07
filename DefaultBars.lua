@@ -22,6 +22,11 @@ BTV.DEFAULT_BAR_FRAME_PREFIXES = {
 	[3] = "MultiBarBottomRightButton",-- Bottom Right.
 	[4] = "MultiBarRightButton",      -- Right.
 	[5] = "MultiBarLeftButton",       -- Right 2.
+	[BTV.PET_BAR_ID] = "PetActionButton", -- Pet Bar (only 10 real frames -
+	                                      -- GetDefaultBarButtons' own "stop
+	                                      -- at first missing frame" loop
+	                                      -- naturally returns a 10-length
+	                                      -- table).
 }
 
 -- Real vanilla stance bars top out at 10 slots (ShapeshiftButton1-10).
@@ -551,13 +556,38 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 
 	cfg.enabled = enabled
 
+	-- Pet Bar in native mode has no self.bars[id] pool bar (see
+	-- CreateFixedSlotDefaultBars) - the chain-anchored container is its
+	-- visibility target instead.
 	local bar = self.bars and self.bars[id]
+	local isNativePetBar = id == self.PET_BAR_ID and self:IsPetBarNativeModeEffective()
+
+	if isNativePetBar then
+		bar = self.petBarNativeContainer
+	end
 
 	if bar then
-		if enabled then
+		-- Pet Bar additionally requires a real controllable pet action bar
+		-- right now (PetHasActionBar) on top of the user's own enabled
+		-- toggle - re-evaluated every call, including the reactive
+		-- PET_BAR_UPDATE/UNIT_PET refresh below.
+		local shouldShow = enabled
+
+		if enabled and id == self.PET_BAR_ID then
+			shouldShow = PetHasActionBar and PetHasActionBar() and true or false
+		end
+
+		if shouldShow then
 			bar:Show()
 		else
 			bar:Hide()
+
+			-- Container's overlay is parented to UIParent, not the
+			-- container - hiding the container doesn't cascade to it.
+			if isNativePetBar and bar.btvOverlay then
+				bar.btvOverlay:Hide()
+				bar.btvOverlay:EnableMouse(false)
+			end
 		end
 	end
 
@@ -608,6 +638,43 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 
 	self:FixRightActionBar2Checkbox()
 end
+
+-------------------------------------------------------------------------
+-- Pet Bar auto-hide (no controllable pet action bar right now)
+--
+-- Re-evaluates through SetDefaultBarEnabled above (the single Show/Hide
+-- authority for this id) rather than calling bar:Show()/:Hide() directly,
+-- so this never competes with that function's own authority.
+--
+-- Event names are the same candidates flagged in the feature's own design
+-- doc as needing live confirmation on this client (PET_BAR_UPDATE, UNIT_PET,
+-- PLAYER_CONTROL_LOST/GAINED) - RegisterEvent on a name that turns out not
+-- to fire on this client degrades to "Pet Bar only re-checks visibility on
+-- login/target-change", not an error, matching this file's existing
+-- defensive-registration precedent (e.g. CRAFT_SHOW/CRAFT_CLOSE).
+-------------------------------------------------------------------------
+
+local function RefreshPetBarVisibility()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+	if cfg then
+		BTV:SetDefaultBarEnabled(BTV.PET_BAR_ID, cfg.enabled)
+	end
+end
+
+local petBarVisibilityFrame = CreateFrame("Frame")
+petBarVisibilityFrame:RegisterEvent("PET_BAR_UPDATE")
+petBarVisibilityFrame:RegisterEvent("UNIT_PET")
+petBarVisibilityFrame:RegisterEvent("PLAYER_CONTROL_LOST")
+petBarVisibilityFrame:RegisterEvent("PLAYER_CONTROL_GAINED")
+petBarVisibilityFrame:RegisterEvent("PLAYER_ENTERING_WORLD")
+petBarVisibilityFrame:SetScript("OnEvent", function()
+	if event == "UNIT_PET" and arg1 ~= "player" then
+		return
+	end
+
+	RefreshPetBarVisibility()
+end)
 
 -- Reconciles our own cfg.enabled (bars 2-5) from the native
 -- SHOW_MULTI_ACTIONBAR_1-4 globals whenever MultiActionBar_Update runs
@@ -810,12 +877,19 @@ end
 function BTV:CreateFixedSlotDefaultBars()
 	self:EnsureDB()
 
-	local id
+	local i
 
-	for id = 1, 5 do
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		local id = self.DEFAULT_BAR_IDS[i]
 		local cfg = BTVanillaDB.defaultBars[id]
 
-		if cfg and (cfg.fixedActionSlots or cfg.dynamicMainBar) and not self.bars[id] then
+		-- Pet Bar in native mode skips the pool-button replica entirely -
+		-- CreatePetBarNativeContainer builds its own chain-anchored
+		-- container from the real PetActionButton1-10 frames instead, and
+		-- those must stay genuinely shown/clickable, not neutered below.
+		if id == self.PET_BAR_ID and cfg and self:IsPetBarNativeModeEffective() then
+			-- Handled by CreatePetBarNativeContainer.
+		elseif cfg and (cfg.fixedActionSlots or cfg.dynamicMainBar) and not self.bars[id] then
 			local nativeButtons = self:GetDefaultBarButtons(id)
 
 			if nativeButtons then
@@ -864,9 +938,10 @@ end
 function BTV:ApplyAllDefaultBars()
 	self:EnsureDB()
 
-	local id
+	local i
 
-	for id = 1, 5 do
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		local id = self.DEFAULT_BAR_IDS[i]
 		local cfg = BTVanillaDB.defaultBars[id]
 
 		if cfg then
@@ -1104,6 +1179,20 @@ local function DefaultBarDrag_OnUpdate()
 			ApplyDragSnap(BTV.pageIndicatorContainer, pos)
 
 			BTV:ApplyPageIndicatorPosition()
+		end
+	elseif this.dragKind == "petBarNative" then
+		-- Writes straight into the shared BTVanillaDB.defaultBars[PET_BAR_ID]
+		-- cfg (see BTV:StartPetBarNativeDrag) so position stays in sync with
+		-- the custom-styled Pet Bar's own x/y regardless of active mode.
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+		if cfg then
+			cfg.x = this.dragStartX + dx
+			cfg.y = this.dragStartY + dy
+
+			ApplyDragSnap(BTV.petBarNativeContainer, cfg)
+
+			BTV:ApplyPetBarNativePosition()
 		end
 	elseif this.dragKind == "bar" then
 		-- Bars 1-9 (Bar.lua's StartBarDrag/StopBarDrag): unlike the other
@@ -1402,7 +1491,10 @@ end
 -- anchor) - a hidden button is parked at the last-shown button's own
 -- TOPLEFT, so it must never be picked as either endpoint. Returns first,
 -- last (both nil if every button in the chain is currently hidden).
-local function GetChainShownEndpoints(container)
+-- forceAllShown treats every button as shown regardless of its real
+-- IsShown() state - used by the Pet Bar's native container when condense
+-- is off, so all 10 slots stay in the chain at a fixed position.
+local function GetChainShownEndpoints(container, forceAllShown)
 	if not container or not container.chainButtons then
 		return nil, nil
 	end
@@ -1412,7 +1504,7 @@ local function GetChainShownEndpoints(container)
 	local i
 
 	for i = 1, table.getn(buttons) do
-		if buttons[i] and buttons[i]:IsShown() then
+		if buttons[i] and (forceAllShown or buttons[i]:IsShown()) then
 			if not first then
 				first = buttons[i]
 			end
@@ -1461,7 +1553,10 @@ local function ScaleRatio(frame, overlay)
 	return frameScale / overlayScale
 end
 
-local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
+-- forceAllShown (Pet Bar native container, condense off) skips every
+-- IsShown() check below so all 10 slots stay chained at a fixed position
+-- regardless of whether a pet ability is currently assigned to them.
+local function ApplyChainAnchoredShape(container, spacing, orientation, scale, forceAllShown)
 	if not container or not container.chainButtons then
 		return
 	end
@@ -1477,7 +1572,7 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 	local i
 
 	for i = 1, table.getn(buttons) do
-		if buttons[i] and buttons[i]:IsShown() then
+		if buttons[i] and (forceAllShown or buttons[i]:IsShown()) then
 			first = buttons[i]
 			firstIndex = i
 			break
@@ -1532,7 +1627,7 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale)
 		local btn = buttons[i]
 
 		if btn then
-			if btn:IsShown() then
+			if forceAllShown or btn:IsShown() then
 				local w = widths[i] or 0
 				local h = heights[i] or 0
 
@@ -1657,7 +1752,9 @@ end
 -- real frame alone no longer implicitly hides the overlay too - see
 -- SetKeyRingEnabled/SetLatencyBarEnabled below for the explicit
 -- overlay:Hide() this requires.
-local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settingsKey, scaleSetFn, level, displayName)
+-- forceAllShown: same meaning as ApplyChainAnchoredShape's own parameter -
+-- only the Pet Bar's native container (condense off) passes true.
+local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settingsKey, scaleSetFn, level, displayName, forceAllShown)
 	if container.btvOverlay then
 		return container.btvOverlay
 	end
@@ -1677,7 +1774,7 @@ local function EnsureContainerOverlay(container, startDragFn, stopDragFn, settin
 	-- visibility change. Every other container kind (Key Ring/Latency
 	-- Bar/Exp Bar's wrapped native frames, Page Indicator) has no
 	-- chainButtons and keeps the SetAllPoints(container) anchor.
-	local chainFirst, chainLast = GetChainShownEndpoints(container)
+	local chainFirst, chainLast = GetChainShownEndpoints(container, forceAllShown)
 
 	if chainFirst and chainLast then
 		-- Trimmed by each endpoint's own hit-rect inset, same formula as
@@ -2409,6 +2506,215 @@ function BTV:CreateBagBarAndMicroMenu()
 				", y=" .. tostring(nativeTop) .. ")"
 			)
 		end
+	end
+end
+
+-------------------------------------------------------------------------
+-- Pet Bar (native container - opt-in alternative to the custom-styled
+-- pool-button Pet Bar, cfg.useNativePetBar)
+--
+-- Same BuildChainAnchoredContainer/ApplyChainAnchoredShape/
+-- EnsureContainerOverlay machinery as Bag Bar/Micro Menu above, applied to
+-- the real PetActionButton1-10 frames instead of a synthetic name list -
+-- keeps their native icon/cooldown/drag-to-reorder/autocast-glow rendering
+-- entirely intact.
+--
+-- Position/spacing are read/written straight from
+-- BTVanillaDB.defaultBars[PET_BAR_ID] (the SAME cfg the custom-styled mode
+-- uses), so toggling modes never desyncs the bar's own placement - only
+-- cfg.scale is new (custom mode has no equivalent, using buttonSize
+-- instead).
+-------------------------------------------------------------------------
+
+function BTV:CreatePetBarNativeContainer()
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	if not cfg or not self:IsPetBarNativeModeEffective() or self.petBarNativeContainer then
+		return
+	end
+
+	local buttons = self:GetDefaultBarButtons(self.PET_BAR_ID)
+
+	if not buttons then
+		return
+	end
+
+	SortButtonsByNativeLeft(buttons)
+
+	local container = BuildChainAnchoredContainer("BTVanillaPetBarNativeContainer", buttons)
+
+	self.petBarNativeContainer = container
+	self.petBarNativeButtons = buttons
+
+	self:ApplyPetBarNativeShape()
+	self:ApplyPetBarNativePosition()
+	self:SetDefaultBarEnabled(self.PET_BAR_ID, cfg.enabled)
+end
+
+-- Delegates to Bar.lua's own PixelSetPoint convention via cfg.point/
+-- cfg.relativePoint directly (same defaults as Bar.lua's ApplyBarPosition)
+-- rather than Bag Bar's hardcoded TOPLEFT/BOTTOMLEFT - this cfg is shared
+-- with the custom-styled mode, which already interprets it that way.
+function BTV:ApplyPetBarNativePosition()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[self.PET_BAR_ID]
+	local container = self.petBarNativeContainer
+
+	if not cfg or not container then
+		return
+	end
+
+	container:ClearAllPoints()
+	PixelSetPoint(
+		container,
+		cfg.point or "TOPLEFT",
+		UIParent,
+		cfg.relativePoint or "TOPLEFT",
+		cfg.x or 0,
+		cfg.y or 0
+	)
+
+	EnsureContainerOverlay(container, self.StartPetBarNativeDrag, self.StopPetBarNativeDrag, self.PET_BAR_ID, self.SetPetBarNativeScale, nil, "Pet Bar", not self:ShouldCondensePetBarSlots())
+end
+
+-- Settings.lua's Pet Bar page X/Y sliders (native mode) write through this.
+function BTV:SetPetBarNativePosition(x, y)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	x = tonumber(x)
+	y = tonumber(y)
+
+	if not cfg or not x or not y then
+		return
+	end
+
+	cfg.x = x
+	cfg.y = y
+
+	self:ApplyPetBarNativePosition()
+end
+
+-- Re-lays-out the real PetActionButton1-10 frames from cfg.spacing/
+-- cfg.scale - orientation is always horizontal (real native Pet Bar has no
+-- vertical layout option).
+function BTV:ApplyPetBarNativeShape()
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	if not cfg then
+		return
+	end
+
+	ApplyChainAnchoredShape(
+		self.petBarNativeContainer,
+		cfg.spacing or 0,
+		false,
+		cfg.scale or 1,
+		not self:ShouldCondensePetBarSlots()
+	)
+end
+
+-- Mirrors SetDefaultBarSpacing's clamp/write/reapply template, writing the
+-- SAME cfg.spacing field the custom-styled Pet Bar's grid uses.
+function BTV:SetPetBarNativeSpacing(spacing)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	spacing = tonumber(spacing)
+
+	if not cfg or not spacing then
+		return
+	end
+
+	spacing = math.floor(spacing + 0.5)
+
+	if spacing < 0 then
+		spacing = 0
+	end
+
+	if spacing > 20 then
+		spacing = 20
+	end
+
+	cfg.spacing = spacing
+
+	self:ApplyPetBarNativeShape()
+end
+
+-- Mirrors SetBagBarScale's clamp/write/reapply template.
+function BTV:SetPetBarNativeScale(scale)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	scale = tonumber(scale)
+
+	if not cfg or not scale then
+		return
+	end
+
+	scale = math.floor((scale * 10) + 0.5) / 10
+
+	if scale < 0.5 then
+		scale = 0.5
+	end
+
+	if scale > 2.0 then
+		scale = 2.0
+	end
+
+	cfg.scale = scale
+
+	self:ApplyPetBarNativeShape()
+end
+
+-- Restores position/spacing (cfg.nativeAnchor/cfg.nativeSpacing, captured
+-- once by Core.lua's SeedOneDefaultBar) and scale - mirrors
+-- ResetDefaultBarLayout/ResetBagBarLayout's own reset templates.
+function BTV:ResetPetBarNativeLayout()
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	if not cfg or not cfg.nativeAnchor then
+		return
+	end
+
+	cfg.point = cfg.nativeAnchor.point
+	cfg.relativePoint = cfg.nativeAnchor.relativePoint
+	cfg.x = cfg.nativeAnchor.x
+	cfg.y = cfg.nativeAnchor.y
+
+	if cfg.nativeSpacing then
+		cfg.spacing = cfg.nativeSpacing
+	end
+
+	cfg.scale = 1
+
+	self:ApplyPetBarNativePosition()
+	self:ApplyPetBarNativeShape()
+end
+
+function BTV:StartPetBarNativeDrag()
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	if not cfg then
+		return
+	end
+
+	self:StartSharedDrag("petBarNative", nil, cfg.x or 0, cfg.y or 0)
+end
+
+function BTV:StopPetBarNativeDrag()
+	self:StopSharedDrag()
+
+	if self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage(self.PET_BAR_ID)
 	end
 end
 
@@ -5369,6 +5675,14 @@ function BTV:ApplyDefaultLayoutEditVisual()
 	ApplyContainerOverlayVisual(self.stanceBarContainer, BTVanillaDB.stanceBarEnabled, show)
 	ApplyContainerOverlayVisual(self.bagBarContainer, BTVanillaDB.bagBarEnabled, show)
 	ApplyContainerOverlayVisual(self.microMenuContainer, BTVanillaDB.microMenuEnabled, show)
+
+	-- Pet Bar native container (cfg.useNativePetBar) - same treatment,
+	-- gated on the SAME cfg.enabled the custom-styled mode uses.
+	do
+		local petCfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+		ApplyContainerOverlayVisual(self.petBarNativeContainer, petCfg and petCfg.enabled, show)
+	end
 
 	-- Key Ring / Latency Bar - same generic ApplyContainerOverlayVisual
 	-- treatment as Bag Bar/Micro Menu above; EnsureContainerOverlay is
