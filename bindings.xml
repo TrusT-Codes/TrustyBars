@@ -143,4 +143,34 @@
   <Binding name='TRUSTYBARSBIND48'>
     TrustyBars_HoverBindFire(48)
   </Binding>
+  <Binding name='TRUSTYBARSPETBIND1'>
+    TrustyBars_PetHoverBindFire(1)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND2'>
+    TrustyBars_PetHoverBindFire(2)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND3'>
+    TrustyBars_PetHoverBindFire(3)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND4'>
+    TrustyBars_PetHoverBindFire(4)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND5'>
+    TrustyBars_PetHoverBindFire(5)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND6'>
+    TrustyBars_PetHoverBindFire(6)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND7'>
+    TrustyBars_PetHoverBindFire(7)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND8'>
+    TrustyBars_PetHoverBindFire(8)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND9'>
+    TrustyBars_PetHoverBindFire(9)
+  </Binding>
+  <Binding name='TRUSTYBARSPETBIND10'>
+    TrustyBars_PetHoverBindFire(10)
+  </Binding>
 </Bindings>

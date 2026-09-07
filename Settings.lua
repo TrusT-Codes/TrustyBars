@@ -186,7 +186,9 @@ local function CreateUseVanillaPetBarCheckbox(page, y)
 
 		BTV:ShowDialog({
 			title = "Use Vanilla Pet Bar",
-			message = "Switching the Pet Bar's style rebuilds its buttons and requires a UI reload.",
+			message = "Switching the Pet Bar's style rebuilds its buttons and requires a UI reload. " ..
+				"While enabled, this addon's Hoverbind mode cannot bind keys on the Pet Bar - use " ..
+				"the real Blizzard Keybindings menu instead, or disable this option.",
 			mode = "confirm",
 			buttons = {
 				{
@@ -217,6 +219,25 @@ local function CreateUseVanillaPetBarCheckbox(page, y)
 	if label then
 		label:SetText("Use Vanilla Pet Bar")
 	end
+
+	-- Native mode's real PetActionButton1-10 aren't Bar.lua/Button.lua pool
+	-- buttons, so they're outside Hoverbind's dispatch system entirely
+	-- (same as Stance Bar/Bag Bar/Micro Menu already are).
+	checkbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use Vanilla Pet Bar", 1, 1, 1)
+		GameTooltip:AddLine(
+			"While enabled, this addon's Hoverbind mode cannot bind keys on " ..
+			"the Pet Bar. Use the real Blizzard Keybindings menu instead, or " ..
+			"disable this option.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	checkbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
 
 	page.useVanillaPetBarCheckbox = checkbox
 

@@ -203,6 +203,14 @@ function BTVButtonMixin:Init(parent, actionSlot, slotIndex)
 		BTV.customBindTargets[actionSlot - 72] = self
 	end
 
+	-- Registers this button as the live target for HoverBind.lua's
+	-- bindings.xml-driven TRUSTYBARSPETBIND<n> dispatch, keyed by pet slot
+	-- (1-10) directly.
+	if self.isPetSlot then
+		BTV.petBindTargets = BTV.petBindTargets or {}
+		BTV.petBindTargets[actionSlot] = self
+	end
+
 	-- Equipped-item ring, quality-colored. CENTER-only anchor has no
 	-- implied size, so it relies on ApplySize's SetWidth/SetHeight below
 	-- for sizing — must be created before the ApplySize call runs below,
@@ -873,30 +881,14 @@ local function CompactBindingKeyText(key)
 	return table.concat(parts, "-")
 end
 
--- Keybind hotkey text. Custom-bar keybinds are registered via the
--- bindings.xml/TRUSTYBARSBIND<n> mechanism, n = actionSlot - 72.
+-- Keybind hotkey text - see HoverBind.lua's BTV:GetHoverBindingId for how
+-- the binding-action name is resolved.
 function BTVButtonMixin:UpdateHotkeyText()
 	if not self.hotkey then
 		return
 	end
 
-	-- Pet Bar slots aren't wired into HoverBind.lua's custom-bar binding
-	-- table (out of scope - real PetActionButton1-10 keybinds keep working
-	-- natively regardless), so no hotkey text is shown here.
-	if self.isPetSlot then
-		self:SetTruncatedButtonText(self.hotkey, "")
-		return
-	end
-
-	local key
-
-	-- Fixed-slot default-bar buttons show their real native binding name
-	-- (e.g. MULTIACTIONBAR1BUTTON5), precomputed at Init/Rebind time.
-	if self.nativeBindingId then
-		key = GetBindingKey(self.nativeBindingId)
-	elseif self.actionSlot then
-		key = GetBindingKey("TRUSTYBARSBIND" .. tostring(self.actionSlot - 72))
-	end
+	local key = self.actionSlot and GetBindingKey(BTV:GetHoverBindingId(self))
 
 	self:SetTruncatedButtonText(self.hotkey, key and CompactBindingKeyText(key) or "")
 end

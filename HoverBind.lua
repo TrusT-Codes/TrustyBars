@@ -6,10 +6,15 @@
 -- (ACTIONBUTTON1-12, MULTIACTIONBAR#BUTTON1-12). Custom-bar slots (bars
 -- 6+) bind through this addon's own bindings.xml-declared actions
 -- (TRUSTYBARSBIND1-48, one per free action slot 73-120), each invoking
--- TrustyBars_HoverBindFire(N). Do not use SetBindingClick or
--- SetBinding(key, "BONUSACTIONBUTTON1") for custom slots - both record in
--- the binding system but the client's input dispatcher never fires them
--- on this client.
+-- TrustyBars_HoverBindFire(N). Styled Pet Bar slots (bar 10) use their own
+-- TRUSTYBARSPETBIND1-10/TrustyBars_PetHoverBindFire(N), keyed directly by
+-- pet slot 1-10 - the "Use Vanilla Pet Bar" native container's real
+-- PetActionButton1-10 aren't Bar.lua/Button.lua pool buttons at all, so
+-- they're outside this whole system (same as Stance Bar/Bag Bar/Micro
+-- Menu already are) and keybind only through native Blizzard Keybindings.
+-- Do not use SetBindingClick or SetBinding(key, "BONUSACTIONBUTTON1") for
+-- custom slots - both record in the binding system but the client's input
+-- dispatcher never fires them on this client.
 
 local BTV = BTVanilla
 
@@ -18,12 +23,39 @@ local BTV = BTVanilla
 -- wherever a custom-bar button's actionSlot is set.
 BTV.customBindTargets = {}
 
+-- Pet Bar slot -> button lookup, keyed by pet slot 1-10 directly (matching
+-- bindings.xml's TRUSTYBARSPETBIND1-10). Styled Pet Bar only - see the
+-- file header.
+BTV.petBindTargets = {}
+
 -- Must be a bare global function, not a BTV: method - bindings.xml's
 -- TRUSTYBARSBIND1-48 bodies can only invoke a plain global function name.
 function TrustyBars_HoverBindFire(slotIndex)
 	local btn = BTV.customBindTargets and BTV.customBindTargets[slotIndex]
 	if btn then
 		btn:Click()
+	end
+end
+
+-- Same as TrustyBars_HoverBindFire, for bindings.xml's TRUSTYBARSPETBIND1-10.
+function TrustyBars_PetHoverBindFire(petSlot)
+	local btn = BTV.petBindTargets and BTV.petBindTargets[petSlot]
+	if btn then
+		btn:Click()
+	end
+end
+
+-- Single source of truth for a button's real binding-action name: default-
+-- bar buttons use their precomputed native name, styled Pet Bar slots use
+-- TRUSTYBARSPETBIND<petSlot>, everything else (real custom bars 6+) uses
+-- TRUSTYBARSBIND<actionSlot-72>.
+function BTV:GetHoverBindingId(btn)
+	if btn.nativeBindingId then
+		return btn.nativeBindingId
+	elseif btn.isPetSlot then
+		return "TRUSTYBARSPETBIND" .. tostring(btn.actionSlot)
+	else
+		return "TRUSTYBARSBIND" .. tostring(btn.actionSlot - 72)
 	end
 end
 
@@ -49,12 +81,11 @@ BTV.DEFAULT_BAR_BINDING_PREFIXES = {
 --                      Button.lua pool buttons; ref.fixedSlotBar is what
 --                      distinguishes them.
 --   ref.frame          the pool button Frame.
---   ref.bindingId       native binding-action name (default bars, via
---                      btn.nativeBindingId) or TRUSTYBARSBIND<actionSlot
---                      -72> (custom bars).
+--   ref.bindingId       see BTV:GetHoverBindingId.
 --   ref.actionSlot       action slot the button is bound to (73-120 for
 --                      custom bars, indexes BTV.customBindTargets as
---                      actionSlot - 72).
+--                      actionSlot - 72; 1-10 for the styled Pet Bar,
+--                      indexes BTV.petBindTargets directly).
 --   ref.barId          1-5 (default) or 6+ (custom).
 --   ref.slotIndex       1-12 within the bar.
 --   ref.fixedSlotBar     true when btn.nativeBindingId is set (default-bar
@@ -69,16 +100,7 @@ function BTV:ForEachButton(fn)
 			for i = 1, table.getn(bar.buttons) do
 				local btn = bar.buttons[i]
 				if btn and btn.slotVisible then
-					local bindingId
-
-					-- Default-bar buttons use their precomputed native
-					-- binding name; custom-bar buttons derive
-					-- TRUSTYBARSBIND<actionSlot-72>.
-					if btn.nativeBindingId then
-						bindingId = btn.nativeBindingId
-					else
-						bindingId = "TRUSTYBARSBIND" .. tostring(btn.actionSlot - 72)
-					end
+					local bindingId = self:GetHoverBindingId(btn)
 
 					fn({
 						kind = "custom",
@@ -99,17 +121,8 @@ end
 -- Bound check
 -------------------------------------------------------------------------
 
-local function IsCustomSlotBound(actionSlot)
-	return GetBindingKey("TRUSTYBARSBIND" .. (actionSlot - 72)) ~= nil
-end
-
 function BTV:IsButtonBound(ref)
-	-- Default-bar buttons: bindingId is already the native binding name.
-	if ref.fixedSlotBar then
-		return GetBindingKey(ref.bindingId) ~= nil
-	end
-
-	return IsCustomSlotBound(ref.actionSlot)
+	return GetBindingKey(ref.bindingId) ~= nil
 end
 
 -------------------------------------------------------------------------
@@ -193,9 +206,7 @@ function BTV:SetHoverBindHoveredCustomButton(btn)
 		return
 	end
 
-	-- Default-bar buttons: btn.nativeBindingId (set at Init/Rebind time in
-	-- Button.lua) is already the native binding name.
-	local bindingId = btn.nativeBindingId or ("TRUSTYBARSBIND" .. tostring(btn.actionSlot - 72))
+	local bindingId = self:GetHoverBindingId(btn)
 
 	self.hoverBindCaptureFrame.hoveredButton = {
 		kind = "custom",
