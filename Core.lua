@@ -278,6 +278,36 @@ local function CaptureFixedActionSlots(self, id)
 	return slots, usedFallback
 end
 
+-- Pet Bar: a 6th "default bar" family member, wrapping PetActionButton1-10.
+-- Not backed by the 1-120 action-slot system (see Button.lua's isPetSlot
+-- branch) - fixedActionSlots here is a pet-slot identity map (1-10), not
+-- real action slots. Extra Bars occupy ids 6-9, so 10 is free.
+BTV.PET_BAR_ID = 10
+
+-- Every default-bar-family id, in display order. Loops that need to cover
+-- "the whole default-bar family" (bars 1-5 plus the Pet Bar) iterate this
+-- instead of a hardcoded 1-5 range.
+BTV.DEFAULT_BAR_IDS = { 1, 2, 3, 4, 5, BTV.PET_BAR_ID }
+
+-- True for any id in BTV.DEFAULT_BAR_IDS - the shared predicate every
+-- useDefaultLayout-lock/"is this a default bar" check reads instead of a
+-- hardcoded id range.
+function BTV:IsDefaultBarFamilyId(barId)
+	if not barId then
+		return false
+	end
+
+	local i
+
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		if self.DEFAULT_BAR_IDS[i] == barId then
+			return true
+		end
+	end
+
+	return false
+end
+
 -- Grid shape for each default bar. Position is captured live, not stored
 -- here - see CaptureNativeAnchor.
 BTV.DEFAULT_BAR_GRID = {
@@ -286,12 +316,14 @@ BTV.DEFAULT_BAR_GRID = {
 	[3] = { cols = 12, rows = 1, enabled = false },      -- Bottom Right.
 	[4] = { cols = 1,  rows = 12, enabled = false },     -- Right.
 	[5] = { cols = 1,  rows = 12, enabled = false },     -- Right 2.
+	[BTV.PET_BAR_ID] = { cols = 10, rows = 1, enabled = false }, -- Pet Bar.
 }
 
 -- Native FrameXML global backing each default bar's own Interface Options
 -- checkbox. Session-scoped cosmetic use only - these globals do not
 -- persist across a real logout on this client, so never read them as the
--- source of truth for what to apply at login.
+-- source of truth for what to apply at login. Pet Bar has no equivalent
+-- native checkbox/global - table lookup is nil-safe wherever this is read.
 BTV.SHOW_MULTI_ACTIONBAR_GLOBAL = {
 	[2] = "SHOW_MULTI_ACTIONBAR_1",
 	[3] = "SHOW_MULTI_ACTIONBAR_2",
@@ -299,13 +331,14 @@ BTV.SHOW_MULTI_ACTIONBAR_GLOBAL = {
 	[5] = "SHOW_MULTI_ACTIONBAR_4",
 }
 
--- Friendly display names for the 5 fixed default bars.
+-- Friendly display names for the default-bar family.
 BTV.DEFAULT_BAR_NAMES = {
 	[1] = "Main Bar",
 	[2] = "Action Bar 1",
 	[3] = "Action Bar 2",
 	[4] = "Right Action Bar 1",
 	[5] = "Right Action Bar 2",
+	[BTV.PET_BAR_ID] = "Pet Bar",
 }
 
 -- Extra Bars (ids EXTRA_BAR_ID_START..+COUNT-1) are numbered from 1 for
@@ -313,8 +346,12 @@ BTV.DEFAULT_BAR_NAMES = {
 -- etc.) are handled separately via EnsureContainerOverlay's displayName
 -- argument.
 function BTV:GetBarDisplayName(barId)
+	if self.DEFAULT_BAR_NAMES[barId] then
+		return self.DEFAULT_BAR_NAMES[barId]
+	end
+
 	if barId and barId >= 1 and barId <= 5 then
-		return self.DEFAULT_BAR_NAMES[barId] or ("Bar " .. tostring(barId))
+		return "Bar " .. tostring(barId)
 	end
 
 	return "Extra Bar " .. tostring((barId or 0) - 5)
@@ -328,106 +365,139 @@ local FALLBACK_ANCHOR = {
 	[3] = { point = "BOTTOM", relativePoint = "BOTTOM", x = 0, y = 84 },
 	[4] = { point = "RIGHT", relativePoint = "RIGHT", x = -18, y = 0 },
 	[5] = { point = "RIGHT", relativePoint = "RIGHT", x = -58, y = 0 },
+	[BTV.PET_BAR_ID] = { point = "BOTTOM", relativePoint = "BOTTOM", x = -200, y = 130 },
 }
 
--- Builds a fresh BTVanillaDB.defaultBars table by capturing each default
--- bar's real native anchor/spacing/action-slots.
-local function seedDefaultBars(self)
-	local result = {}
-	local id
+-- Builds one default-bar-family id's fresh saved config, capturing its
+-- real native anchor/spacing/action-slots. Shared by seedDefaultBars (all
+-- ids) and EnsureDB's migration path (a single missing id, e.g. an
+-- existing save from before the Pet Bar existed).
+local function SeedOneDefaultBar(self, id)
+	local grid = self.DEFAULT_BAR_GRID[id]
+	local anchor = CaptureNativeAnchor(self, id) or FALLBACK_ANCHOR[id]
 
-	for id = 1, 5 do
-		local grid = self.DEFAULT_BAR_GRID[id]
-		local anchor = CaptureNativeAnchor(self, id) or FALLBACK_ANCHOR[id]
+	local spacing, uniform, gaps = CaptureNativeSpacing(self, id, grid)
 
-		local spacing, uniform, gaps = CaptureNativeSpacing(self, id, grid)
+	spacing = spacing or 0
 
-		spacing = spacing or 0
+	if gaps then
+		local gapStr = ""
+		local gi
 
-		if gaps then
-			local gapStr = ""
-			local gi
+		for gi = 1, table.getn(gaps) do
+			gapStr = gapStr .. string.format("%.1f", gaps[gi])
 
-			for gi = 1, table.getn(gaps) do
-				gapStr = gapStr .. string.format("%.1f", gaps[gi])
-
-				if gi < table.getn(gaps) then
-					gapStr = gapStr .. ", "
-				end
+			if gi < table.getn(gaps) then
+				gapStr = gapStr .. ", "
 			end
-
-			self:Print(
-				"Default bar " .. tostring(id) .. " native spacing capture: " ..
-				(uniform and "uniform" or "NON-UNIFORM") ..
-				", using " .. tostring(spacing) .. "px. Raw gaps: " .. gapStr
-			)
 		end
 
-		-- NOT read from BTV.SHOW_MULTI_ACTIONBAR_GLOBAL - that global does
-		-- not survive a logout on this client.
-		local enabled = grid.enabled
+		self:Print(
+			"Default bar " .. tostring(id) .. " native spacing capture: " ..
+			(uniform and "uniform" or "NON-UNIFORM") ..
+			", using " .. tostring(spacing) .. "px. Raw gaps: " .. gapStr
+		)
+	end
 
-		result[id] = {
-			id = id,
+	-- NOT read from BTV.SHOW_MULTI_ACTIONBAR_GLOBAL - that global does
+	-- not survive a logout on this client.
+	local enabled = grid.enabled
 
-			enabled = enabled,
+	local cfg = {
+		id = id,
+
+		enabled = enabled,
+		point = anchor.point,
+		relativePoint = anchor.relativePoint,
+		x = anchor.x,
+		y = anchor.y,
+		cols = grid.cols,
+		rows = grid.rows,
+		buttonSize = self:GetCurrentButtonSizeBaseline(),
+		spacing = spacing,
+		buttonCount = grid.cols * grid.rows,
+
+		-- Permanent pristine snapshot for "Reset to Blizzard Default".
+		nativeAnchor = {
 			point = anchor.point,
 			relativePoint = anchor.relativePoint,
 			x = anchor.x,
 			y = anchor.y,
-			cols = grid.cols,
-			rows = grid.rows,
-			buttonSize = self:GetCurrentButtonSizeBaseline(),
-			spacing = spacing,
-			buttonCount = grid.cols * grid.rows,
+		},
+		nativeSpacing = spacing,
+	}
 
-			-- Permanent pristine snapshot for "Reset to Blizzard Default".
-			nativeAnchor = {
-				point = anchor.point,
-				relativePoint = anchor.relativePoint,
-				x = anchor.x,
-				y = anchor.y,
-			},
-			nativeSpacing = spacing,
-		}
+	if id == 1 then
+		cfg.dynamicMainBar = true
+	end
 
-		if id == 1 then
-			result[id].dynamicMainBar = true
-		end
+	if id >= 2 and id <= 5 then
+		local fixedActionSlots, usedFallback = CaptureFixedActionSlots(self, id)
 
-		if id >= 2 and id <= 5 then
-			local fixedActionSlots, usedFallback = CaptureFixedActionSlots(self, id)
+		if fixedActionSlots then
+			cfg.fixedActionSlots = fixedActionSlots
 
-			if fixedActionSlots then
-				result[id].fixedActionSlots = fixedActionSlots
+			local slotStr = ""
+			local si
 
-				local slotStr = ""
-				local si
+			for si = 1, table.getn(fixedActionSlots) do
+				slotStr = slotStr .. tostring(fixedActionSlots[si])
 
-				for si = 1, table.getn(fixedActionSlots) do
-					slotStr = slotStr .. tostring(fixedActionSlots[si])
-
-					if si < table.getn(fixedActionSlots) then
-						slotStr = slotStr .. ", "
-					end
+				if si < table.getn(fixedActionSlots) then
+					slotStr = slotStr .. ", "
 				end
-
-				self:Print(
-					"Default bar " .. tostring(id) .. " fixed action slots: " ..
-					slotStr ..
-					(usedFallback and
-						" (FALLBACK offsets used - button.action was missing, please verify live)" or
-						" (confirmed via button.action)")
-				)
-			else
-				self:Print(
-					"WARNING: Default bar " .. tostring(id) ..
-					" could not discover its real action slots this session " ..
-					"- it will keep using the old native-Blizzard-frame layout " ..
-					"until this succeeds on a later login."
-				)
 			end
+
+			self:Print(
+				"Default bar " .. tostring(id) .. " fixed action slots: " ..
+				slotStr ..
+				(usedFallback and
+					" (FALLBACK offsets used - button.action was missing, please verify live)" or
+					" (confirmed via button.action)")
+			)
+		else
+			self:Print(
+				"WARNING: Default bar " .. tostring(id) ..
+				" could not discover its real action slots this session " ..
+				"- it will keep using the old native-Blizzard-frame layout " ..
+				"until this succeeds on a later login."
+			)
 		end
+	end
+
+	-- Pet Bar: pet slots 1-10 are an identity map (pool index N always
+	-- drives pet slot N), not real action slots discovered from a live
+	-- button's own .action field - no CaptureFixedActionSlots call needed.
+	if id == self.PET_BAR_ID then
+		cfg.isPetBar = true
+
+		local petSlots = {}
+		local ps
+
+		for ps = 1, 10 do
+			petSlots[ps] = ps
+		end
+
+		cfg.fixedActionSlots = petSlots
+
+		-- Default off: matches real vanilla's own Pet Bar, which always
+		-- shows all 10 slots blank where unassigned.
+		cfg.condenseEmptyPetSlots = false
+	end
+
+	return cfg
+end
+
+-- Builds a fresh BTVanillaDB.defaultBars table for every default-bar-family
+-- id (BTV.DEFAULT_BAR_IDS).
+local function seedDefaultBars(self)
+	local result = {}
+	local i
+
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		local id = self.DEFAULT_BAR_IDS[i]
+
+		result[id] = SeedOneDefaultBar(self, id)
 	end
 
 	return result
@@ -446,9 +516,10 @@ function BTV:RecaptureDefaultBarNativeAnchors()
 
 	self:Print("Recapture complete. New cfg.x/cfg.y per default bar:")
 
-	local id
+	local i
 
-	for id = 1, 5 do
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		local id = self.DEFAULT_BAR_IDS[i]
 		local cfg = BTVanillaDB.defaultBars[id]
 
 		if cfg then
@@ -1383,6 +1454,43 @@ function BTV:EnsureDB()
 	if not BTVanillaDB.defaultBars then
 		BTVanillaDB.defaultBars = seedDefaultBars(self)
 	end
+
+	-- Migration-safe: an existing save from before the Pet Bar existed has
+	-- BTVanillaDB.defaultBars already populated (ids 1-5) but no entry for
+	-- BTV.PET_BAR_ID - seed just that one id rather than bumping
+	-- SCHEMA_VERSION (which would wipe BTVanillaDB.bars).
+	if not BTVanillaDB.defaultBars[self.PET_BAR_ID] then
+		BTVanillaDB.defaultBars[self.PET_BAR_ID] = SeedOneDefaultBar(self, self.PET_BAR_ID)
+	end
+
+	-- Structural constants for the Pet Bar cfg, re-asserted every call so a
+	-- save from before this field existed self-heals without a reseed.
+	do
+		local petCfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+		petCfg.isPetBar = true
+
+		local petSlots = {}
+		local ps
+
+		for ps = 1, 10 do
+			petSlots[ps] = ps
+		end
+
+		petCfg.fixedActionSlots = petSlots
+
+		-- User-editable, so nil-checked rather than reasserted every call
+		-- (unlike isPetBar/fixedActionSlots above), so an existing choice
+		-- persists.
+		if petCfg.condenseEmptyPetSlots == nil then
+			petCfg.condenseEmptyPetSlots = false
+		end
+
+		if petCfg.animateAutoCastGlow == nil then
+			petCfg.animateAutoCastGlow = false
+		end
+	end
+
 	if not BTVanillaDB.bars then
 		BTVanillaDB.bars = {}
 	end
@@ -1821,6 +1929,32 @@ function BTV:IsVanillaBorderStyle()
 	return not (BTVanillaDB and BTVanillaDB.modernBorderStyle)
 end
 
+-- Single source of truth for whether the Pet Bar is effectively in native
+-- (real PetActionButton1-10) mode - forces native+uncondensed while
+-- default layout is on, regardless of the user's stored preference.
+function BTV:IsPetBarNativeModeEffective()
+	if BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+		return true
+	end
+
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	return cfg and cfg.useNativePetBar == true
+end
+
+-- Single source of truth for whether the Pet Bar should hide empty slots -
+-- real vanilla never does, so this is forced false while default layout is
+-- on regardless of the user's stored preference.
+function BTV:ShouldCondensePetBarSlots()
+	if BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
+		return false
+	end
+
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	return cfg and cfg.condenseEmptyPetSlots == true
+end
+
 -- buttonSize a brand-new bar should seed at, already correct for the
 -- currently active style.
 function BTV:GetCurrentButtonSizeBaseline()
@@ -2077,6 +2211,7 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	end
 
 	BTV:CreateBagBarAndMicroMenu()
+	BTV:CreatePetBarNativeContainer()
 
 	BTV:CreatePageIndicatorContainer()
 

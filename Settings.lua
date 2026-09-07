@@ -36,6 +36,25 @@ local GRID_PRESETS = {
 	{ rows = 12, cols = 1  },
 }
 
+-- Pet Bar only ever has 10 real pool buttons (identity-mapped to pet slots
+-- 1-10, see Core.lua's SeedOneDefaultBar) - its own preset set totals 10
+-- cells instead of GRID_PRESETS' 12, so every preset actually fills the bar.
+local PET_BAR_GRID_PRESETS = {
+	{ rows = 1,  cols = 10 },
+	{ rows = 2,  cols = 5  },
+	{ rows = 5,  cols = 2  },
+	{ rows = 10, cols = 1  },
+}
+
+-- Which preset list a given bar's page builds its Grid Layout swatches from.
+local function GetGridPresetsForBar(barId)
+	if barId == BTV.PET_BAR_ID then
+		return PET_BAR_GRID_PRESETS
+	end
+
+	return GRID_PRESETS
+end
+
 local BUTTON_SIZE_MIN = 16
 local BUTTON_SIZE_MAX = 64
 local BUTTON_SIZE_STEP = 2
@@ -113,6 +132,18 @@ local SIMPLE_BAR_NAMES = {
 -- of definition order elsewhere in the file.
 local simpleBarPageConfigs = {}
 
+-- True while the Pet Bar's "Use Vanilla Pet Bar" checkbox is on -
+-- GetOrCreateBarPage/RefreshBarSettingsPage route the Pet Bar's numeric id
+-- to the simple-page builder (simpleBarPageConfigs[BTV.PET_BAR_ID], set up
+-- alongside stance/bagbar/etc. further below) only while this is true;
+-- otherwise it uses the normal full grid/spacing/button-size default-bar
+-- page every other numbered default bar gets.
+local function IsPetBarNativeMode()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+	return cfg and cfg.useNativePetBar == true
+end
+
 -- Extra Bars use internal ids 6-9 (BTV.EXTRA_BAR_ID_START/EXTRA_BAR_COUNT,
 -- Core.lua; ids 1-5 reserved for default bars) but display numbered from 1.
 local function GetBarDisplayName(barId, isDefault)
@@ -128,6 +159,195 @@ end
 local INDENT_SECTION = 18
 local INDENT_CONTROL = 22
 local INDENT_INPUT   = 85
+
+-- Shared "Use Vanilla Pet Bar" checkbox, added to both the Pet Bar's
+-- normal full grid page (GetOrCreateBarPage) and its simple/native-mode
+-- page (CreateSimpleBarPage) so the toggle is reachable from either mode.
+-- Switching mode only takes effect on the next login (CreateFixedSlot-
+-- DefaultBars/CreatePetBarNativeContainer, DefaultBars.lua, both run once
+-- at PLAYER_LOGIN) - mirrors the Profiles panel's Import/Copy/Delete
+-- confirm-then-ReloadUI pattern (Settings.lua's Profiles panel).
+local function CreateUseVanillaPetBarCheckbox(page, y)
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaPetBarUseVanillaCheckbox",
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	checkbox:SetScript("OnClick", function()
+		local checked = this:GetChecked() and true or false
+		local clickedCheckbox = this
+
+		BTV:ShowDialog({
+			title = "Use Vanilla Pet Bar",
+			message = "Switching the Pet Bar's style rebuilds its buttons and requires a UI reload. " ..
+				"While enabled, this addon's Hoverbind mode cannot bind keys on the Pet Bar - use " ..
+				"the real Blizzard Keybindings menu instead, or disable this option.",
+			mode = "confirm",
+			buttons = {
+				{
+					text = "Reload Now",
+					isDefault = true,
+					onClick = function()
+						local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+						if cfg then
+							cfg.useNativePetBar = checked
+						end
+
+						ReloadUI()
+					end,
+				},
+				{
+					text = "Cancel",
+					onClick = function()
+						clickedCheckbox:SetChecked(not checked)
+					end,
+				},
+			},
+		})
+	end)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText("Use Vanilla Pet Bar")
+	end
+
+	-- Native mode's real PetActionButton1-10 aren't Bar.lua/Button.lua pool
+	-- buttons, so they're outside Hoverbind's dispatch system entirely
+	-- (same as Stance Bar/Bag Bar/Micro Menu already are).
+	checkbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use Vanilla Pet Bar", 1, 1, 1)
+		GameTooltip:AddLine(
+			"While enabled, this addon's Hoverbind mode cannot bind keys on " ..
+			"the Pet Bar. Use the real Blizzard Keybindings menu instead, or " ..
+			"disable this option.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	checkbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
+	page.useVanillaPetBarCheckbox = checkbox
+
+	return checkbox
+end
+
+-- Shared "Condense empty Button Space" checkbox, added next to "Use
+-- Vanilla Pet Bar" above on both Pet Bar pages. Pure visibility toggle
+-- (unlike "Use Vanilla Pet Bar"), so it applies live with no reload -
+-- writes cfg.condenseEmptyPetSlots then re-applies whichever mode's own
+-- shape function is currently effective (the other one no-ops safely,
+-- same as BTV:ResetPetBarNativeLayout's own comment).
+local function CreateCondenseEmptyPetSlotsCheckbox(page, y)
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaPetBarCondenseCheckbox",
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	checkbox:SetScript("OnClick", function()
+		local checked = this:GetChecked() and true or false
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+		if cfg then
+			cfg.condenseEmptyPetSlots = checked
+		end
+
+		if BTV.ApplyDefaultBarShape then
+			BTV:ApplyDefaultBarShape(BTV.PET_BAR_ID)
+		end
+
+		if BTV.ApplyPetBarNativeShape then
+			BTV:ApplyPetBarNativeShape()
+		end
+	end)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText("Condense empty Button Space")
+	end
+
+	page.condenseEmptyPetSlotsCheckbox = checkbox
+
+	return checkbox
+end
+
+-- Re-applies the animated/static glow choice to already-existing Pet Bar
+-- buttons immediately, rather than waiting for the next PET_BAR_UPDATE
+-- event to round-trip.
+local function RefreshPetBarAutoCastGlowState()
+	local bar = BTV.bars and BTV.bars[BTV.PET_BAR_ID]
+
+	if not bar or not bar.buttons then
+		return
+	end
+
+	local i
+
+	for i = 1, table.getn(bar.buttons) do
+		local btn = bar.buttons[i]
+
+		if btn and btn.UpdateState then
+			btn:UpdateState()
+		end
+	end
+end
+
+-- "Animate Auto-Cast Toggle" checkbox, styled/grid Pet Bar page only - the
+-- native page uses real PetActionButton1-10 and never draws this glow at all.
+local function CreateAnimateAutoCastGlowCheckbox(page, y)
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaPetBarAnimateAutoCastCheckbox",
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	checkbox:SetScript("OnClick", function()
+		local checked = this:GetChecked() and true or false
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+		if cfg then
+			cfg.animateAutoCastGlow = checked
+		end
+
+		RefreshPetBarAutoCastGlowState()
+	end)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText("Animate Auto-Cast Toggle")
+	end
+
+	page.animateAutoCastGlowCheckbox = checkbox
+
+	return checkbox
+end
 
 local LIST_ROW_HEIGHT = 24
 local LIST_ROW_GAP    = 4
@@ -187,7 +407,7 @@ local function SettingsFrame_OnDragStop()
 end
 
 local function IsDefaultBarId(barId)
-	return barId ~= nil and barId >= 1 and barId <= 5
+	return BTV:IsDefaultBarFamilyId(barId)
 end
 
 -- Finds an Extra Bar's SavedVariables entry by ID, not array index -
@@ -1124,12 +1344,20 @@ function BTV:GetOrCreateBarPage(barId)
 		CreateSettingsFrame()
 	end
 
+	-- Pet Bar in native mode: same simple-page builder as Bag Bar/Micro
+	-- Menu below, keyed by its own numeric id rather than a string -
+	-- checked separately from the generic simpleBarPageConfigs test below
+	-- so the SAME id can route to either page builder depending on mode.
+	if barId == BTV.PET_BAR_ID and IsPetBarNativeMode() then
+		return self:GetOrCreateSimpleBarPage(barId)
+	end
+
 	-- Stance Bar / Bag Bar / Micro Menu (features 2/3): dispatched out to
 	-- the shared "simple" page builder further down this file (Position +
 	-- optional Enable + Reset only) rather than through the full grid/
 	-- spacing/button-size/buttonCount/delete page builder below - none of
 	-- these three elements is a TrustyBars-owned button grid.
-	if simpleBarPageConfigs[barId] then
+	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID then
 		return self:GetOrCreateSimpleBarPage(barId)
 	end
 
@@ -1212,6 +1440,18 @@ function BTV:GetOrCreateBarPage(barId)
 		positionStartY = checkboxY - 24 - 14
 	end
 
+	-- Pet Bar only: "Use Vanilla Pet Bar" + "Condense empty Button Space" +
+	-- "Animate Auto-Cast Toggle" checkboxes reserve three more rows right
+	-- below Enabled, pushing the Position section down to make room.
+	local isPetBarPage = barId == BTV.PET_BAR_ID
+	local useVanillaPetBarY = positionStartY
+	local condenseEmptyPetSlotsY = useVanillaPetBarY - 24 - 14
+	local animateAutoCastGlowY = condenseEmptyPetSlotsY - 24 - 14
+
+	if isPetBarPage then
+		positionStartY = positionStartY - (24 + 14) * 3
+	end
+
 	local xLabelY = positionStartY
 	local xSliderY = xLabelY + 4
 	local yLabelY = xSliderY - 40
@@ -1268,6 +1508,16 @@ function BTV:GetOrCreateBarPage(barId)
 		end
 
 		page.enableCheckbox = enableCheckbox
+	end
+
+	-------------------------------------------------------------------------
+	-- Use Vanilla Pet Bar (Pet Bar page only)
+	-------------------------------------------------------------------------
+
+	if isPetBarPage then
+		CreateUseVanillaPetBarCheckbox(page, useVanillaPetBarY)
+		CreateCondenseEmptyPetSlotsCheckbox(page, condenseEmptyPetSlotsY)
+		CreateAnimateAutoCastGlowCheckbox(page, animateAutoCastGlowY)
 	end
 
 	-------------------------------------------------------------------------
@@ -1833,11 +2083,13 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.gridSwatches = {}
 
+	local gridPresets = GetGridPresetsForBar(barId)
+
 	local i
 	local xOffset = INDENT_CONTROL
 
-	for i = 1, table.getn(GRID_PRESETS) do
-		local preset = GRID_PRESETS[i]
+	for i = 1, table.getn(gridPresets) do
+		local preset = gridPresets[i]
 
 		local swatch = CreateGridSwatch(page, preset)
 
@@ -2352,6 +2604,8 @@ local PROFILE_LOCK_CONTROL_NAMES = {
 	"expBarShowRestedPercentCheckbox", "expBarShowRestedTotalCheckbox",
 	"expBarFontSizeSlider", "earnedColorSwatch", "restedColorSwatch",
 	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
+	"useVanillaPetBarCheckbox", "condenseEmptyPetSlotsCheckbox",
+	"animateAutoCastGlowCheckbox",
 }
 
 -- alsoCheckLayoutLock: true on the pages the Default-layout lock also
@@ -2381,12 +2635,12 @@ function BTV:ApplyProfileLockGating(page, alsoCheckLayoutLock)
 	-- of every page permanently reserving it.
 	BTV:ApplyPageBannerReserve(page, locked)
 
-	-- Numbered default bars (1-5) keep enable/disable available even
-	-- while everything else locks - every other page (extra bars 6-9,
+	-- Numbered default bars (1-5, Pet Bar) keep enable/disable available
+	-- even while everything else locks - every other page (extra bars 6-9,
 	-- simple/native-backed pages) has NO exemption, its enable checkbox
 	-- locks exactly like every other control.
 	local barId = page.barId
-	local isNumberedDefaultBar = type(barId) == "number" and barId >= 1 and barId <= 5
+	local isNumberedDefaultBar = type(barId) == "number" and BTV:IsDefaultBarFamilyId(barId)
 
 	local i
 
@@ -2491,9 +2745,11 @@ function BTV:RefreshDefaultLayoutGatingOnAllPages()
 		return
 	end
 
-	local id
+	local i
 
-	for id = 1, 5 do
+	for i = 1, table.getn(BTV.DEFAULT_BAR_IDS) do
+		local id = BTV.DEFAULT_BAR_IDS[i]
+
 		if settingsFrame.pages[id] then
 			self:RefreshBarSettingsPage(id)
 		end
@@ -2801,6 +3057,18 @@ local function CreateSimpleBarPage(key)
 		page.enableCheckbox = enableCheckbox
 
 		topY = enableCheckboxY - 24 - 14
+	end
+
+	-- Use Vanilla Pet Bar (Pet Bar page only) - lets the user switch back
+	-- to the custom-styled grid mode from here too.
+	if key == BTV.PET_BAR_ID then
+		CreateUseVanillaPetBarCheckbox(page, topY)
+
+		topY = topY - 24 - 14
+
+		CreateCondenseEmptyPetSlotsCheckbox(page, topY)
+
+		topY = topY - 24 - 14
 	end
 
 	local minX, maxX, minY, maxY = GetScreenCoordinateRange()
@@ -3690,6 +3958,26 @@ function BTV:RefreshSimpleBarPage(key)
 		page.enableCheckbox:SetChecked(config.getEnabled() ~= false)
 	end
 
+	-- Both checkboxes lock (greyed out via ApplyProfileLockGating below)
+	-- and their DISPLAYED checked-state collapses to the vanilla-forced
+	-- value while locked, rather than showing the raw stored preference -
+	-- same collapse idiom as modernBorderStyleCheckbox (Core.lua's
+	-- IsVanillaBorderStyle).
+	if page.useVanillaPetBarCheckbox or page.condenseEmptyPetSlotsCheckbox then
+		local petLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
+		local petCfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+		if page.useVanillaPetBarCheckbox then
+			page.useVanillaPetBarCheckbox:SetChecked(petLocked or IsPetBarNativeMode())
+		end
+
+		if page.condenseEmptyPetSlotsCheckbox then
+			page.condenseEmptyPetSlotsCheckbox:SetChecked(
+				(not petLocked) and petCfg and petCfg.condenseEmptyPetSlots == true
+			)
+		end
+	end
+
 	-- Show Key Ring (Bag Bar page only) - independent of config.getEnabled
 	-- above (that's the Bag Bar's OWN enable flag), reads
 	-- BTVanillaDB.keyRingEnabled directly since it has no
@@ -3951,6 +4239,39 @@ simpleBarPageConfigs["bagbar"] = {
 	setOrientation = function(v) BTV:SetBagBarOrientation(v) end,
 }
 
+-- Pet Bar native mode (cfg.useNativePetBar): reuses the SAME
+-- BTVanillaDB.defaultBars[PET_BAR_ID] cfg the custom-styled grid mode
+-- uses for position/spacing, so x/y/spacing never drift out of sync
+-- between modes - see DefaultBars.lua's Pet Bar (native container)
+-- section. Keyed by the numeric BTV.PET_BAR_ID, not a string - only
+-- reached via GetOrCreateBarPage/RefreshBarSettingsPage's explicit
+-- IsPetBarNativeMode() dispatch, never the generic simpleBarPageConfigs[]
+-- check (which excludes this id).
+simpleBarPageConfigs[BTV.PET_BAR_ID] = {
+	title = "Pet Bar",
+	hasEnable = true,
+	getPosition = function() return BTVanillaDB.defaultBars[BTV.PET_BAR_ID] end,
+	setPosition = function(x, y) BTV:SetPetBarNativePosition(x, y) end,
+	reset = function() BTV:ResetPetBarNativeLayout() end,
+	getEnabled = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		return cfg and cfg.enabled
+	end,
+	setEnabled = function(v) BTV:SetDefaultBarEnabled(BTV.PET_BAR_ID, v) end,
+	hasSpacing = true,
+	getSpacing = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		return cfg and cfg.spacing
+	end,
+	setSpacing = function(v) BTV:SetPetBarNativeSpacing(v) end,
+	hasScale = true,
+	getScale = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		return cfg and cfg.scale
+	end,
+	setScale = function(v) BTV:SetPetBarNativeScale(v) end,
+}
+
 -- Scale only: Blizzard owns MainMenuBarPerformanceBarFrame's own internal
 -- layout entirely (it's a single self-contained frame, not a
 -- TrustyBars-owned chain), so Spacing/Orientation have nothing real to
@@ -4052,7 +4373,12 @@ function BTV:RefreshBarSettingsPage(barId)
 		return
 	end
 
-	if simpleBarPageConfigs[barId] then
+	if barId == BTV.PET_BAR_ID and IsPetBarNativeMode() then
+		self:RefreshSimpleBarPage(barId)
+		return
+	end
+
+	if simpleBarPageConfigs[barId] and barId ~= BTV.PET_BAR_ID then
 		self:RefreshSimpleBarPage(barId)
 		return
 	end
@@ -4210,6 +4536,31 @@ function BTV:RefreshBarSettingsPage(barId)
 		page.enableCheckbox:SetChecked(
 			cfg.enabled == true
 		)
+	end
+
+	-------------------------------------------------------------------------
+	-- Use Vanilla Pet Bar / Condense empty Button Space (Pet Bar page only)
+	--
+	-- Both lock (ApplyProfileLockGating below) and their DISPLAYED
+	-- checked-state collapses to the vanilla-forced value while locked -
+	-- same collapse idiom as modernBorderStyleCheckbox (Core.lua's
+	-- IsVanillaBorderStyle).
+	-------------------------------------------------------------------------
+
+	if page.useVanillaPetBarCheckbox then
+		local petLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
+
+		page.useVanillaPetBarCheckbox:SetChecked(petLocked or cfg.useNativePetBar == true)
+	end
+
+	if page.condenseEmptyPetSlotsCheckbox then
+		local petLocked = BTV:IsDefaultProfileActive() or BTVanillaDB.useDefaultLayout == true
+
+		page.condenseEmptyPetSlotsCheckbox:SetChecked((not petLocked) and cfg.condenseEmptyPetSlots == true)
+	end
+
+	if page.animateAutoCastGlowCheckbox then
+		page.animateAutoCastGlowCheckbox:SetChecked(cfg.animateAutoCastGlow == true)
 	end
 
 	-------------------------------------------------------------------------
@@ -4661,6 +5012,7 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	n = AppendCandidate(candidates, n, page.buttonCountValueText)
 	n = AppendCandidate(candidates, n, page.enableCheckbox)
 	n = AppendCandidate(candidates, n, page.pageIndicatorValueText)
+	n = AppendCandidate(candidates, n, page.useVanillaPetBarCheckbox)
 
 	-- Scale/Orientation controls, present on the simple bar pages
 	-- (Stance Bar/Bag Bar/Micro Menu) alongside Spacing above - included
@@ -5231,14 +5583,14 @@ function BTV:GetOrCreateGeneralPanel()
 				-- ApplyDefaultLayoutEditVisual above only re-apply shape from
 				-- whatever cfg currently holds, they do not reset cfg back to
 				-- its native values - ResetDefaultBarLayout does that for
-				-- bars 1-5, and each single-native-frame element below gets
-				-- its own reset call.
+				-- every default-bar-family id (1-5, Pet Bar), and each
+				-- single-native-frame element below gets its own reset call.
 				-------------------------------------------------------------
 
-				local id
+				local i
 
-				for id = 1, 5 do
-					BTV:ResetDefaultBarLayout(id)
+				for i = 1, table.getn(BTV.DEFAULT_BAR_IDS) do
+					BTV:ResetDefaultBarLayout(BTV.DEFAULT_BAR_IDS[i])
 				end
 
 				if BTV.ResetBagBarPosition then
@@ -5282,6 +5634,26 @@ function BTV:GetOrCreateGeneralPanel()
 				-- See BTV:ResetPageIndicatorLayout's own comment (DefaultBars.lua).
 				if BTV.ResetPageIndicatorLayout then
 					BTV:ResetPageIndicatorLayout()
+				end
+
+				-- Pet Bar native mode only - ResetDefaultBarLayout above (the
+				-- custom-styled grid mode's own reset) has nothing to act on
+				-- while self.bars[PET_BAR_ID] doesn't exist. No-ops safely in
+				-- custom mode (self.petBarNativeContainer is nil then).
+				if BTV.ResetPetBarNativeLayout then
+					BTV:ResetPetBarNativeLayout()
+				end
+
+				-- Persists the enforced-effective values (BTV:IsPetBarNativeModeEffective/
+				-- ShouldCondensePetBarSlots) into the stored cfg too, so they
+				-- don't silently diverge from what's actually applied.
+				do
+					local petCfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+					if petCfg then
+						petCfg.useNativePetBar = true
+						petCfg.condenseEmptyPetSlots = false
+					end
 				end
 
 				-- Re-syncs every already-built default/simple bar page's
@@ -7823,16 +8195,17 @@ function BTV:RefreshBarList()
 	local rowIndex = 0
 
 	-------------------------------------------------------------------------
-	-- Default bars 1-5
+	-- Default bars 1-5, plus the Pet Bar (same family, BTV.DEFAULT_BAR_IDS)
 	-------------------------------------------------------------------------
 
-	local id
+	local dbi
 
-	for id = 1, 5 do
+	for dbi = 1, table.getn(BTV.DEFAULT_BAR_IDS) do
+		local id = BTV.DEFAULT_BAR_IDS[dbi]
 		local cfg = BTVanillaDB.defaultBars[id]
 
 		if cfg then
-			-- Bars 2-5's real Blizzard buttons are permanently hidden
+			-- Bars 2-5/Pet Bar's real Blizzard buttons are permanently hidden
 			-- regardless of the native SHOW_MULTI_ACTIONBAR_* globals, so
 			-- cfg.enabled is read directly as the sole source of truth.
 			local row = CreateBarListRow(id, true, cfg)

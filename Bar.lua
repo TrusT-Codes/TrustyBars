@@ -224,7 +224,7 @@ local function EnsureBarOverlay(bar)
 
 		local barId = bar.config.id
 
-		if barId and barId >= 1 and barId <= 5 and
+		if BTV:IsDefaultBarFamilyId(barId) and
 			BTVanillaDB and BTVanillaDB.useDefaultLayout ~= false then
 			return
 		end
@@ -252,13 +252,13 @@ function BTV:ApplyEditModeVisual()
 
 	local barId
 	for barId, bar in pairs(self.bars) do
-		-- Bars 1-5 are individually draggable only when edit mode is on
-		-- AND useDefaultLayout is false (mirrors DefaultBars.lua's own
-		-- CanDragDefaultLayout). Computed once here so both the per-button
-		-- tint and the bar-level overlay below agree on the same
-		-- "is this bar actually individually draggable right now"
+		-- Default-bar-family bars (1-5, Pet Bar) are individually draggable
+		-- only when edit mode is on AND useDefaultLayout is false (mirrors
+		-- DefaultBars.lua's own CanDragDefaultLayout). Computed once here so
+		-- both the per-button tint and the bar-level overlay below agree on
+		-- the same "is this bar actually individually draggable right now"
 		-- condition.
-		local isDefaultBar1to5 = barId and barId >= 1 and barId <= 5
+		local isDefaultBar1to5 = BTV:IsDefaultBarFamilyId(barId)
 
 		local canEdit = editMode
 
@@ -693,7 +693,7 @@ function BTV:ApplyGlobalButtonStyle()
 
 		for barId, bar in pairs(self.bars) do
 			if bar and bar.config and bar.config.buttonSize and
-				not (skipDefaultBars and barId >= 1 and barId <= 5) then
+				not (skipDefaultBars and BTV:IsDefaultBarFamilyId(barId)) then
 				self:SetBarButtonSize(bar, bar.config.buttonSize + delta)
 				self:SetBarPosition(bar, (bar.config.x or 0) + dx, (bar.config.y or 0) + dy)
 				self:SetBarSpacing(bar, (bar.config.spacing or 0) + spacingDelta)
@@ -1053,12 +1053,13 @@ function BTV:ApplyBarShape(bar)
 			local desiredSlot
 			local slotValid
 
-			-- Fixed-slot bars (default bars 2-5) always rebind pool slot
-			-- i to the same native action slot cfg.fixedActionSlots[i] -
+			-- Fixed-slot bars (default bars 2-5, Pet Bar) always rebind pool
+			-- slot i to the same fixed value cfg.fixedActionSlots[i] (a real
+			-- action slot for bars 2-5, a pet slot 1-10 for the Pet Bar) -
 			-- unlike a free-pool custom bar (id 6+), there is no
 			-- slotStart to derive this from, and no ACTION_SLOT_END
-			-- pool-range check applies (native slots 1-72 are outside the
-			-- 73-120 pool range entirely).
+			-- pool-range check applies (native slots 1-72, and pet slots
+			-- 1-10, are both outside the 73-120 pool range entirely).
 			if cfg.fixedActionSlots then
 				desiredSlot = cfg.fixedActionSlots[i]
 				slotValid = desiredSlot ~= nil
@@ -1184,11 +1185,12 @@ function BTV:CreateBarFromConfig(cfg)
 	for i = 1, self.MAX_BAR_BUTTONS do
 		local slot
 
-		-- Fixed-slot bars (default bars 2-5): each pool slot i is
-		-- permanently tied to cfg.fixedActionSlots[i], a real native
-		-- action slot discovered once from the live Blizzard button frame
-		-- (Core.lua's CaptureFixedActionSlots) - never the free 73-120
-		-- pool a real custom bar (id 6+) allocates from.
+		-- Fixed-slot bars (default bars 2-5, Pet Bar): each pool slot i is
+		-- permanently tied to cfg.fixedActionSlots[i] - a real native action
+		-- slot discovered once from the live Blizzard button frame
+		-- (Core.lua's CaptureFixedActionSlots) for bars 2-5, or a pet slot
+		-- 1-10 identity map (Core.lua's SeedOneDefaultBar) for the Pet Bar -
+		-- never the free 73-120 pool a real custom bar (id 6+) allocates from.
 		if cfg.fixedActionSlots then
 			slot = cfg.fixedActionSlots[i]
 
