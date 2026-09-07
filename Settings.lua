@@ -5739,6 +5739,244 @@ function BTV:RebuildMainBarAssignmentRows()
 	container:SetHeight(height)
 end
 
+-- Applies a "Use Default Blizzard Layout" checkbox change: persists the
+-- value, re-gates every affected page, and (only when switching ON from
+-- OFF) runs the full reset-to-Blizzard-default cascade. Split out from the
+-- checkbox's OnClick so the confirm dialog below can defer this call until
+-- the user accepts the reset warning.
+function BTV:ApplyUseDefaultLayoutChange(checked)
+	local wasDefault = BTVanillaDB.useDefaultLayout == true
+
+	BTVanillaDB.useDefaultLayout = checked
+
+	-- Re-gate any default-bar page already built/cached so it
+	-- reflects the new state immediately if it happens to be
+	-- visible (or gets shown next) without needing a reload.
+	BTV:RefreshDefaultLayoutGatingOnAllPages()
+
+	-- Idempotent when the saved cfg values themselves haven't
+	-- changed (only interactivity changed) - safe/cheap to call
+	-- unconditionally so bars are guaranteed visually in sync
+	-- rather than only catching up on next login.
+	if BTV.ApplyAllDefaultBars then
+		BTV:ApplyAllDefaultBars()
+	end
+
+	-- useDefaultLayout changes whether dragging is currently
+	-- possible (BTV:CanDragDefaultLayout()) even when edit mode's
+	-- own state hasn't changed, so the default-bar/stance-bar
+	-- overlays need their own refresh here too, not just from
+	-- ApplyEditModeVisual's call sites.
+	if BTV.ApplyDefaultLayoutEditVisual then
+		BTV:ApplyDefaultLayoutEditVisual()
+	end
+
+	-- Stance Bar is an unconditionally-positioned TrustyBars-owned
+	-- container exactly like Bag Bar/Micro Menu (see
+	-- BTV:CreateStanceBarContainer's PLAYER_LOGIN placement,
+	-- Core.lua), so switching OFF doesn't need to capture/apply
+	-- anything (its position is always live), and switching back
+	-- ON is handled by the same reset cascade below as Bag Bar/
+	-- Micro Menu/Latency Bar/Key Ring.
+	if (not wasDefault) and checked then
+		-------------------------------------------------------------
+		-- Full reset-to-Blizzard-default cascade: ApplyAllDefaultBars/
+		-- ApplyDefaultLayoutEditVisual above only re-apply shape from
+		-- whatever cfg currently holds, they do not reset cfg back to
+		-- its native values - ResetDefaultBarLayout does that for
+		-- every default-bar-family id (1-5, Pet Bar), and each
+		-- single-native-frame element below gets its own reset call.
+		-------------------------------------------------------------
+
+		local i
+
+		for i = 1, table.getn(BTV.DEFAULT_BAR_IDS) do
+			BTV:ResetDefaultBarLayout(BTV.DEFAULT_BAR_IDS[i])
+		end
+
+		-- Bars 2-5's enabled state now mirrors the real native "Show ...
+		-- Action Bar" checkboxes (session-live only, per
+		-- docs/01-Environment-Capability-Analysis.md §5m/§6) instead of
+		-- whatever TrustyBars had stored - same reconciliation
+		-- MultiActionBar_Update's own hook already performs reactively.
+		if BTV.ReconcileDefaultBarEnabledFromNative then
+			BTV:ReconcileDefaultBarEnabledFromNative()
+		end
+
+		-- Extra Bars (6-9) are TrustyBars-only content with no Blizzard-
+		-- default equivalent - hidden outright while the native layout
+		-- owns bars 1-5.
+		local extraId
+
+		for extraId = BTV.EXTRA_BAR_ID_START, BTV.EXTRA_BAR_ID_START + BTV.EXTRA_BAR_COUNT - 1 do
+			BTV:SetExtraBarEnabled(extraId, false)
+
+			if settingsFrame and settingsFrame.pages[extraId] then
+				BTV:RefreshBarSettingsPage(extraId)
+			end
+		end
+
+		BTV:RefreshBarList()
+
+		if BTV.ResetBagBarPosition then
+			BTV:ResetBagBarPosition()
+		end
+
+		if BTV.ResetBagBarLayout then
+			BTV:ResetBagBarLayout()
+		end
+
+		if BTV.ResetMicroMenuPosition then
+			BTV:ResetMicroMenuPosition()
+		end
+
+		if BTV.ResetMicroMenuLayout then
+			BTV:ResetMicroMenuLayout()
+		end
+
+		if BTV.ResetStanceBarPosition then
+			BTV:ResetStanceBarPosition()
+		end
+
+		if BTV.ResetStanceBarLayout then
+			BTV:ResetStanceBarLayout()
+		end
+
+		if BTV.ResetLatencyBarLayout then
+			BTV:ResetLatencyBarLayout()
+		end
+
+		if BTV.ResetKeyRingPosition then
+			BTV:ResetKeyRingPosition()
+		end
+
+		-- Key Ring ships visible on native vanilla - re-enable it
+		-- regardless of whatever the user had it set to.
+		if BTV.SetKeyRingEnabled then
+			BTV:SetKeyRingEnabled(true)
+		end
+
+		-- Native layout always shows Blizzard's own bar art.
+		BTVanillaDB.disableBlizzardArt = false
+
+		if BTV.ApplyBlizzardArtVisibility then
+			BTV:ApplyBlizzardArtVisibility()
+		end
+
+		-- Main Bar paging/stance-swap ship on by default on native vanilla.
+		if BTV.SetMainBarPaginationEnabled then
+			BTV:SetMainBarPaginationEnabled(true)
+		end
+
+		if BTV.SetMainBarStanceSwapEnabled then
+			BTV:SetMainBarStanceSwapEnabled(true)
+		end
+
+		-- Experience Bar: same reset treatment as every other
+		-- single-native-frame element above.
+		if BTV.ResetExpBarLayout then
+			BTV:ResetExpBarLayout()
+		end
+
+		-- See BTV:ResetPageIndicatorLayout's own comment (DefaultBars.lua).
+		if BTV.ResetPageIndicatorLayout then
+			BTV:ResetPageIndicatorLayout()
+		end
+
+		-- Pet Bar native mode only - ResetDefaultBarLayout above (the
+		-- custom-styled grid mode's own reset) has nothing to act on
+		-- while self.bars[PET_BAR_ID] doesn't exist. No-ops safely in
+		-- custom mode (self.petBarNativeContainer is nil then).
+		if BTV.ResetPetBarNativeLayout then
+			BTV:ResetPetBarNativeLayout()
+		end
+
+		-- Persists the enforced-effective values (BTV:IsPetBarNativeModeEffective/
+		-- ShouldCondensePetBarSlots) into the stored cfg too, so they
+		-- don't silently diverge from what's actually applied.
+		do
+			local petCfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+			if petCfg then
+				petCfg.useNativePetBar = true
+				petCfg.condenseEmptyPetSlots = false
+			end
+		end
+
+		-- Same treatment for the Stance Bar's own styled-mode-only
+		-- toggle - BTV:IsStanceBarNativeModeEffective() already
+		-- forces this at runtime while useDefaultLayout is on, this
+		-- just persists it into the stored cfg too so it doesn't
+		-- silently diverge from what's actually applied.
+		do
+			local stanceCfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+
+			if stanceCfg then
+				stanceCfg.useNativeStanceBar = true
+			end
+		end
+
+		-- "Use Modern Button Style"/Global Spacing/Global ButtonSize only
+		-- take visual effect while useDefaultLayout is off
+		-- (ApplyGlobalSpacing/ApplyGlobalButtonSize/IsVanillaBorderStyle
+		-- all no-op/override while it's on) - clear the flags themselves
+		-- too, not just leave them cosmetically locked, so they don't
+		-- silently reapply the instant the user switches back off.
+		BTVanillaDB.modernBorderStyle = false
+		BTVanillaDB.globalSpacingEnabled = false
+		BTVanillaDB.globalButtonSizeEnabled = false
+
+		-- Re-syncs every already-built default/simple bar page's
+		-- sliders/checkboxes from the values the resets above just
+		-- wrote - the earlier RefreshDefaultLayoutGatingOnAllPages
+		-- call in this handler ran BEFORE these resets, so it only
+		-- caught up gating/alpha, not the underlying values.
+		BTV:RefreshDefaultLayoutGatingOnAllPages()
+	end
+
+	-- Runs LAST, after any reset cascade above, so bars 1-5 are
+	-- already at their true native values by the time this reads
+	-- them - re-evaluates BTV:IsVanillaBorderStyle() live: turning
+	-- this ON forces every bar back to vanilla styling (skipping
+	-- bars 1-5, already handled by the reset cascade above -
+	-- see ApplyGlobalButtonStyle's own skipDefaultBars comment);
+	-- turning it OFF re-applies whatever modernBorderStyle is
+	-- currently stored instead of leaving bars showing the
+	-- forced-vanilla look until next login.
+	BTV:ApplyGlobalButtonStyle()
+
+	-- The global spacing/buttonSize overrides both no-op while
+	-- useDefaultLayout is on (Bar.lua) - re-running them here
+	-- means turning it back OFF immediately re-applies a
+	-- previously-locked-out override instead of waiting for the
+	-- next slider move.
+	BTV:ApplyGlobalSpacing()
+	BTV:ApplyGlobalButtonSize()
+
+	-- Updates the new "Use Modern Button Style" checkbox's own
+	-- checked/grey-out state immediately (RefreshGeneralPanel
+	-- isn't otherwise called from this handler) so it reflects
+	-- the lock the moment useDefaultLayout changes, without
+	-- needing to leave and reopen the General tab.
+	BTV:RefreshGeneralPanel()
+
+	BTV:RefreshAllBarPagesGlobalOverrideGating()
+
+	-- Stance Bar position must be re-verified dead last, after every other
+	-- reset/reapply above (bar 2's enabled state included) - its Y is
+	-- computed relative to bar 2's own final on/off state
+	-- (BTV:GetStanceBarBaselineY), and ResetStanceBarPosition above only
+	-- restores the stale point-in-time snapshot captured at first seed,
+	-- not a fresh recompute. Without this, the Stance Bar can visually
+	-- land overlapping/behind Bar 1 until something else (e.g. manually
+	-- toggling bar 2 off then on) happens to trigger a reflow.
+	if (not wasDefault) and checked and BTV.ReflowStanceBarForBar2Toggle then
+		local bar2Cfg = BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[2]
+
+		BTV:ReflowStanceBarForBar2Toggle(bar2Cfg and bar2Cfg.enabled)
+	end
+end
+
 function BTV:GetOrCreateGeneralPanel()
 	if not settingsFrame then
 		CreateSettingsFrame()
@@ -5796,164 +6034,41 @@ function BTV:GetOrCreateGeneralPanel()
 			local checked = this:GetChecked() and true or false
 			local wasDefault = BTVanillaDB.useDefaultLayout == true
 
-			BTVanillaDB.useDefaultLayout = checked
+			-- Turning ON resets every bar to Blizzard default - warn and
+			-- confirm before that cascade runs. Revert the checkbox's own
+			-- visual state immediately so it stays unchecked while the
+			-- dialog is open; ApplyUseDefaultLayoutChange re-checks it
+			-- only if the user accepts.
+			if checked and not wasDefault then
+				this:SetChecked(false)
 
-			-- Re-gate any default-bar page already built/cached so it
-			-- reflects the new state immediately if it happens to be
-			-- visible (or gets shown next) without needing a reload.
-			BTV:RefreshDefaultLayoutGatingOnAllPages()
+				BTV:ShowDialog({
+					title = "Use Default Blizzard Layout",
+					message = "Enabling this will reset ALL bars to their " ..
+						"default Blizzard position.",
+					warningText = "This action cannot be undone.",
+					mode = "confirm",
+					buttons = {
+						{
+							text = "OK",
+							isDefault = true,
+							onClick = function()
+								checkbox:SetChecked(true)
+								BTV:ApplyUseDefaultLayoutChange(true)
+							end,
+						},
+						{
+							text = "Cancel",
+							danger = true,
+							onClick = function() end,
+						},
+					},
+				})
 
-			-- Idempotent when the saved cfg values themselves haven't
-			-- changed (only interactivity changed) - safe/cheap to call
-			-- unconditionally so bars are guaranteed visually in sync
-			-- rather than only catching up on next login.
-			if BTV.ApplyAllDefaultBars then
-				BTV:ApplyAllDefaultBars()
+				return
 			end
 
-			-- useDefaultLayout changes whether dragging is currently
-			-- possible (BTV:CanDragDefaultLayout()) even when edit mode's
-			-- own state hasn't changed, so the default-bar/stance-bar
-			-- overlays need their own refresh here too, not just from
-			-- ApplyEditModeVisual's call sites.
-			if BTV.ApplyDefaultLayoutEditVisual then
-				BTV:ApplyDefaultLayoutEditVisual()
-			end
-
-			-- Stance Bar is an unconditionally-positioned TrustyBars-owned
-			-- container exactly like Bag Bar/Micro Menu (see
-			-- BTV:CreateStanceBarContainer's PLAYER_LOGIN placement,
-			-- Core.lua), so switching OFF doesn't need to capture/apply
-			-- anything (its position is always live), and switching back
-			-- ON is handled by the same reset cascade below as Bag Bar/
-			-- Micro Menu/Latency Bar/Key Ring.
-			if (not wasDefault) and checked then
-				-------------------------------------------------------------
-				-- Full reset-to-Blizzard-default cascade: ApplyAllDefaultBars/
-				-- ApplyDefaultLayoutEditVisual above only re-apply shape from
-				-- whatever cfg currently holds, they do not reset cfg back to
-				-- its native values - ResetDefaultBarLayout does that for
-				-- every default-bar-family id (1-5, Pet Bar), and each
-				-- single-native-frame element below gets its own reset call.
-				-------------------------------------------------------------
-
-				local i
-
-				for i = 1, table.getn(BTV.DEFAULT_BAR_IDS) do
-					BTV:ResetDefaultBarLayout(BTV.DEFAULT_BAR_IDS[i])
-				end
-
-				if BTV.ResetBagBarPosition then
-					BTV:ResetBagBarPosition()
-				end
-
-				if BTV.ResetBagBarLayout then
-					BTV:ResetBagBarLayout()
-				end
-
-				if BTV.ResetMicroMenuPosition then
-					BTV:ResetMicroMenuPosition()
-				end
-
-				if BTV.ResetMicroMenuLayout then
-					BTV:ResetMicroMenuLayout()
-				end
-
-				if BTV.ResetStanceBarPosition then
-					BTV:ResetStanceBarPosition()
-				end
-
-				if BTV.ResetStanceBarLayout then
-					BTV:ResetStanceBarLayout()
-				end
-
-				if BTV.ResetLatencyBarLayout then
-					BTV:ResetLatencyBarLayout()
-				end
-
-				if BTV.ResetKeyRingPosition then
-					BTV:ResetKeyRingPosition()
-				end
-
-				-- Experience Bar: same reset treatment as every other
-				-- single-native-frame element above.
-				if BTV.ResetExpBarLayout then
-					BTV:ResetExpBarLayout()
-				end
-
-				-- See BTV:ResetPageIndicatorLayout's own comment (DefaultBars.lua).
-				if BTV.ResetPageIndicatorLayout then
-					BTV:ResetPageIndicatorLayout()
-				end
-
-				-- Pet Bar native mode only - ResetDefaultBarLayout above (the
-				-- custom-styled grid mode's own reset) has nothing to act on
-				-- while self.bars[PET_BAR_ID] doesn't exist. No-ops safely in
-				-- custom mode (self.petBarNativeContainer is nil then).
-				if BTV.ResetPetBarNativeLayout then
-					BTV:ResetPetBarNativeLayout()
-				end
-
-				-- Persists the enforced-effective values (BTV:IsPetBarNativeModeEffective/
-				-- ShouldCondensePetBarSlots) into the stored cfg too, so they
-				-- don't silently diverge from what's actually applied.
-				do
-					local petCfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
-
-					if petCfg then
-						petCfg.useNativePetBar = true
-						petCfg.condenseEmptyPetSlots = false
-					end
-				end
-
-				-- Same treatment for the Stance Bar's own styled-mode-only
-				-- toggle - BTV:IsStanceBarNativeModeEffective() already
-				-- forces this at runtime while useDefaultLayout is on, this
-				-- just persists it into the stored cfg too so it doesn't
-				-- silently diverge from what's actually applied.
-				do
-					local stanceCfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
-
-					if stanceCfg then
-						stanceCfg.useNativeStanceBar = true
-					end
-				end
-
-				-- Re-syncs every already-built default/simple bar page's
-				-- sliders/checkboxes from the values the resets above just
-				-- wrote - the earlier RefreshDefaultLayoutGatingOnAllPages
-				-- call in this handler ran BEFORE these resets, so it only
-				-- caught up gating/alpha, not the underlying values.
-				BTV:RefreshDefaultLayoutGatingOnAllPages()
-			end
-
-			-- Runs LAST, after any reset cascade above, so bars 1-5 are
-			-- already at their true native values by the time this reads
-			-- them - re-evaluates BTV:IsVanillaBorderStyle() live: turning
-			-- this ON forces every bar back to vanilla styling (skipping
-			-- bars 1-5, already handled by the reset cascade above -
-			-- see ApplyGlobalButtonStyle's own skipDefaultBars comment);
-			-- turning it OFF re-applies whatever modernBorderStyle is
-			-- currently stored instead of leaving bars showing the
-			-- forced-vanilla look until next login.
-			BTV:ApplyGlobalButtonStyle()
-
-			-- The global spacing/buttonSize overrides both no-op while
-			-- useDefaultLayout is on (Bar.lua) - re-running them here
-			-- means turning it back OFF immediately re-applies a
-			-- previously-locked-out override instead of waiting for the
-			-- next slider move.
-			BTV:ApplyGlobalSpacing()
-			BTV:ApplyGlobalButtonSize()
-
-			-- Updates the new "Use Modern Button Style" checkbox's own
-			-- checked/grey-out state immediately (RefreshGeneralPanel
-			-- isn't otherwise called from this handler) so it reflects
-			-- the lock the moment useDefaultLayout changes, without
-			-- needing to leave and reopen the General tab.
-			BTV:RefreshGeneralPanel()
-
-			BTV:RefreshAllBarPagesGlobalOverrideGating()
+			BTV:ApplyUseDefaultLayoutChange(checked)
 		end
 	)
 

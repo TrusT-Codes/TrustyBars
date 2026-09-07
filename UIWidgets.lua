@@ -415,6 +415,7 @@ end
 --     buttons = {
 --         {
 --             text = "Accept", isDefault = true,
+--             danger = false, -- optional: red backdrop (e.g. Cancel/destructive)
 --             validate = function(value) return ok, errorMessage end, -- optional
 --             keepOpen = false, -- optional: skip auto-close on click
 --             onClick = function(value) end,
@@ -532,6 +533,15 @@ function BTVDialogMixin:Init(config)
 
 		if buttonConfig then
 			button:SetText(buttonConfig.text or "")
+
+			-- Buttons are reused across dialogs (self.buttons is a fixed
+			-- pool), so a non-danger button must reset its color here or
+			-- it can inherit red from a previous dialog's danger button.
+			if buttonConfig.danger then
+				BTV:ApplyDangerButtonHighlight(button)
+			else
+				button:SetBackdropColor(0.08, 0.08, 0.08, 0.85)
+			end
 
 			button:SetScript("OnClick", function()
 				local value = BTV.activeDialog:GetValue()
