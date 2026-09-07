@@ -3630,36 +3630,29 @@ local function CreateSimpleBarPage(key)
 			betterExpBarLabel:SetText("Enable Better Experience Bar")
 		end
 
+		betterExpBarCheckbox:SetScript("OnEnter", function()
+			GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+			GameTooltip:SetText("Enable Better Experience Bar", 1, 1, 1)
+			GameTooltip:AddLine(
+				"Replaces the native percent label with a customizable text " ..
+				"line, and lets you recolor the bar's own fill and rested-" ..
+				"bonus fill below.",
+				1, 0.82, 0, true
+			)
+			GameTooltip:Show()
+		end)
+
+		betterExpBarCheckbox:SetScript("OnLeave", function()
+			GameTooltip:Hide()
+		end)
+
 		page.betterExpBarCheckbox = betterExpBarCheckbox
 
-		local betterExpBarDescription = page:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-		betterExpBarDescription:SetPoint("TOPLEFT", betterExpBarCheckbox, "BOTTOMLEFT", 4, -6)
-		betterExpBarDescription:SetWidth(440)
-		betterExpBarDescription:SetJustifyH("LEFT")
-
-		betterExpBarDescription:SetText(
-			"Replaces the native percent label with a customizable text " ..
-			"line, and lets you recolor the bar's own fill and rested-" ..
-			"bonus fill below."
-		)
-
-		page.betterExpBarDescription = betterExpBarDescription
-
-		-- Fixed vertical budget for the checkbox+description pair above
-		-- (24px checkbox, up to 2 wrapped lines of GameFontHighlightSmall)
-		-- rather than an anchor-chained follow-up section - this function
-		-- positions every other control here via computed cursorY math, and
-		-- the description text above is short/width-bounded enough to
-		-- reliably stay within 2 lines, so a generous fixed offset is
-		-- simpler than switching this one section to real-anchor-chaining
-		-- (the General tab's own approach, only needed there because ITS
-		-- description text length isn't controlled/bounded the same way).
-		cursorY = cursorY - 24 - 6 - 24 - 14
+		cursorY = cursorY - 24 - 14
 
 		-------------------------------------------------------------------------
 		-- Overlay Text Size slider - directly below the
-		-- "Enable Better Experience Bar" checkbox/description above. Range/
+		-- "Enable Better Experience Bar" checkbox above. Range/
 		-- step (FONT_SIZE_MIN/MAX/STEP) and ClampFontSize match this file's
 		-- only other font-size controls, the General panel's Hotkey/Count
 		-- Text Size sliders - not a new convention. Layout (title/slider/
@@ -5277,7 +5270,6 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	-- listed for the same "include every real candidate" thoroughness this
 	-- list already follows.
 	n = AppendCandidate(candidates, n, page.betterExpBarCheckbox)
-	n = AppendCandidate(candidates, n, page.betterExpBarDescription)
 	n = AppendCandidate(candidates, n, page.expBarFontSizeSlider)
 	n = AppendCandidate(candidates, n, page.expBarFontSizeValueText)
 	n = AppendCandidate(candidates, n, page.expBarShowLevelCheckbox)
@@ -5369,8 +5361,7 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	end
 end
 
--- General view: no bar list is shown here, just the checkbox and its
--- description text.
+-- General view: no bar list is shown here, just its checkboxes/sliders.
 function BTV:FitSettingsWindowToGeneralView()
 	if not settingsFrame or not settingsFrame.generalPanel then
 		return
@@ -5382,12 +5373,10 @@ function BTV:FitSettingsWindowToGeneralView()
 	local n = 0
 
 	n = AppendCandidate(candidates, n, panel.useDefaultLayoutCheckbox)
-	n = AppendCandidate(candidates, n, panel.description)
 	n = AppendCandidate(candidates, n, panel.tintWholeButtonCheckbox)
 	n = AppendCandidate(candidates, n, panel.disableBlizzardArtCheckbox)
 	n = AppendCandidate(candidates, n, panel.mainBarPaginationCheckbox)
 	n = AppendCandidate(candidates, n, panel.mainBarStanceSwapCheckbox)
-	n = AppendCandidate(candidates, n, panel.mainBarStanceSwapDescription)
 
 	-- Stance/Page Bar Assignment rows live on bar 1's own settings page -
 	-- see FitSettingsWindowToBarPage for their candidate handling.
@@ -5401,7 +5390,6 @@ function BTV:FitSettingsWindowToGeneralView()
 	n = AppendCandidate(candidates, n, panel.countValueText)
 	n = AppendCandidate(candidates, n, panel.countResetButton)
 	n = AppendCandidate(candidates, n, panel.modernBorderStyleCheckbox)
-	n = AppendCandidate(candidates, n, panel.modernBorderStyleDescription)
 	n = AppendCandidate(candidates, n, panel.globalSpacingCheckbox)
 	n = AppendCandidate(candidates, n, panel.globalSpacingSlider)
 	n = AppendCandidate(candidates, n, panel.globalSpacingValueText)
@@ -6078,34 +6066,28 @@ function BTV:GetOrCreateGeneralPanel()
 		checkboxLabel:SetText("Use Default Blizzard Layout")
 	end
 
+	checkbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use Default Blizzard Layout", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, default action bars keep Blizzard's native " ..
+			"position, size, and layout, and can only be shown/hidden - " ..
+			"dragging and resizing them is disabled.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Disable this to freely reposition, resize, and drag default " ..
+			"bars like custom bars.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	checkbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.useDefaultLayoutCheckbox = checkbox
-
-	local description = panel:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontHighlightSmall"
-	)
-
-	description:SetPoint(
-		"TOPLEFT",
-		checkbox,
-		"BOTTOMLEFT",
-		4,
-		-10
-	)
-
-	description:SetWidth(520)
-	description:SetJustifyH("LEFT")
-
-	description:SetText(
-		"When enabled, default action bars keep Blizzard's native " ..
-		"position, size, and layout, and can only be shown/hidden - " ..
-		"dragging and resizing them is disabled. Disable this to " ..
-		"freely reposition, resize, and drag default bars like custom " ..
-		"bars."
-	)
-
-	panel.description = description
 
 	-------------------------------------------------------------------------
 	-- Tint whole button on out of range
@@ -6116,8 +6098,8 @@ function BTV:GetOrCreateGeneralPanel()
 	-- Core.lua's EnsureDB), so this checkbox lets users opt into the
 	-- native-accurate hotkey-only behavior instead. Styled/positioned
 	-- exactly like the "Use Default Blizzard Layout" checkbox above -
-	-- same UICheckButtonTemplate, anchored off the previous section's
-	-- description text the same BOTTOMLEFT-chain way.
+	-- same UICheckButtonTemplate, anchored off it the same BOTTOMLEFT-
+	-- chain way.
 	-------------------------------------------------------------------------
 
 	local tintWholeButtonCheckbox = CreateFrame(
@@ -6132,9 +6114,9 @@ function BTV:GetOrCreateGeneralPanel()
 
 	tintWholeButtonCheckbox:SetPoint(
 		"TOPLEFT",
-		description,
+		checkbox,
 		"BOTTOMLEFT",
-		-4,
+		0,
 		-14
 	)
 
@@ -6264,6 +6246,28 @@ function BTV:GetOrCreateGeneralPanel()
 		mainBarPaginationLabel:SetText("Main Bar: Shift/Ctrl Page Swapping")
 	end
 
+	mainBarPaginationCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Main Bar: Shift/Ctrl Page Swapping", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, shows new Options inside MainBar on Bars " ..
+			"Settings Page. You will be able to freely assign any Extra " ..
+			"Bar to your Pageing Function of Mainbar. Enabling it will " ..
+			"also enable the Paging UI Element.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"When disabled, your MainBar will always stay the same and " ..
+			"the Paging UI Element is hidden.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	mainBarPaginationCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.mainBarPaginationCheckbox = mainBarPaginationCheckbox
 
 	local mainBarStanceSwapCheckbox = CreateFrame(
@@ -6307,39 +6311,28 @@ function BTV:GetOrCreateGeneralPanel()
 		mainBarStanceSwapLabel:SetText("Main Bar: Stance/Form/Stealth Swapping")
 	end
 
+	mainBarStanceSwapCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Main Bar: Stance/Form/Stealth Swapping", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, shows new Options inside MainBar on Bars " ..
+			"Settings Page. You will be able to freely assign any Extra " ..
+			"Bar to your different Shapes / Forms to swap the contents " ..
+			"of Mainbar with automatically.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"When disabled, your MainBar will always stay the same.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	mainBarStanceSwapCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.mainBarStanceSwapCheckbox = mainBarStanceSwapCheckbox
-
-	local mainBarStanceSwapDescription = panel:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontHighlightSmall"
-	)
-
-	mainBarStanceSwapDescription:SetPoint(
-		"TOPLEFT",
-		mainBarStanceSwapCheckbox,
-		"BOTTOMLEFT",
-		4,
-		-10
-	)
-
-	mainBarStanceSwapDescription:SetWidth(520)
-	mainBarStanceSwapDescription:SetJustifyH("LEFT")
-
-	-- The real vanilla stance/form/stealth bonus pages (7-9, slots 73-108)
-	-- are the same "free" range a custom bar (id 6+) can draw from, so a
-	-- stance-capable class with this toggle on may see a custom bar's
-	-- content coincide with this bar while shapeshifted - see Bar.lua's
-	-- GetNextFreeSlotStart, which prefers slots 109-120 first for exactly
-	-- this reason.
-	mainBarStanceSwapDescription:SetText(
-		"Stance/Form/Stealth Swapping shares its action-slot range " ..
-		"(73-108) with custom bars 6+. New custom bars are allocated " ..
-		"from slots 109-120 first to avoid this, falling back to " ..
-		"73-108 only once that range is full."
-	)
-
-	panel.mainBarStanceSwapDescription = mainBarStanceSwapDescription
 
 	-- Stance / Page Bar Assignment rows live on bar 1's own settings page
 	-- (GetOrCreateBarPage/RebuildMainBarAssignmentRows) alongside that
@@ -6364,10 +6357,10 @@ function BTV:GetOrCreateGeneralPanel()
 
 	macroTextCheckbox:SetPoint(
 		"TOPLEFT",
-		mainBarStanceSwapDescription,
+		mainBarStanceSwapCheckbox,
 		"BOTTOMLEFT",
-		-4,
-		-22
+		0,
+		-14
 	)
 
 	macroTextCheckbox:SetScript(
@@ -6542,9 +6535,7 @@ function BTV:GetOrCreateGeneralPanel()
 	--
 	-- Anchored via a real anchor chain off the tint-whole-button checkbox
 	-- above (BOTTOMLEFT -> TOPLEFT), not a computed pixel-Y offset like the
-	-- bar pages use - description's actual height depends on how its
-	-- 520px-wide sentence wraps, which isn't knowable at build time, so
-	-- anchor-chaining lets this section follow wherever the checkbox's real
+	-- bar pages use - lets this section follow wherever the checkbox's real
 	-- bottom edge lands instead of guessing a fixed Y.
 	-------------------------------------------------------------------------
 
@@ -6928,35 +6919,28 @@ function BTV:GetOrCreateGeneralPanel()
 		modernBorderStyleLabel:SetText("Use Modern Button Style")
 	end
 
+	modernBorderStyleCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use Modern Button Style", 1, 1, 1)
+		GameTooltip:AddLine(
+			"Choose the button border style used by ALL bars. When " ..
+			"enabled use a slick and thin modern rectangular Border, " ..
+			"when disabled use the default vanilla UI border.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Locked to vanilla UI Border while 'Use Default Blizzard " ..
+			"Layout' is enabled",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	modernBorderStyleCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.modernBorderStyleCheckbox = modernBorderStyleCheckbox
-
-	local modernBorderStyleDescription = panel:CreateFontString(
-		nil,
-		"OVERLAY",
-		"GameFontHighlightSmall"
-	)
-
-	modernBorderStyleDescription:SetPoint(
-		"TOPLEFT",
-		modernBorderStyleCheckbox,
-		"BOTTOMLEFT",
-		4,
-		-10
-	)
-
-	modernBorderStyleDescription:SetWidth(520)
-	modernBorderStyleDescription:SetJustifyH("LEFT")
-
-	modernBorderStyleDescription:SetText(
-		"Choose the button border style used by ALL bars, default and " ..
-		"extra: modern (backdrop border, today's Extra Bar look) or " ..
-		"vanilla (native Blizzard border, today's default bar look). " ..
-		"Also adjusts every bar's button size to match, keeping visual " ..
-		"spacing consistent. Locked to vanilla while \"Use Default " ..
-		"Blizzard Layout\" is enabled."
-	)
-
-	panel.modernBorderStyleDescription = modernBorderStyleDescription
 
 	-------------------------------------------------------------------------
 	-- Global Spacing / global ButtonSize overrides
@@ -6984,9 +6968,9 @@ function BTV:GetOrCreateGeneralPanel()
 
 	globalSpacingCheckbox:SetPoint(
 		"TOPLEFT",
-		modernBorderStyleDescription,
+		modernBorderStyleCheckbox,
 		"BOTTOMLEFT",
-		-4,
+		0,
 		-14
 	)
 
@@ -7066,6 +7050,26 @@ function BTV:GetOrCreateGeneralPanel()
 	if globalSpacingLabel then
 		globalSpacingLabel:SetText("Toggle global Spacing")
 	end
+
+	globalSpacingCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Toggle global Spacing", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, disables the Option to set Spacing on " ..
+			"individual Action / Extra Bars.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Instead shows a new Slider to set the Spacing globally for " ..
+			"all Action / Extra Bars.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	globalSpacingCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
 
 	panel.globalSpacingCheckbox = globalSpacingCheckbox
 	panel.globalSpacingSlider = globalSpacingSlider
@@ -7181,8 +7185,28 @@ function BTV:GetOrCreateGeneralPanel()
 	local globalButtonSizeLabel = getglobal(globalButtonSizeCheckbox:GetName() .. "Text")
 
 	if globalButtonSizeLabel then
-		globalButtonSizeLabel:SetText("Toggle global ButtonSize")
+		globalButtonSizeLabel:SetText("Toggle global Button size")
 	end
+
+	globalButtonSizeCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Toggle global Button size", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, disables the Option to set the Button size on " ..
+			"individual Action / Extra Bars.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Instead shows a new Slider to set the Button size globally " ..
+			"for all Action / Extra Bars.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	globalButtonSizeCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
 
 	panel.globalButtonSizeCheckbox = globalButtonSizeCheckbox
 	panel.globalButtonSizeSlider = globalButtonSizeSlider
@@ -7596,21 +7620,28 @@ function BTV:GetOrCreateEditModePanel()
 		snapToAdjacentLabel:SetText("Snap to Adjacent Elements")
 	end
 
+	snapToAdjacentCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Snap to Adjacent Elements", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, elements moved in Edit Layout Mode snap to nearby " ..
+			"screen edges/corners and to adjacent elements' edges for pixel-" ..
+			"perfect alignment and stacking.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Hold shift while in Edit Layout Mode to temporarily enable / " ..
+			"disable snapping, regardless of this setting.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	snapToAdjacentCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.snapToAdjacentCheckbox = snapToAdjacentCheckbox
-
-	local snapToAdjacentDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	snapToAdjacentDescription:SetPoint("TOPLEFT", snapToAdjacentCheckbox, "BOTTOMLEFT", 4, -10)
-	snapToAdjacentDescription:SetWidth(520)
-	snapToAdjacentDescription:SetJustifyH("LEFT")
-
-	snapToAdjacentDescription:SetText(
-		"When enabled, elements moved in Edit Layout Mode snap to nearby " ..
-		"screen edges/corners and to adjacent elements' edges for pixel-" ..
-		"perfect alignment and stacking."
-	)
-
-	panel.snapToAdjacentDescription = snapToAdjacentDescription
 
 	-------------------------------------------------------------------------
 	-- Show Layout Grid
@@ -7635,7 +7666,7 @@ function BTV:GetOrCreateEditModePanel()
 	showLayoutGridCheckbox:SetWidth(24)
 	showLayoutGridCheckbox:SetHeight(24)
 
-	showLayoutGridCheckbox:SetPoint("TOPLEFT", snapToAdjacentDescription, "BOTTOMLEFT", -4, -14)
+	showLayoutGridCheckbox:SetPoint("TOPLEFT", snapToAdjacentCheckbox, "BOTTOMLEFT", 0, -14)
 
 	showLayoutGridCheckbox:SetScript(
 		"OnClick",
@@ -7654,21 +7685,27 @@ function BTV:GetOrCreateEditModePanel()
 		showLayoutGridLabel:SetText("Show Layout Grid")
 	end
 
+	showLayoutGridCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Show Layout Grid", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, an evenly-spaced reference grid covers the whole " ..
+			"screen while in Edit Layout Mode.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"Hold Ctrl while in Edit Layout Mode to temporarily show/hide " ..
+			"it, regardless of this setting.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	showLayoutGridCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.showLayoutGridCheckbox = showLayoutGridCheckbox
-
-	local showLayoutGridDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	showLayoutGridDescription:SetPoint("TOPLEFT", showLayoutGridCheckbox, "BOTTOMLEFT", 4, -10)
-	showLayoutGridDescription:SetWidth(520)
-	showLayoutGridDescription:SetJustifyH("LEFT")
-
-	showLayoutGridDescription:SetText(
-		"When enabled, an evenly-spaced reference grid covers the whole " ..
-		"screen while in Edit Layout Mode. Hold Ctrl while in Edit Layout " ..
-		"Mode to temporarily show/hide it, regardless of this setting."
-	)
-
-	panel.showLayoutGridDescription = showLayoutGridDescription
 
 	-------------------------------------------------------------------------
 	-- Snap to Grid
@@ -7690,7 +7727,7 @@ function BTV:GetOrCreateEditModePanel()
 	snapToGridCheckbox:SetWidth(24)
 	snapToGridCheckbox:SetHeight(24)
 
-	snapToGridCheckbox:SetPoint("TOPLEFT", showLayoutGridDescription, "BOTTOMLEFT", -4, -14)
+	snapToGridCheckbox:SetPoint("TOPLEFT", showLayoutGridCheckbox, "BOTTOMLEFT", 0, -14)
 
 	snapToGridCheckbox:SetScript(
 		"OnClick",
@@ -7705,21 +7742,23 @@ function BTV:GetOrCreateEditModePanel()
 		snapToGridLabel:SetText("Snap to Grid")
 	end
 
+	snapToGridCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Snap to Grid", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, elements dragged in Edit Layout Mode snap so their " ..
+			"center sits exactly on a grid line intersection, independent of " ..
+			"whether the grid is currently shown.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	snapToGridCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.snapToGridCheckbox = snapToGridCheckbox
-
-	local snapToGridDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	snapToGridDescription:SetPoint("TOPLEFT", snapToGridCheckbox, "BOTTOMLEFT", 4, -10)
-	snapToGridDescription:SetWidth(520)
-	snapToGridDescription:SetJustifyH("LEFT")
-
-	snapToGridDescription:SetText(
-		"When enabled, elements dragged in Edit Layout Mode snap so their " ..
-		"center sits exactly on a grid line intersection, independent of " ..
-		"whether the grid is currently shown."
-	)
-
-	panel.snapToGridDescription = snapToGridDescription
 
 	-------------------------------------------------------------------------
 	-- Use custom Grid Size
@@ -7745,7 +7784,7 @@ function BTV:GetOrCreateEditModePanel()
 	useCustomGridSizeCheckbox:SetWidth(24)
 	useCustomGridSizeCheckbox:SetHeight(24)
 
-	useCustomGridSizeCheckbox:SetPoint("TOPLEFT", snapToGridDescription, "BOTTOMLEFT", -4, -14)
+	useCustomGridSizeCheckbox:SetPoint("TOPLEFT", snapToGridCheckbox, "BOTTOMLEFT", 0, -14)
 
 	local useCustomGridSizeLabel = getglobal(useCustomGridSizeCheckbox:GetName() .. "Text")
 
@@ -7753,22 +7792,29 @@ function BTV:GetOrCreateEditModePanel()
 		useCustomGridSizeLabel:SetText("Use custom Grid Size")
 	end
 
+	useCustomGridSizeCheckbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Use custom Grid Size", 1, 1, 1)
+		GameTooltip:AddLine(
+			"Grid spacing normally tracks the Main Bar's current Button Size " ..
+			"live (resizing it, or the General tab's Global Button Size, " ..
+			"updates the grid too).",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"When enabled, Grid size is no longer directed by Main Bar's " ..
+			"Button size. A new Slider to set the Grid size statically " ..
+			"appears instead.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	useCustomGridSizeCheckbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
 	panel.useCustomGridSizeCheckbox = useCustomGridSizeCheckbox
-
-	local useCustomGridSizeDescription = panel:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
-
-	useCustomGridSizeDescription:SetPoint("TOPLEFT", useCustomGridSizeCheckbox, "BOTTOMLEFT", 4, -10)
-	useCustomGridSizeDescription:SetWidth(520)
-	useCustomGridSizeDescription:SetJustifyH("LEFT")
-
-	useCustomGridSizeDescription:SetText(
-		"Grid spacing normally tracks the Main Bar's current Button Size " ..
-		"live (resizing it, or the General tab's Global Button Size, " ..
-		"updates the grid too). When toggled on, Grid Size is no longer " ..
-		"directed by Main Bar's Button Size."
-	)
-
-	panel.useCustomGridSizeDescription = useCustomGridSizeDescription
 
 	local customGridSizeSlider = CreateSettingSlider(
 		panel,
@@ -7776,7 +7822,7 @@ function BTV:GetOrCreateEditModePanel()
 		290
 	)
 
-	customGridSizeSlider:SetPoint("TOPLEFT", useCustomGridSizeDescription, "BOTTOMLEFT", -4, -14)
+	customGridSizeSlider:SetPoint("TOPLEFT", useCustomGridSizeCheckbox, "BOTTOMLEFT", 20, -28)
 
 	customGridSizeSlider:SetMinMaxValues(0, 55)
 	customGridSizeSlider:SetValueStep(1)
@@ -7913,13 +7959,9 @@ function BTV:FitSettingsWindowToEditModeView()
 	local n = 0
 
 	n = AppendCandidate(candidates, n, panel.snapToAdjacentCheckbox)
-	n = AppendCandidate(candidates, n, panel.snapToAdjacentDescription)
 	n = AppendCandidate(candidates, n, panel.showLayoutGridCheckbox)
-	n = AppendCandidate(candidates, n, panel.showLayoutGridDescription)
 	n = AppendCandidate(candidates, n, panel.snapToGridCheckbox)
-	n = AppendCandidate(candidates, n, panel.snapToGridDescription)
 	n = AppendCandidate(candidates, n, panel.useCustomGridSizeCheckbox)
-	n = AppendCandidate(candidates, n, panel.useCustomGridSizeDescription)
 	n = AppendCandidate(candidates, n, panel.customGridSizeSlider)
 	n = AppendCandidate(candidates, n, panel.customGridSizeValueText)
 
