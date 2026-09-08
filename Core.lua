@@ -2688,13 +2688,22 @@ end
 -- 0.1s-apart reads agreeing only proves ActionButton1 hasn't moved
 -- recently, not that Blizzard's own MainMenuBar-cluster recenter pass has
 -- truly finished (a fresh install stresses client init harder than a
--- /reload, giving this more room to happen). Re-reads ActionButton1 a few
--- seconds after login and, only if it genuinely drifted from what was
--- captured, silently recaptures/reapplies via the same (now in-place-
--- updating) RecaptureDefaultBarNativeAnchors - a no-op whenever the
--- original capture was already correct.
-local DRIFT_RECHECK_DELAY = 5
+-- /reload, giving this more room to happen). Re-checks ActionButton1 and,
+-- only if it genuinely drifted from what was captured, silently
+-- recaptures/reapplies via the same (in-place-updating)
+-- RecaptureDefaultBarNativeAnchors - a no-op whenever the original capture
+-- was already correct.
 local DRIFT_TOLERANCE = 1
+
+-- Runs the check above only once ActionButton1 has been genuinely stable
+-- for a full second (10 reads, 0.1s apart - stricter than
+-- WaitForNativeBarSettle's own 2-read requirement, which has already been
+-- observed to plateau early once), rather than after a flat guessed delay.
+-- Resolves almost immediately on a normal login/reload (already stable),
+-- and keeps waiting past any fixed duration on a slow fresh install
+-- instead of checking once at an arbitrary point.
+local POST_LOGIN_SETTLE_STABLE_READS = 10
+local POST_LOGIN_SETTLE_TIMEOUT = 10
 
 -- Copies Bar 3's (or Bar 1's) current nativeAnchor.x into Pet Bar's own
 -- cfg.x. PetActionButton1/PetActionBarFrame's own real screen position is
@@ -2768,6 +2777,40 @@ local function VerifyDefaultBarAnchorsSettled()
 		)
 		BTV:RecaptureDefaultBarNativeAnchors()
 	end
+end
+
+local function WaitForPostLoginSettleThenVerify()
+	local ref = getglobal("ActionButton1")
+
+	if not ref or not C_Timer or not C_Timer.NewTicker then
+		VerifyDefaultBarAnchorsSettled()
+		return
+	end
+
+	local lastLeft, lastTop = ref:GetLeft(), ref:GetTop()
+	local stableCount = 0
+	local elapsed = 0
+
+	local ticker
+	ticker = C_Timer.NewTicker(SETTLE_POLL_INTERVAL, function()
+		elapsed = elapsed + SETTLE_POLL_INTERVAL
+
+		local left, top = ref:GetLeft(), ref:GetTop()
+
+		if left and top and lastLeft and lastTop
+			and left == lastLeft and top == lastTop then
+			stableCount = stableCount + 1
+		else
+			stableCount = 0
+		end
+
+		lastLeft, lastTop = left, top
+
+		if stableCount >= POST_LOGIN_SETTLE_STABLE_READS or elapsed >= POST_LOGIN_SETTLE_TIMEOUT then
+			ticker:Cancel()
+			VerifyDefaultBarAnchorsSettled()
+		end
+	end)
 end
 
 -- Full login sequence, run once WaitForNativeBarSettle confirms the
@@ -2851,9 +2894,7 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 		BTV:ShowFirstLoginDialog()
 	end
 
-	if C_Timer and C_Timer.After then
-		C_Timer.After(DRIFT_RECHECK_DELAY, VerifyDefaultBarAnchorsSettled)
-	end
+	WaitForPostLoginSettleThenVerify()
 end
 
 -- PLAYER_ENTERING_WORLD (not PLAYER_LOGIN) so the native MainMenuBar
