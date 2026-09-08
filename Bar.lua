@@ -642,6 +642,36 @@ function BTV:SetBarSpacing(bar, spacing)
 end
 
 -------------------------------------------------------------------------
+-- Only show on hover (Settings.lua's per-bar checkbox/slider)
+-------------------------------------------------------------------------
+
+function BTV:SetBarHoverOnly(bar, enabled)
+	if not bar or not bar.config then
+		return
+	end
+
+	bar.config.hoverOnly = enabled and true or false
+
+	self:ApplyBarShape(bar)
+end
+
+function BTV:SetBarHoverDuration(bar, duration)
+	if not bar or not bar.config then
+		return
+	end
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not duration then
+		return
+	end
+
+	bar.config.hoverDuration = duration
+
+	self:ApplyBarShape(bar)
+end
+
+-------------------------------------------------------------------------
 -- Global border/spacing style sweep (General tab checkbox,
 -- BTVanillaDB.modernBorderStyle / useDefaultLayout's forced-vanilla lock)
 --
@@ -1107,6 +1137,9 @@ function BTV:ApplyBarShape(bar)
 	-- overlay is anchored to `bar`, so no separate resize call is needed
 	-- here even though PixelSetSize just changed the bar's dimensions.
 	EnsureBarOverlay(bar)
+
+	-- cfg.hoverOnly/cfg.hoverDuration may be nil on a bar saved before this feature existed.
+	self:ApplyHoverOnlyState(bar, cfg.hoverOnly, function() return cfg.hoverDuration or 3 end)
 
 	self:ApplyEditModeVisual()
 end

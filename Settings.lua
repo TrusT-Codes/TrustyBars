@@ -205,13 +205,49 @@ local INDENT_SECTION = 18
 local INDENT_CONTROL = 22
 local INDENT_INPUT   = 85
 
--- Shared "Use Vanilla Pet Bar" checkbox, added to both the Pet Bar's
--- normal full grid page (GetOrCreateBarPage) and its simple/native-mode
--- page (CreateSimpleBarPage) so the toggle is reachable from either mode.
--- Switching mode only takes effect on the next login (CreateFixedSlot-
--- DefaultBars/CreatePetBarNativeContainer, DefaultBars.lua, both run once
--- at PLAYER_LOGIN) - mirrors the Profiles panel's Import/Copy/Delete
--- confirm-then-ReloadUI pattern (Settings.lua's Profiles panel).
+-------------------------------------------------------------------------
+-- Hover-only slider show/hide reflow
+--
+-- The duration slider only occupies space while its checkbox is checked; everything below it on the page shifts to match.
+-------------------------------------------------------------------------
+
+-- Registers `frame` (positioned at its "collapsed" baseline x/y) so ReflowRowsBelowHoverOnly can shift it when the slider toggles.
+-- Defined as a BTV: method, not a file-local, since Lua 5.0 caps a function at 32 upvalues and GetOrCreateBarPage is already close to it.
+function BTV:AddHoverOnlyReflowRow(page, frame, x, y)
+	if not frame then
+		return
+	end
+
+	if not page.hoverOnlyReflowRows then
+		page.hoverOnlyReflowRows = {}
+	end
+
+	table.insert(page.hoverOnlyReflowRows, { frame = frame, x = x, y = y })
+end
+
+-- Shifts every registered row by `sliderRowHeight` while the slider is shown, or back to baseline while hidden.
+-- page.hoverOnlyExtraReflow (optional) covers content that can't just be repositioned, like regenerated Grid Layout swatches.
+function BTV:ReflowRowsBelowHoverOnly(page, sliderShown, sliderRowHeight)
+	local offset = sliderShown and sliderRowHeight or 0
+
+	if page.hoverOnlyReflowRows then
+		local i
+
+		for i = 1, table.getn(page.hoverOnlyReflowRows) do
+			local row = page.hoverOnlyReflowRows[i]
+
+			row.frame:ClearAllPoints()
+			row.frame:SetPoint("TOPLEFT", page, "TOPLEFT", row.x, row.y - offset)
+		end
+	end
+
+	if page.hoverOnlyExtraReflow then
+		page.hoverOnlyExtraReflow(offset)
+	end
+end
+
+-- Shared "Use Vanilla Pet Bar" checkbox, added to both the Pet Bar's full grid page and its simple/native-mode page.
+-- Switching mode only takes effect on the next login (both build paths run once at PLAYER_LOGIN).
 local function CreateUseVanillaPetBarCheckbox(page, y)
 	local checkbox = CreateFrame(
 		"CheckButton",
@@ -265,9 +301,7 @@ local function CreateUseVanillaPetBarCheckbox(page, y)
 		label:SetText("Use Vanilla Pet Bar")
 	end
 
-	-- Native mode's real PetActionButton1-10 aren't Bar.lua/Button.lua pool
-	-- buttons, so they're outside Hoverbind's dispatch system entirely
-	-- (same as Stance Bar/Bag Bar/Micro Menu already are).
+	-- Native mode's real PetActionButton1-10 aren't Bar.lua/Button.lua pool buttons, so they're outside Hoverbind's dispatch system.
 	checkbox:SetScript("OnEnter", function()
 		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
 		GameTooltip:SetText("Use Vanilla Pet Bar", 1, 1, 1)
@@ -345,9 +379,7 @@ local function CreateUseVanillaStanceBarCheckbox(page, y)
 		label:SetText("Use Vanilla Stance Bar")
 	end
 
-	-- Native mode's real ShapeshiftButton1-N aren't Bar.lua/Button.lua pool
-	-- buttons, so they're outside Hoverbind's dispatch system entirely
-	-- (same as Bag Bar/Micro Menu already are).
+	-- Native mode's real ShapeshiftButton1-N aren't Bar.lua/Button.lua pool buttons, so they're outside Hoverbind's dispatch system.
 	checkbox:SetScript("OnEnter", function()
 		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
 		GameTooltip:SetText("Use Vanilla Stance Bar", 1, 1, 1)
@@ -580,10 +612,171 @@ local function CreateSettingSlider(parent, name, width)
 	return slider
 end
 
-local function SetSliderLabel(slider, text)
-	if slider.Text then
-		slider.Text:SetText(text)
+
+-------------------------------------------------------------------------
+-- Only show on hover - shared checkbox + slider
+--
+-- Used by both GetOrCreateBarPage and CreateSimpleBarPage. The slider (and its live value label) only show while the checkbox is checked.
+-------------------------------------------------------------------------
+
+-- Vertical space each row reserves for callers' layout-cursor math. BTV fields, not file-locals, for the same reason as BTV:AddHoverOnlyReflowRow above.
+BTV.HOVER_ONLY_CHECKBOX_ROW_HEIGHT = 24 + 14
+BTV.HOVER_ONLY_SLIDER_ROW_HEIGHT = 17 + 20
+
+-- Bumped on every call so each checkbox/slider pair gets its own unique frame name.
+local hoverOnlyControlsCounter = 0
+
+-- idOrKey: the owning page's barId (number) or simple-page key (string), passed to BTV:FitSettingsWindowToBarPage after a live reflow.
+function BTV:CreateHoverOnlyControls(page, y, getEnabled, setEnabled, getDuration, setDuration, idOrKey)
+	hoverOnlyControlsCounter = hoverOnlyControlsCounter + 1
+
+	local suffix = tostring(hoverOnlyControlsCounter)
+
+	local checkbox = CreateFrame(
+		"CheckButton",
+		"BTVanillaHoverOnlyCheckbox" .. suffix,
+		page,
+		"UICheckButtonTemplate"
+	)
+
+	checkbox:SetWidth(24)
+	checkbox:SetHeight(24)
+
+	checkbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, y)
+
+	local label = getglobal(checkbox:GetName() .. "Text")
+
+	if label then
+		label:SetText("Only show on hover")
 	end
+
+	checkbox:SetScript("OnEnter", function()
+		GameTooltip:SetOwner(this, "ANCHOR_RIGHT")
+		GameTooltip:SetText("Only show on hover", 1, 1, 1)
+		GameTooltip:AddLine(
+			"When enabled, this Element will be hidden until Mouseover.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:AddLine(
+			"When enabled a new Slider appears to set how long the Element stays visible after a Mouseover Event until it disappears again.",
+			1, 0.82, 0, true
+		)
+		GameTooltip:Show()
+	end)
+
+	checkbox:SetScript("OnLeave", function()
+		GameTooltip:Hide()
+	end)
+
+	local sliderY = y - 24 - 14
+
+	-- Inline label to the left of the slider, same convention as the X/Y sliders, not OptionsSliderTemplate's own top label.
+	local fadeOutLabel = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	fadeOutLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, sliderY)
+	fadeOutLabel:SetText("Fade out time")
+
+	local slider = CreateSettingSlider(
+		page,
+		"BTVanillaHoverOnlyDurationSlider" .. suffix,
+		225
+	)
+
+	slider:SetPoint("TOPLEFT", page, "TOPLEFT", 150, sliderY + 4)
+	slider:SetMinMaxValues(0, 10)
+	slider:SetValueStep(0.5)
+
+	local sliderLow = getglobal(slider:GetName() .. "Low")
+
+	if sliderLow then
+		sliderLow:SetText("0s")
+	end
+
+	local sliderHigh = getglobal(slider:GetName() .. "High")
+
+	if sliderHigh then
+		sliderHigh:SetText("10s")
+	end
+
+	local valueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+	valueText:SetPoint("TOP", slider, "BOTTOM", 0, -2)
+	valueText:SetText("3.0s")
+
+	slider:SetScript("OnValueChanged", function()
+		local value = this:GetValue()
+
+		if not value then
+			return
+		end
+
+		value = math.floor((value * 2) + 0.5) / 2
+
+		valueText:SetText(string.format("%.1fs", value))
+
+		if not this.suppressApply then
+			setDuration(value)
+		end
+	end)
+
+	checkbox:SetScript("OnClick", function()
+		local checked = this:GetChecked() and true or false
+
+		setEnabled(checked)
+
+		fadeOutLabel:SetShown(checked)
+		slider:SetShown(checked)
+		valueText:SetShown(checked)
+
+		self:ReflowRowsBelowHoverOnly(page, checked, self.HOVER_ONLY_SLIDER_ROW_HEIGHT)
+
+		DeferFit(function() BTV:FitSettingsWindowToBarPage(idOrKey) end)
+	end)
+
+	local startEnabled = getEnabled() == true
+
+	fadeOutLabel:SetShown(startEnabled)
+	slider:SetShown(startEnabled)
+	valueText:SetShown(startEnabled)
+
+	page.hoverOnlyCheckbox = checkbox
+	page.hoverOnlyFadeLabel = fadeOutLabel
+	page.hoverDurationSlider = slider
+	page.hoverDurationValueText = valueText
+
+	return self.HOVER_ONLY_CHECKBOX_ROW_HEIGHT
+end
+
+-- Syncs the checkbox/slider pair above FROM the saved config. No-op if this page never built the controls.
+function BTV:RefreshHoverOnlyControls(page, enabled, duration)
+	if not page.hoverOnlyCheckbox then
+		return
+	end
+
+	enabled = enabled == true
+	duration = self:ClampHoverDuration(duration) or 3
+
+	page.hoverOnlyCheckbox:SetChecked(enabled)
+
+	if page.hoverOnlyFadeLabel then
+		page.hoverOnlyFadeLabel:SetShown(enabled)
+	end
+
+	if page.hoverDurationSlider then
+		page.hoverDurationSlider.suppressApply = true
+		page.hoverDurationSlider:SetValue(duration)
+		page.hoverDurationSlider.suppressApply = nil
+
+		page.hoverDurationSlider:SetShown(enabled)
+	end
+
+	if page.hoverDurationValueText then
+		page.hoverDurationValueText:SetText(string.format("%.1fs", duration))
+		page.hoverDurationValueText:SetShown(enabled)
+	end
+
+	-- Reflects the real saved state on open/reselect, not just the freshly built page's collapsed baseline.
+	self:ReflowRowsBelowHoverOnly(page, enabled, self.HOVER_ONLY_SLIDER_ROW_HEIGHT)
 end
 
 -------------------------------------------------------------------------
@@ -1645,9 +1838,12 @@ function BTV:GetOrCreateBarPage(barId)
 		positionStartY = checkboxY - 24 - 14
 	end
 
-	-- Pet Bar only: "Use Vanilla Pet Bar" + "Condense empty Button Space" +
-	-- "Animate Auto-Cast Toggle" checkboxes reserve three more rows right
-	-- below Enabled, pushing the Position section down to make room.
+	-- "Only show on hover" checkbox + slider - every bar page this builder produces.
+	local hoverOnlyCheckboxY = positionStartY
+
+	positionStartY = positionStartY - self.HOVER_ONLY_CHECKBOX_ROW_HEIGHT
+
+	-- Pet Bar only: three more checkbox rows push the Position section down to make room.
 	local isPetBarPage = barId == BTV.PET_BAR_ID
 	local useVanillaPetBarY = positionStartY
 	local condenseEmptyPetSlotsY = useVanillaPetBarY - 24 - 14
@@ -1726,13 +1922,50 @@ function BTV:GetOrCreateBarPage(barId)
 	end
 
 	-------------------------------------------------------------------------
+	-- Only show on hover
+	-------------------------------------------------------------------------
+
+	self:CreateHoverOnlyControls(
+		page,
+		hoverOnlyCheckboxY,
+		function()
+			local cfg = GetBarConfig(barId)
+			return cfg and cfg.hoverOnly
+		end,
+		function(v)
+			local bar = BTV.bars[barId]
+
+			if bar then
+				BTV:SetBarHoverOnly(bar, v)
+			end
+		end,
+		function()
+			local cfg = GetBarConfig(barId)
+			return (cfg and cfg.hoverDuration) or 3
+		end,
+		function(v)
+			local bar = BTV.bars[barId]
+
+			if bar then
+				BTV:SetBarHoverDuration(bar, v)
+			end
+		end,
+		barId
+	)
+
+	-------------------------------------------------------------------------
 	-- Use Vanilla Pet Bar (Pet Bar page only)
 	-------------------------------------------------------------------------
 
 	if isPetBarPage then
 		CreateUseVanillaPetBarCheckbox(page, useVanillaPetBarY)
+		self:AddHoverOnlyReflowRow(page, page.useVanillaPetBarCheckbox, INDENT_SECTION, useVanillaPetBarY)
+
 		CreateCondenseEmptyPetSlotsCheckbox(page, condenseEmptyPetSlotsY)
+		self:AddHoverOnlyReflowRow(page, page.condenseEmptyPetSlotsCheckbox, INDENT_SECTION, condenseEmptyPetSlotsY)
+
 		CreateAnimateAutoCastGlowCheckbox(page, animateAutoCastGlowY)
+		self:AddHoverOnlyReflowRow(page, page.animateAutoCastGlowCheckbox, INDENT_SECTION, animateAutoCastGlowY)
 	end
 
 	-------------------------------------------------------------------------
@@ -1741,6 +1974,7 @@ function BTV:GetOrCreateBarPage(barId)
 
 	if isStanceBarPage then
 		CreateUseVanillaStanceBarCheckbox(page, useVanillaStanceBarY)
+		self:AddHoverOnlyReflowRow(page, page.useVanillaStanceBarCheckbox, INDENT_SECTION, useVanillaStanceBarY)
 	end
 
 	-------------------------------------------------------------------------
@@ -1774,6 +2008,8 @@ function BTV:GetOrCreateBarPage(barId)
 	)
 
 	xLabel:SetText("X")
+
+	self:AddHoverOnlyReflowRow(page, xLabel, INDENT_CONTROL, xLabelY)
 
 	local xSlider = CreateSettingSlider(
 		page,
@@ -1850,6 +2086,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.xSlider = xSlider
 
+	self:AddHoverOnlyReflowRow(page, xSlider, INDENT_INPUT, xSliderY)
+
 	-------------------------------------------------------------------------
 	-- Y slider
 	-------------------------------------------------------------------------
@@ -1869,6 +2107,8 @@ function BTV:GetOrCreateBarPage(barId)
 	)
 
 	yLabel:SetText("Y")
+
+	self:AddHoverOnlyReflowRow(page, yLabel, INDENT_CONTROL, yLabelY)
 
 	local ySlider = CreateSettingSlider(
 		page,
@@ -1943,6 +2183,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.ySlider = ySlider
 
+	self:AddHoverOnlyReflowRow(page, ySlider, INDENT_INPUT, ySliderY)
+
 	-- Reset to Blizzard Default (default bars only) is created further
 	-- down, below the Spacing slider and above Grid Layout.
 
@@ -1971,6 +2213,8 @@ function BTV:GetOrCreateBarPage(barId)
 		"Button Size (" .. tostring(BUTTON_SIZE_MIN) ..
 		" to " .. tostring(BUTTON_SIZE_MAX) .. ")"
 	)
+
+	self:AddHoverOnlyReflowRow(page, layoutTitle, INDENT_SECTION, sizeLayoutTitleY)
 
 	-------------------------------------------------------------------------
 	-- Button Size
@@ -2084,6 +2328,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.buttonSizeSlider = buttonSizeSlider
 
+	self:AddHoverOnlyReflowRow(page, buttonSizeSlider, INDENT_INPUT, buttonSizeSliderY)
+
 	-------------------------------------------------------------------------
 	-- Spacing - every bar kind gets this control, default bars 1-5 and
 	-- custom bars 6+. Mirrors the Button Size slider's live-value-label/
@@ -2120,6 +2366,8 @@ function BTV:GetOrCreateBarPage(barId)
 			"Spacing (" .. tostring(SPACING_MIN) ..
 			" to " .. tostring(SPACING_MAX) .. ")"
 		)
+
+		self:AddHoverOnlyReflowRow(page, spacingTitle, INDENT_SECTION, spacingTitleY)
 
 		local spacingSlider = CreateSettingSlider(
 			page,
@@ -2229,6 +2477,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 		page.spacingSlider = spacingSlider
 
+		self:AddHoverOnlyReflowRow(page, spacingSlider, INDENT_INPUT, spacingSliderY)
+
 		if isDefault then
 			-------------------------------------------------------------------------
 			-- Reset to Blizzard default position (default bars only - custom
@@ -2272,6 +2522,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 			page.resetPositionButton = resetPositionButton
 
+			self:AddHoverOnlyReflowRow(page, resetPositionButton, INDENT_INPUT, resetButtonY)
+
 			-- Grid Layout shifts down to make room for the Spacing section
 			-- plus the Reset button above it.
 			gridTitleY = resetButtonY - 34
@@ -2304,12 +2556,37 @@ function BTV:GetOrCreateBarPage(barId)
 
 	gridTitle:SetText("Grid Layout")
 
-	-- Stored so RefreshBarSettingsPage can rebuild this row later (Stance
-	-- Bar's live preset list only - every other bar's swatches are static
-	-- once built).
+	-- Stored so RefreshBarSettingsPage can rebuild this row later (Stance Bar's live preset list only).
 	page.gridSwatchY = swatchY
 
 	RebuildGridSwatches(page, barId, swatchY)
+
+	-- Grid Layout can't just be added to page.hoverOnlyReflowRows - its swatches are a dynamic array, repositioned in place instead of rebuilt here.
+	page.hoverOnlyExtraReflow = function(offset)
+		gridTitle:ClearAllPoints()
+		gridTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, gridTitleY - offset)
+
+		page.gridSwatchY = swatchY - offset
+
+		if page.noStancesText then
+			page.noStancesText:ClearAllPoints()
+			page.noStancesText:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, page.gridSwatchY)
+		end
+
+		if page.gridSwatches then
+			local xOffset = INDENT_CONTROL
+			local i
+
+			for i = 1, table.getn(page.gridSwatches) do
+				local swatch = page.gridSwatches[i]
+
+				swatch:ClearAllPoints()
+				swatch:SetPoint("TOPLEFT", page, "TOPLEFT", xOffset, page.gridSwatchY)
+
+				xOffset = xOffset + SWATCH_SIZE + SWATCH_GAP
+			end
+		end
+	end
 
 	-------------------------------------------------------------------------
 	-- Button count stepper (custom bars only) - default bars always show
@@ -2339,6 +2616,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 		buttonCountLabel:SetText("Buttons Shown")
 
+		self:AddHoverOnlyReflowRow(page, buttonCountLabel, INDENT_SECTION, buttonCountLabelY)
+
 		local buttonCountMinus = CreateFrame(
 			"Button",
 			"BTVanillaBar" .. tostring(barId) .. "ButtonCountMinus",
@@ -2357,6 +2636,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 		BTV:StyleModernButton(buttonCountMinus, 24, 24)
 		buttonCountMinus:SetText("-")
+
+		self:AddHoverOnlyReflowRow(page, buttonCountMinus, INDENT_INPUT, buttonCountRowY)
 
 		local buttonCountValueText = page:CreateFontString(
 			nil,
@@ -2498,6 +2779,8 @@ function BTV:GetOrCreateBarPage(barId)
 
 		pageIndicatorTitle:SetText("Page Indicator Scale")
 
+		self:AddHoverOnlyReflowRow(page, pageIndicatorTitle, INDENT_SECTION, pageIndicatorTitleY)
+
 		local pageIndicatorSlider = CreateSettingSlider(
 			page,
 			"BTVanillaMainBarPageIndicatorScaleSlider",
@@ -2558,6 +2841,8 @@ function BTV:GetOrCreateBarPage(barId)
 		page.pageIndicatorSlider = pageIndicatorSlider
 		page.pageIndicatorValueText = pageIndicatorValueText
 
+		self:AddHoverOnlyReflowRow(page, pageIndicatorSlider, INDENT_INPUT, pageIndicatorSliderY)
+
 		-------------------------------------------------------------------------
 		-- Stance / Page Bar Assignment - settings specific to bar 1's own
 		-- pagination/stance-swap behavior (the two gating checkboxes live
@@ -2590,6 +2875,9 @@ function BTV:GetOrCreateBarPage(barId)
 
 		page.assignmentContainer = assignmentContainer
 		page.assignmentRows = {}
+
+		-- Rows RebuildMainBarAssignmentRows populates later anchor to assignmentContainer, so repositioning it carries all of them along.
+		self:AddHoverOnlyReflowRow(page, assignmentContainer, INDENT_SECTION, pageIndicatorSliderY - 44)
 	end
 
 	-------------------------------------------------------------------------
@@ -2804,6 +3092,7 @@ local PROFILE_LOCK_CONTROL_NAMES = {
 	"expBarTextColorSwatch", "expBarGlowPulseIntervalSlider",
 	"useVanillaPetBarCheckbox", "condenseEmptyPetSlotsCheckbox",
 	"animateAutoCastGlowCheckbox", "useVanillaStanceBarCheckbox",
+	"hoverOnlyCheckbox", "hoverDurationSlider",
 }
 
 -- alsoCheckLayoutLock: true on the pages the Default-layout lock also
@@ -2920,6 +3209,23 @@ local function ApplyDefaultLayoutGating(page, interactive)
 	if page.spacingSlider then
 		page.spacingSlider:EnableMouse(interactive)
 		page.spacingSlider:SetAlpha(alpha)
+	end
+
+	if page.hoverOnlyCheckbox then
+		page.hoverOnlyCheckbox:EnableMouse(interactive)
+		page.hoverOnlyCheckbox:SetAlpha(alpha)
+
+		-- EnableMouse alone doesn't block this template's OnClick, see LockControl's comment above.
+		if interactive then
+			page.hoverOnlyCheckbox:Enable()
+		else
+			page.hoverOnlyCheckbox:Disable()
+		end
+	end
+
+	if page.hoverDurationSlider then
+		page.hoverDurationSlider:EnableMouse(interactive)
+		page.hoverDurationSlider:SetAlpha(alpha)
 	end
 
 	if page.gridSwatches then
@@ -3258,22 +3564,39 @@ local function CreateSimpleBarPage(key)
 		topY = enableCheckboxY - 24 - 14
 	end
 
-	-- Use Vanilla Pet Bar (Pet Bar page only) - lets the user switch back
-	-- to the custom-styled grid mode from here too.
+	-------------------------------------------------------------------------
+	-- Only show on hover (config.hasHoverOnly) - always the entry right after Enabled.
+	-------------------------------------------------------------------------
+
+	if config.hasHoverOnly then
+		topY = topY - BTV:CreateHoverOnlyControls(
+			page,
+			topY,
+			config.getHoverOnly,
+			config.setHoverOnly,
+			config.getHoverDuration,
+			config.setHoverDuration,
+			key
+		)
+	end
+
+	-- Use Vanilla Pet Bar (Pet Bar page only) - lets the user switch back to the custom-styled grid mode from here too.
 	if key == BTV.PET_BAR_ID then
 		CreateUseVanillaPetBarCheckbox(page, topY)
+		BTV:AddHoverOnlyReflowRow(page, page.useVanillaPetBarCheckbox, INDENT_SECTION, topY)
 
 		topY = topY - 24 - 14
 
 		CreateCondenseEmptyPetSlotsCheckbox(page, topY)
+		BTV:AddHoverOnlyReflowRow(page, page.condenseEmptyPetSlotsCheckbox, INDENT_SECTION, topY)
 
 		topY = topY - 24 - 14
 	end
 
-	-- Use Vanilla Stance Bar (Stance Bar native page only) - lets the user
-	-- switch to the custom-styled grid mode from here too.
+	-- Use Vanilla Stance Bar (Stance Bar native page only) - lets the user switch to the custom-styled grid mode from here too.
 	if key == BTV.STANCE_BAR_ID then
 		CreateUseVanillaStanceBarCheckbox(page, topY)
+		BTV:AddHoverOnlyReflowRow(page, page.useVanillaStanceBarCheckbox, INDENT_SECTION, topY)
 
 		topY = topY - 24 - 14
 	end
@@ -3293,6 +3616,8 @@ local function CreateSimpleBarPage(key)
 
 	xLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, xLabelY)
 	xLabel:SetText("X")
+
+	BTV:AddHoverOnlyReflowRow(page, xLabel, INDENT_CONTROL, xLabelY)
 
 	local xSlider = CreateSettingSlider(
 		page,
@@ -3334,6 +3659,8 @@ local function CreateSimpleBarPage(key)
 
 	page.xSlider = xSlider
 
+	BTV:AddHoverOnlyReflowRow(page, xSlider, INDENT_INPUT, xSliderY)
+
 	-------------------------------------------------------------------------
 	-- Y slider
 	-------------------------------------------------------------------------
@@ -3342,6 +3669,8 @@ local function CreateSimpleBarPage(key)
 
 	yLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, yLabelY)
 	yLabel:SetText("Y")
+
+	BTV:AddHoverOnlyReflowRow(page, yLabel, INDENT_CONTROL, yLabelY)
 
 	local ySlider = CreateSettingSlider(
 		page,
@@ -3383,6 +3712,8 @@ local function CreateSimpleBarPage(key)
 
 	page.ySlider = ySlider
 
+	BTV:AddHoverOnlyReflowRow(page, ySlider, INDENT_INPUT, ySliderY)
+
 	-- Cursor for whichever of Spacing/Scale/Orientation this element
 	-- actually has - cascades exactly like
 	-- CreateBarPage's own section-to-section deltas (36px title gap, 26px
@@ -3417,6 +3748,8 @@ local function CreateSimpleBarPage(key)
 		spacingTitle:SetText(
 			"Spacing (" .. tostring(spacingMin) .. " to " .. tostring(SPACING_MAX) .. ")"
 		)
+
+		BTV:AddHoverOnlyReflowRow(page, spacingTitle, INDENT_SECTION, spacingTitleY)
 
 		local spacingSlider = CreateSettingSlider(
 			page,
@@ -3470,6 +3803,8 @@ local function CreateSimpleBarPage(key)
 
 		page.spacingSlider = spacingSlider
 
+		BTV:AddHoverOnlyReflowRow(page, spacingSlider, INDENT_INPUT, spacingSliderY)
+
 		cursorY = spacingSliderY - 36
 	end
 
@@ -3488,6 +3823,8 @@ local function CreateSimpleBarPage(key)
 
 		scaleTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, scaleTitleY)
 		scaleTitle:SetText("Scale (0.5 to 2.0)")
+
+		BTV:AddHoverOnlyReflowRow(page, scaleTitle, INDENT_SECTION, scaleTitleY)
 
 		local scaleSlider = CreateSettingSlider(
 			page,
@@ -3541,6 +3878,8 @@ local function CreateSimpleBarPage(key)
 
 		page.scaleSlider = scaleSlider
 
+		BTV:AddHoverOnlyReflowRow(page, scaleSlider, INDENT_INPUT, scaleSliderY)
+
 		cursorY = scaleSliderY - 36
 	end
 
@@ -3581,6 +3920,8 @@ local function CreateSimpleBarPage(key)
 		end
 
 		page.orientationCheckbox = orientationCheckbox
+
+		BTV:AddHoverOnlyReflowRow(page, orientationCheckbox, INDENT_SECTION, cursorY)
 
 		cursorY = cursorY - 24 - 14
 	end
@@ -3648,6 +3989,8 @@ local function CreateSimpleBarPage(key)
 
 		page.betterExpBarCheckbox = betterExpBarCheckbox
 
+		BTV:AddHoverOnlyReflowRow(page, betterExpBarCheckbox, INDENT_SECTION, cursorY)
+
 		cursorY = cursorY - 24 - 14
 
 		-------------------------------------------------------------------------
@@ -3673,6 +4016,8 @@ local function CreateSimpleBarPage(key)
 			"Overlay Text Size (" .. tostring(FONT_SIZE_MIN) ..
 			" to " .. tostring(FONT_SIZE_MAX) .. ")"
 		)
+
+		BTV:AddHoverOnlyReflowRow(page, fontSizeTitle, INDENT_SECTION, fontSizeTitleY)
 
 		local fontSizeSlider = CreateSettingSlider(
 			page,
@@ -3729,6 +4074,8 @@ local function CreateSimpleBarPage(key)
 
 		page.expBarFontSizeSlider = fontSizeSlider
 
+		BTV:AddHoverOnlyReflowRow(page, fontSizeSlider, INDENT_INPUT, fontSizeSliderY)
+
 		cursorY = fontSizeSliderY - 36
 
 		-------------------------------------------------------------------------
@@ -3739,30 +4086,35 @@ local function CreateSimpleBarPage(key)
 			page, "ShowLevel", "Show Current Lvl", cursorY, "expBarShowLevel"
 		)
 		page.expBarShowLevelCheckbox = showLevelCheckbox
+		BTV:AddHoverOnlyReflowRow(page, showLevelCheckbox, INDENT_SECTION, cursorY)
 		cursorY = cursorY - 24 - 6
 
 		local showCurrentOverMaxCheckbox = CreateExpBarTextToggleCheckbox(
 			page, "ShowCurrentOverMax", "Show Current XP / Max", cursorY, "expBarShowCurrentOverMax"
 		)
 		page.expBarShowCurrentOverMaxCheckbox = showCurrentOverMaxCheckbox
+		BTV:AddHoverOnlyReflowRow(page, showCurrentOverMaxCheckbox, INDENT_SECTION, cursorY)
 		cursorY = cursorY - 24 - 6
 
 		local showPercentCheckbox = CreateExpBarTextToggleCheckbox(
 			page, "ShowPercent", "Show Current % / Max", cursorY, "expBarShowPercent"
 		)
 		page.expBarShowPercentCheckbox = showPercentCheckbox
+		BTV:AddHoverOnlyReflowRow(page, showPercentCheckbox, INDENT_SECTION, cursorY)
 		cursorY = cursorY - 24 - 6
 
 		local showRestedPercentCheckbox = CreateExpBarTextToggleCheckbox(
 			page, "ShowRestedPercent", "Show Current Rested XP %", cursorY, "expBarShowRestedPercent"
 		)
 		page.expBarShowRestedPercentCheckbox = showRestedPercentCheckbox
+		BTV:AddHoverOnlyReflowRow(page, showRestedPercentCheckbox, INDENT_SECTION, cursorY)
 		cursorY = cursorY - 24 - 6
 
 		local showRestedTotalCheckbox = CreateExpBarTextToggleCheckbox(
 			page, "ShowRestedTotal", "Show Current Total Rested XP", cursorY, "expBarShowRestedTotal"
 		)
 		page.expBarShowRestedTotalCheckbox = showRestedTotalCheckbox
+		BTV:AddHoverOnlyReflowRow(page, showRestedTotalCheckbox, INDENT_SECTION, cursorY)
 		cursorY = cursorY - 24 - 18
 
 		-------------------------------------------------------------------------
@@ -3773,6 +4125,8 @@ local function CreateSimpleBarPage(key)
 
 		earnedColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
 		earnedColorLabel:SetText("Earned XP Bar Color")
+
+		BTV:AddHoverOnlyReflowRow(page, earnedColorLabel, INDENT_CONTROL, cursorY)
 
 		local earnedColorSwatch = CreateColorSwatchButton(
 			page, "BTVanillaSimplePageExpBarEarnedColorSwatch"
@@ -3799,6 +4153,8 @@ local function CreateSimpleBarPage(key)
 
 		restedColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
 		restedColorLabel:SetText("Rested XP Bar Color")
+
+		BTV:AddHoverOnlyReflowRow(page, restedColorLabel, INDENT_CONTROL, cursorY)
 
 		local restedColorSwatch = CreateColorSwatchButton(
 			page, "BTVanillaSimplePageExpBarRestedColorSwatch"
@@ -3836,6 +4192,8 @@ local function CreateSimpleBarPage(key)
 
 		textColorLabel:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_CONTROL, cursorY)
 		textColorLabel:SetText("Overlay Text Color")
+
+		BTV:AddHoverOnlyReflowRow(page, textColorLabel, INDENT_CONTROL, cursorY)
 
 		local textColorSwatch = CreateColorSwatchButton(
 			page, "BTVanillaSimplePageExpBarTextColorSwatch"
@@ -3881,6 +4239,8 @@ local function CreateSimpleBarPage(key)
 
 		page.resetColorsButton = resetColorsButton
 
+		BTV:AddHoverOnlyReflowRow(page, resetColorsButton, INDENT_INPUT, cursorY)
+
 		cursorY = cursorY - 22 - 26
 
 		-------------------------------------------------------------------------
@@ -3901,6 +4261,8 @@ local function CreateSimpleBarPage(key)
 
 		pulseIntervalTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, pulseIntervalTitleY)
 		pulseIntervalTitle:SetText("Rested Glow Pulse Interval (0.5 to 5.0 sec)")
+
+		BTV:AddHoverOnlyReflowRow(page, pulseIntervalTitle, INDENT_SECTION, pulseIntervalTitleY)
 
 		local pulseIntervalSlider = CreateSettingSlider(
 			page,
@@ -3957,6 +4319,8 @@ local function CreateSimpleBarPage(key)
 
 		page.expBarGlowPulseIntervalSlider = pulseIntervalSlider
 
+		BTV:AddHoverOnlyReflowRow(page, pulseIntervalSlider, INDENT_INPUT, pulseIntervalSliderY)
+
 		cursorY = pulseIntervalSliderY - 36
 	end
 
@@ -4003,6 +4367,8 @@ local function CreateSimpleBarPage(key)
 
 		page.keyRingCheckbox = keyRingCheckbox
 
+		BTV:AddHoverOnlyReflowRow(page, keyRingCheckbox, INDENT_SECTION, cursorY)
+
 		cursorY = cursorY - 24 - 14
 
 		-------------------------------------------------------------------------
@@ -4024,6 +4390,8 @@ local function CreateSimpleBarPage(key)
 
 		keyRingScaleTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, keyRingScaleTitleY)
 		keyRingScaleTitle:SetText("Key Ring Scale (0.5 to 2.0)")
+
+		BTV:AddHoverOnlyReflowRow(page, keyRingScaleTitle, INDENT_SECTION, keyRingScaleTitleY)
 
 		local keyRingScaleSlider = CreateSettingSlider(
 			page,
@@ -4077,6 +4445,8 @@ local function CreateSimpleBarPage(key)
 
 		page.keyRingScaleSlider = keyRingScaleSlider
 
+		BTV:AddHoverOnlyReflowRow(page, keyRingScaleSlider, INDENT_INPUT, keyRingScaleSliderY)
+
 		cursorY = keyRingScaleSliderY - 36
 	end
 
@@ -4097,6 +4467,8 @@ local function CreateSimpleBarPage(key)
 	resetButton:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, resetY)
 	BTV:StyleModernButton(resetButton, 200, 200)
 	resetButton:SetText("Reset to Blizzard Default")
+
+	BTV:AddHoverOnlyReflowRow(page, resetButton, INDENT_INPUT, resetY)
 
 	resetButton:SetScript(
 		"OnClick",
@@ -4266,6 +4638,10 @@ function BTV:RefreshSimpleBarPage(key)
 		page.orientationCheckbox:SetChecked(config.getOrientation() == true)
 	end
 
+	if config.hasHoverOnly then
+		self:RefreshHoverOnlyControls(page, config.getHoverOnly(), config.getHoverDuration())
+	end
+
 	-------------------------------------------------------------------------
 	-- "Better Experience Bar" + its 5 text toggles + Font Size slider +
 	-- 3 color swatches (Experience Bar page only) - independent of
@@ -4415,6 +4791,18 @@ simpleBarPageConfigs[BTV.STANCE_BAR_ID] = {
 	hasOrientation = true,
 	getOrientation = function() return BTVanillaDB.stanceBarOrientation end,
 	setOrientation = function(v) BTV:SetStanceBarOrientation(v) end,
+	-- Shared with the custom-styled Stance Bar's grid: defaultBars[STANCE_BAR_ID].hoverOnly/hoverDuration, not a separate flat field.
+	hasHoverOnly = true,
+	getHoverOnly = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+		return cfg and cfg.hoverOnly
+	end,
+	setHoverOnly = function(v) BTV:SetStanceBarNativeHoverOnly(v) end,
+	getHoverDuration = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.STANCE_BAR_ID]
+		return (cfg and cfg.hoverDuration) or 3
+	end,
+	setHoverDuration = function(v) BTV:SetStanceBarNativeHoverDuration(v) end,
 }
 
 -- Bag Bar's synthetic container is a TrustyBars-owned chain-anchored
@@ -4450,16 +4838,16 @@ simpleBarPageConfigs["bagbar"] = {
 	hasOrientation = true,
 	getOrientation = function() return BTVanillaDB.bagBarOrientation end,
 	setOrientation = function(v) BTV:SetBagBarOrientation(v) end,
+	-- Also governs the Key Ring frame - no separate Key Ring fields/controls.
+	hasHoverOnly = true,
+	getHoverOnly = function() return BTVanillaDB.bagBarHoverOnly end,
+	setHoverOnly = function(v) BTV:SetBagBarHoverOnly(v) end,
+	getHoverDuration = function() return BTVanillaDB.bagBarHoverDuration or 3 end,
+	setHoverDuration = function(v) BTV:SetBagBarHoverDuration(v) end,
 }
 
--- Pet Bar native mode (cfg.useNativePetBar): reuses the SAME
--- BTVanillaDB.defaultBars[PET_BAR_ID] cfg the custom-styled grid mode
--- uses for position/spacing, so x/y/spacing never drift out of sync
--- between modes - see DefaultBars.lua's Pet Bar (native container)
--- section. Keyed by the numeric BTV.PET_BAR_ID, not a string - only
--- reached via GetOrCreateBarPage/RefreshBarSettingsPage's explicit
--- IsPetBarNativeMode() dispatch, never the generic simpleBarPageConfigs[]
--- check (which excludes this id).
+-- Pet Bar native mode: reuses the same defaultBars[PET_BAR_ID] cfg the custom-styled grid mode uses, so x/y/spacing never drift between modes.
+-- Keyed by the numeric BTV.PET_BAR_ID, only reached via IsPetBarNativeMode() dispatch.
 simpleBarPageConfigs[BTV.PET_BAR_ID] = {
 	title = "Pet Bar",
 	hasEnable = true,
@@ -4483,6 +4871,18 @@ simpleBarPageConfigs[BTV.PET_BAR_ID] = {
 		return cfg and cfg.scale
 	end,
 	setScale = function(v) BTV:SetPetBarNativeScale(v) end,
+	-- Shared with the custom-styled Pet Bar's grid, same treatment as the Stance Bar's own entry above.
+	hasHoverOnly = true,
+	getHoverOnly = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		return cfg and cfg.hoverOnly
+	end,
+	setHoverOnly = function(v) BTV:SetPetBarNativeHoverOnly(v) end,
+	getHoverDuration = function()
+		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+		return (cfg and cfg.hoverDuration) or 3
+	end,
+	setHoverDuration = function(v) BTV:SetPetBarNativeHoverDuration(v) end,
 }
 
 -- Scale only: Blizzard owns MainMenuBarPerformanceBarFrame's own internal
@@ -4502,6 +4902,11 @@ simpleBarPageConfigs["latencybar"] = {
 	hasScale = true,
 	getScale = function() return BTVanillaDB.latencyBarScale end,
 	setScale = function(v) BTV:SetLatencyBarScale(v) end,
+	hasHoverOnly = true,
+	getHoverOnly = function() return BTVanillaDB.latencyBarHoverOnly end,
+	setHoverOnly = function(v) BTV:SetLatencyBarHoverOnly(v) end,
+	getHoverDuration = function() return BTVanillaDB.latencyBarHoverDuration or 3 end,
+	setHoverDuration = function(v) BTV:SetLatencyBarHoverDuration(v) end,
 }
 
 -- Experience Bar: Scale only, same reasoning as the Latency Bar's own
@@ -4526,6 +4931,11 @@ simpleBarPageConfigs["expbar"] = {
 	hasScale = true,
 	getScale = function() return BTVanillaDB.expBarScale end,
 	setScale = function(v) BTV:SetExpBarScale(v) end,
+	hasHoverOnly = true,
+	getHoverOnly = function() return BTVanillaDB.expBarHoverOnly end,
+	setHoverOnly = function(v) BTV:SetExpBarHoverOnly(v) end,
+	getHoverDuration = function() return BTVanillaDB.expBarHoverDuration or 3 end,
+	setHoverDuration = function(v) BTV:SetExpBarHoverDuration(v) end,
 }
 
 -- Cast Bar: Position + Scale only, no Enable checkbox.
@@ -4565,6 +4975,11 @@ simpleBarPageConfigs["micromenu"] = {
 	hasOrientation = true,
 	getOrientation = function() return BTVanillaDB.microMenuOrientation end,
 	setOrientation = function(v) BTV:SetMicroMenuOrientation(v) end,
+	hasHoverOnly = true,
+	getHoverOnly = function() return BTVanillaDB.microMenuHoverOnly end,
+	setHoverOnly = function(v) BTV:SetMicroMenuHoverOnly(v) end,
+	getHoverDuration = function() return BTVanillaDB.microMenuHoverDuration or 3 end,
+	setHoverDuration = function(v) BTV:SetMicroMenuHoverDuration(v) end,
 }
 
 -- Shared right-click-to-settings entry point for any string-keyed simple
@@ -4612,6 +5027,8 @@ function BTV:RefreshBarSettingsPage(barId)
 	if not cfg then
 		return
 	end
+
+	self:RefreshHoverOnlyControls(page, cfg.hoverOnly, cfg.hoverDuration)
 
 	-------------------------------------------------------------------------
 	-- Suppress OnValueChanged re-application while we're just syncing the
@@ -5239,6 +5656,9 @@ function BTV:FitSettingsWindowToBarPage(barId)
 	local candidates = {}
 	local n = 0
 
+	n = AppendCandidate(candidates, n, page.hoverOnlyCheckbox)
+	n = AppendCandidate(candidates, n, page.hoverDurationSlider)
+	n = AppendCandidate(candidates, n, page.hoverDurationValueText)
 	n = AppendCandidate(candidates, n, page.xValueText)
 	n = AppendCandidate(candidates, n, page.yValueText)
 	n = AppendCandidate(candidates, n, page.spacingValueText)
