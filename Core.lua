@@ -643,6 +643,19 @@ function BTV:RecaptureDefaultBarNativeAnchors()
 		self:ApplyAllDefaultBars()
 		self:Print("Live bar positions re-applied from the fresh capture.")
 	end
+
+	-- Pet Bar's own x/y are only ever derived from Bar 3/Bar 1's
+	-- nativeAnchor (SyncPetBarAnchorX/ReflowPetBarForBar3Toggle) - re-derive
+	-- both now in case this recapture just corrected a late
+	-- MainMenuBar-cluster drift on either of them.
+	if self.SyncPetBarAnchorX then
+		self:SyncPetBarAnchorX()
+	end
+
+	if self.petBarNativeContainer and BTVanillaDB.useDefaultLayout ~= false then
+		local bar3Cfg = BTVanillaDB.defaultBars[3]
+		self:ReflowPetBarForBar3Toggle(bar3Cfg and bar3Cfg.enabled)
+	end
 end
 
 -------------------------------------------------------------------------
@@ -2683,14 +2696,46 @@ end
 local DRIFT_RECHECK_DELAY = 5
 local DRIFT_TOLERANCE = 1
 
--- Builds Pet Bar's native container and sets its default position.
--- PetActionBarFrame/PetActionButton1's own real screen position is never
--- read for this - live-confirmed across many logins to report a stable
--- but wrong value with no settle behavior at all, so no amount of waiting
--- or polling fixes it. Instead the default anchor is derived from Bar 3's
--- own (reliably-captured, every login) nativeAnchor.x, falling back to
--- Bar 1's if Bar 3 was never captured - same "derive from a sibling bar"
--- approach ReflowPetBarForBar3Toggle already uses for y.
+-- Copies Bar 3's (or Bar 1's) current nativeAnchor.x into Pet Bar's own
+-- cfg.x. PetActionButton1/PetActionBarFrame's own real screen position is
+-- never read for this - live-confirmed across many logins to report a
+-- stable but wrong value with no settle behavior at all, so no amount of
+-- waiting or polling fixes it; Pet Bar's anchor is only ever a copy of a
+-- sibling bar's, never captured independently (same approach
+-- ReflowPetBarForBar3Toggle already uses for y). Callable any time either
+-- reference bar's anchor may have just been refreshed (initial login, and
+-- again after VerifyDefaultBarAnchorsSettled/RecaptureDefaultBarNativeAnchors
+-- corrects a late MainMenuBar-cluster drift) - reapplies live if the
+-- container already exists.
+function BTV:SyncPetBarAnchorX()
+	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
+	local cfg = defaults and defaults[BTV.PET_BAR_ID]
+
+	if not cfg or BTVanillaDB.useDefaultLayout == false then
+		return
+	end
+
+	local bar3Anchor = defaults[3] and defaults[3].nativeAnchor
+	local bar1Anchor = defaults[1] and defaults[1].nativeAnchor
+	local anchor = bar3Anchor or bar1Anchor
+
+	if not anchor then
+		return
+	end
+
+	cfg.point = "TOPLEFT"
+	cfg.relativePoint = "BOTTOMLEFT"
+	cfg.x = anchor.x
+	cfg.nativeAnchor = cfg.nativeAnchor or {}
+	cfg.nativeAnchor.point = "TOPLEFT"
+	cfg.nativeAnchor.relativePoint = "BOTTOMLEFT"
+	cfg.nativeAnchor.x = anchor.x
+
+	if BTV.petBarNativeContainer then
+		BTV:ApplyPetBarNativePosition()
+	end
+end
+
 local function SetupPetBarNativeContainer()
 	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
 
@@ -2698,23 +2743,7 @@ local function SetupPetBarNativeContainer()
 		return
 	end
 
-	if BTVanillaDB.useDefaultLayout ~= false then
-		local defaults = BTVanillaDB.defaultBars
-		local bar3Anchor = defaults[3] and defaults[3].nativeAnchor
-		local bar1Anchor = defaults[1] and defaults[1].nativeAnchor
-		local anchor = bar3Anchor or bar1Anchor
-
-		if anchor then
-			cfg.point = "TOPLEFT"
-			cfg.relativePoint = "BOTTOMLEFT"
-			cfg.x = anchor.x
-			cfg.nativeAnchor = cfg.nativeAnchor or {}
-			cfg.nativeAnchor.point = "TOPLEFT"
-			cfg.nativeAnchor.relativePoint = "BOTTOMLEFT"
-			cfg.nativeAnchor.x = anchor.x
-		end
-	end
-
+	BTV:SyncPetBarAnchorX()
 	BTV:CreatePetBarNativeContainer()
 
 	if BTVanillaDB.useDefaultLayout ~= false then
