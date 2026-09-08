@@ -1989,6 +1989,8 @@ function BTV:ApplyBagBarPosition()
 	)
 
 	EnsureContainerOverlay(container, self.StartBagBarDrag, self.StopBagBarDrag, "bagbar", self.SetBagBarScale, nil, "Bag Bar")
+
+	self:ApplyHoverOnlyState(container, BTVanillaDB.bagBarHoverOnly, function() return BTVanillaDB.bagBarHoverDuration or 3 end)
 end
 
 -- Settings.lua's Bag Bar page X/Y sliders write through this.
@@ -2051,6 +2053,31 @@ function BTV:SetBagBarEnabled(enabled)
 			end
 		end
 	end
+end
+
+-- Settings.lua's Bag Bar page "Only show on hover" checkbox - also governs the Key Ring frame, which has no fields of its own.
+function BTV:SetBagBarHoverOnly(enabled)
+	self:EnsureDB()
+
+	BTVanillaDB.bagBarHoverOnly = enabled and true or false
+
+	self:ApplyBagBarPosition()
+	self:ApplyKeyRingPosition()
+end
+
+function BTV:SetBagBarHoverDuration(duration)
+	self:EnsureDB()
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not duration then
+		return
+	end
+
+	BTVanillaDB.bagBarHoverDuration = duration
+
+	self:ApplyBagBarPosition()
+	self:ApplyKeyRingPosition()
 end
 
 -- Re-lays-out the Bag Bar's real buttons from its current saved
@@ -2205,6 +2232,8 @@ function BTV:ApplyMicroMenuPosition()
 	)
 
 	EnsureContainerOverlay(container, self.StartMicroMenuDrag, self.StopMicroMenuDrag, "micromenu", self.SetMicroMenuScale, nil, "Micro Menu")
+
+	self:ApplyHoverOnlyState(container, BTVanillaDB.microMenuHoverOnly, function() return BTVanillaDB.microMenuHoverDuration or 3 end)
 end
 
 function BTV:SetMicroMenuPosition(x, y)
@@ -2258,6 +2287,29 @@ function BTV:SetMicroMenuEnabled(enabled)
 			end
 		end
 	end
+end
+
+-- Settings.lua's Micro Menu page "Only show on hover" checkbox/slider.
+function BTV:SetMicroMenuHoverOnly(enabled)
+	self:EnsureDB()
+
+	BTVanillaDB.microMenuHoverOnly = enabled and true or false
+
+	self:ApplyMicroMenuPosition()
+end
+
+function BTV:SetMicroMenuHoverDuration(duration)
+	self:EnsureDB()
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not duration then
+		return
+	end
+
+	BTVanillaDB.microMenuHoverDuration = duration
+
+	self:ApplyMicroMenuPosition()
 end
 
 -- Mirrors BTV:ApplyBagBarShape exactly - see its own comment above.
@@ -2589,6 +2641,9 @@ function BTV:ApplyPetBarNativePosition()
 	)
 
 	EnsureContainerOverlay(container, self.StartPetBarNativeDrag, self.StopPetBarNativeDrag, self.PET_BAR_ID, self.SetPetBarNativeScale, nil, "Pet Bar", not self:ShouldCondensePetBarSlots())
+
+	-- Same cfg the custom-styled Pet Bar's grid reads, so toggling display mode preserves the hover preference.
+	self:ApplyHoverOnlyState(container, cfg.hoverOnly, function() return cfg.hoverDuration or 3 end)
 end
 
 -- Settings.lua's Pet Bar page X/Y sliders (native mode) write through this.
@@ -2686,9 +2741,38 @@ function BTV:SetPetBarNativeScale(scale)
 	self:ApplyPetBarNativeShape()
 end
 
--- Restores position/spacing (cfg.nativeAnchor/cfg.nativeSpacing, captured
--- once by Core.lua's SeedOneDefaultBar) and scale - mirrors
--- ResetDefaultBarLayout/ResetBagBarLayout's own reset templates.
+-- Settings.lua's Pet Bar native page "Only show on hover" checkbox/slider - writes the same cfg.hoverOnly/cfg.hoverDuration fields the styled grid uses.
+function BTV:SetPetBarNativeHoverOnly(enabled)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	if not cfg then
+		return
+	end
+
+	cfg.hoverOnly = enabled and true or false
+
+	self:ApplyPetBarNativePosition()
+end
+
+function BTV:SetPetBarNativeHoverDuration(duration)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not cfg or not duration then
+		return
+	end
+
+	cfg.hoverDuration = duration
+
+	self:ApplyPetBarNativePosition()
+end
+
+-- Restores position/spacing (cfg.nativeAnchor/cfg.nativeSpacing) and scale, mirroring ResetBagBarLayout's own reset template.
 function BTV:ResetPetBarNativeLayout()
 	self:EnsureDB()
 
@@ -2850,52 +2934,6 @@ function BTV:CaptureStanceBarNativeGap()
 	BTVanillaDB.stanceBarNativeGap = gap
 end
 
--- ShapeshiftButtonN's native NormalTexture ("UI-Quickslot2", real vanilla's
--- gold quickslot border) is drawn centered but oversized relative to the
--- button frame itself (confirmed live: a 30x30 button's NormalTexture is
--- 50x50) - the same overhanging-border trait Button.lua's own vanilla-
--- style border replicates via BTV.BORDER_RATIO for custom buttons, just
--- at a different, client-specific ratio for this native template. Captured
--- once (not hardcoded) so SetStanceBarSpacing's floor stays correct
--- against whatever this client's real button/texture sizes actually are,
--- rather than guessing a fixed pixel count - same "capture, don't guess"
--- rule as CaptureStanceBarNativeGap above. The required minimum spacing to
--- keep two adjacent buttons' border art from overlapping is the full
--- overhang (texture size minus button size), not half of it - each
--- button's half-overhang eats into the gap from its own side.
-function BTV:CaptureStanceBarBorderOverhang()
-	if BTVanillaDB.stanceBarBorderOverhang then
-		return
-	end
-
-	local buttons = self:GetStanceBarButtons()
-	local btn = buttons and buttons[1]
-	local normalTex = btn and btn:GetNormalTexture()
-
-	if not btn or not normalTex then
-		return
-	end
-
-	local btnWidth = btn:GetWidth()
-	local texWidth = normalTex:GetWidth()
-
-	if not btnWidth or not texWidth then
-		return
-	end
-
-	local overhang = math.floor((texWidth - btnWidth) + 0.5)
-
-	-- A real overhang here is never negative (the border texture is never
-	-- smaller than the button it frames) - an implausible read is
-	-- discarded rather than persisted, same guard as
-	-- CaptureStanceBarNativeGap's own gap<=0 check.
-	if overhang <= 0 then
-		return
-	end
-
-	BTVanillaDB.stanceBarBorderOverhang = overhang
-end
-
 -- ShapeshiftBarFrame keeps its own native end-cap/middle background
 -- textures (ShapeshiftBarEnds/ShapeshiftBarMiddle) even after every
 -- ShapeshiftButtonN has been reparented out of it into the synthetic
@@ -2959,7 +2997,6 @@ function BTV:CreateStanceBarContainer()
 	-- CaptureStanceBarNativeGap's own comment) - this call is a harmless
 	-- no-op safety net, guarded on stanceBarNativeGap already being set.
 	self:CaptureStanceBarNativeGap()
-	self:CaptureStanceBarBorderOverhang()
 
 	SortButtonsByNativeLeft(buttons)
 
@@ -3109,6 +3146,13 @@ function BTV:ApplyStanceBarPosition()
 	)
 
 	EnsureContainerOverlay(container, self.StartStanceBarDrag, self.StopStanceBarDrag, self.STANCE_BAR_ID, self.SetStanceBarScale, nil, "Stance Bar")
+
+	-- Same cfg the custom-styled Stance Bar's grid reads, so toggling display mode preserves the hover preference.
+	local cfg = BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+	if cfg then
+		self:ApplyHoverOnlyState(container, cfg.hoverOnly, function() return cfg.hoverDuration or 3 end)
+	end
 end
 
 -- Settings.lua's Stance Bar page X/Y sliders write through this.
@@ -3365,20 +3409,11 @@ function BTV:ApplyStanceBarBorderStyle()
 	end
 end
 
--- Mirrors SetBagBarSpacing's clamp/write/reapply template, except for the
--- floor: unlike Bag Bar/Micro Menu's own buttons, ShapeshiftButtonN uses
--- the same overhanging native border art as default bars 1-5 (real
--- vanilla's UI-Quickslot2 - see ApplyStanceBarBorderStyle above), which
--- visually overlaps between adjacent buttons below the real measured
--- overhang (BTVanillaDB.stanceBarBorderOverhang, captured live by
--- CaptureStanceBarBorderOverhang - confirmed live at 20px for this
--- client's 30px stance buttons, nowhere near generic BTV.VANILLA_SPACING_FLOOR's
--- 4px, which was tuned for 36px custom-bar buttons instead). Only
--- enforced in vanilla style; modern style hides that native border
--- entirely (ApplyStanceBarBorderStyle). Falls back to
--- VANILLA_SPACING_FLOOR only if the real capture hasn't run yet.
--- maxSpacing widens past the usual 20 cap whenever the real overhang
--- itself exceeds 20, so the floor can never be clamped below itself.
+-- Mirrors SetPetBarNativeSpacing's exact clamp/write/reapply template -
+-- plain 0 to 20, same as Pet Bar. An earlier version enforced a vanilla-
+-- border-style floor (the real overhang measures exactly 20 on this
+-- client, collapsing the slider's whole range to one value) - the border
+-- never actually overlaps at spacing 0 in either style, so it was dropped.
 function BTV:SetStanceBarSpacing(spacing)
 	self:EnsureDB()
 
@@ -3390,18 +3425,12 @@ function BTV:SetStanceBarSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	local minSpacing = self:IsVanillaBorderStyle()
-		and (BTVanillaDB.stanceBarBorderOverhang or self.VANILLA_SPACING_FLOOR)
-		or 0
-
-	local maxSpacing = minSpacing > 20 and minSpacing or 20
-
-	if spacing < minSpacing then
-		spacing = minSpacing
+	if spacing < 0 then
+		spacing = 0
 	end
 
-	if spacing > maxSpacing then
-		spacing = maxSpacing
+	if spacing > 20 then
+		spacing = 20
 	end
 
 	BTVanillaDB.stanceBarSpacing = spacing
@@ -3442,6 +3471,37 @@ function BTV:SetStanceBarOrientation(vertical)
 	BTVanillaDB.stanceBarOrientation = vertical and true or false
 
 	self:ApplyStanceBarShape()
+end
+
+-- Settings.lua's Stance Bar native page "Only show on hover" checkbox/slider - writes the same cfg.hoverOnly/cfg.hoverDuration fields the styled grid uses.
+function BTV:SetStanceBarNativeHoverOnly(enabled)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+	if not cfg then
+		return
+	end
+
+	cfg.hoverOnly = enabled and true or false
+
+	self:ApplyStanceBarPosition()
+end
+
+function BTV:SetStanceBarNativeHoverDuration(duration)
+	self:EnsureDB()
+
+	local cfg = BTVanillaDB.defaultBars[self.STANCE_BAR_ID]
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not cfg or not duration then
+		return
+	end
+
+	cfg.hoverDuration = duration
+
+	self:ApplyStanceBarPosition()
 end
 
 -- Settings.lua's Stance Bar page reset flow calls this alongside
@@ -3655,6 +3715,9 @@ function BTV:ApplyKeyRingPosition()
 	-- Bar container's own overlay, so this guarantees Key Ring's drag/
 	-- right-click/scroll surface always wins that overlap.
 	EnsureContainerOverlay(frame, self.StartKeyRingDrag, self.StopKeyRingDrag, "bagbar", self.SetKeyRingScale, 150, "Key Ring")
+
+	-- Shares the Bag Bar's own hoverOnly/hoverDuration fields; no separate Key Ring setting.
+	self:ApplyHoverOnlyState(frame, BTVanillaDB.bagBarHoverOnly, function() return BTVanillaDB.bagBarHoverDuration or 3 end)
 end
 
 -- Settings.lua's Bag Bar page "Show Key Ring" checkbox writes through
@@ -3880,6 +3943,8 @@ function BTV:ApplyLatencyBarPosition()
 	end
 
 	EnsureContainerOverlay(frame, self.StartLatencyBarDrag, self.StopLatencyBarDrag, "latencybar", self.SetLatencyBarScale, nil, "Latency Bar")
+
+	self:ApplyHoverOnlyState(frame, BTVanillaDB.latencyBarHoverOnly, function() return BTVanillaDB.latencyBarHoverDuration or 3 end)
 end
 
 function BTV:SetLatencyBarPosition(x, y)
@@ -3947,6 +4012,29 @@ function BTV:SetLatencyBarScale(scale)
 	if frame then
 		frame:SetScale(scale)
 	end
+end
+
+-- Settings.lua's Latency Bar page "Only show on hover" checkbox/slider.
+function BTV:SetLatencyBarHoverOnly(enabled)
+	self:EnsureDB()
+
+	BTVanillaDB.latencyBarHoverOnly = enabled and true or false
+
+	self:ApplyLatencyBarPosition()
+end
+
+function BTV:SetLatencyBarHoverDuration(duration)
+	self:EnsureDB()
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not duration then
+		return
+	end
+
+	BTVanillaDB.latencyBarHoverDuration = duration
+
+	self:ApplyLatencyBarPosition()
 end
 
 -- Settings.lua's Latency Bar page "Reset to Blizzard Default" button -
@@ -4417,6 +4505,9 @@ function BTV:ApplyExpBarPosition()
 
 	EnsureContainerOverlay(frame, self.StartExpBarDrag, self.StopExpBarDrag, "expbar", self.SetExpBarScale, nil, "Experience Bar")
 	EnsureExpBarBottomBorderStrip(frame)
+
+	-- The rested-glow pulse child texture inherits this frame's alpha automatically, no separate handling needed.
+	self:ApplyHoverOnlyState(frame, BTVanillaDB.expBarHoverOnly, function() return BTVanillaDB.expBarHoverDuration or 3 end)
 end
 
 function BTV:SetExpBarPosition(x, y)
@@ -4513,6 +4604,29 @@ function BTV:SetExpBarScale(scale)
 	if frame then
 		frame:SetScale(scale)
 	end
+end
+
+-- Settings.lua's Experience Bar page "Only show on hover" checkbox/slider.
+function BTV:SetExpBarHoverOnly(enabled)
+	self:EnsureDB()
+
+	BTVanillaDB.expBarHoverOnly = enabled and true or false
+
+	self:ApplyExpBarPosition()
+end
+
+function BTV:SetExpBarHoverDuration(duration)
+	self:EnsureDB()
+
+	duration = self:ClampHoverDuration(duration)
+
+	if not duration then
+		return
+	end
+
+	BTVanillaDB.expBarHoverDuration = duration
+
+	self:ApplyExpBarPosition()
 end
 
 -- Settings.lua's Experience Bar page "Reset to Blizzard Default" button -

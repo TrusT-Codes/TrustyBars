@@ -1381,6 +1381,35 @@ function BTV:EnsureDB()
 		BTVanillaDB.expBarScale = 1
 	end
 
+	-- Only-show-on-hover for simple elements (Bag Bar's pair also governs the Key Ring frame). Grid-bar cfg tables use nil-safe cfg.hoverOnly/cfg.hoverDuration reads instead.
+	if BTVanillaDB.bagBarHoverOnly == nil then
+		BTVanillaDB.bagBarHoverOnly = false
+	end
+	if BTVanillaDB.bagBarHoverDuration == nil then
+		BTVanillaDB.bagBarHoverDuration = 3
+	end
+
+	if BTVanillaDB.microMenuHoverOnly == nil then
+		BTVanillaDB.microMenuHoverOnly = false
+	end
+	if BTVanillaDB.microMenuHoverDuration == nil then
+		BTVanillaDB.microMenuHoverDuration = 3
+	end
+
+	if BTVanillaDB.latencyBarHoverOnly == nil then
+		BTVanillaDB.latencyBarHoverOnly = false
+	end
+	if BTVanillaDB.latencyBarHoverDuration == nil then
+		BTVanillaDB.latencyBarHoverDuration = 3
+	end
+
+	if BTVanillaDB.expBarHoverOnly == nil then
+		BTVanillaDB.expBarHoverOnly = false
+	end
+	if BTVanillaDB.expBarHoverDuration == nil then
+		BTVanillaDB.expBarHoverDuration = 3
+	end
+
 	if BTVanillaDB.castBarScale == nil then
 		BTVanillaDB.castBarScale = 1
 	end
@@ -2188,6 +2217,12 @@ function BTV:SetEditMode(enabled)
 
 	BTVanillaDB.editMode = enabled
 	self:ApplyEditModeVisual()
+
+	if enabled then
+		self:ForceHoverFadeFramesVisible()
+	else
+		self:RestoreHoverFadeFrames()
+	end
 end
 
 function BTV:ToggleEditMode()
@@ -2221,6 +2256,12 @@ function BTV:SetHoverBindMode(enabled)
 	if self.ApplyHoverBindVisual then
 		self:ApplyHoverBindVisual(enabled)
 	end
+
+	if enabled then
+		self:ForceHoverFadeFramesVisible()
+	else
+		self:RestoreHoverFadeFrames()
+	end
 end
 
 function BTV:ToggleHoverBindMode()
@@ -2233,6 +2274,215 @@ function BTV:ToggleHoverBindMode()
 	self:Print(self:IsHoverBindMode()
 		and "Hoverbind ON - hover a button and press a key to bind it. Red = unbound, green = bound."
 		or "Hoverbind OFF.")
+end
+
+-------------------------------------------------------------------------
+-- Only show on hover
+--
+-- Shared controller for every hover-only-eligible bar/element. Fade ticker
+-- mirrors DefaultBars.lua's rested-glow-pulse idiom. Hover detection is a
+-- shared cursor-position poll rather than OnEnter/OnLeave, since a bounding-
+-- box test doesn't care which child frame wins mouse-enter dispatch.
+-------------------------------------------------------------------------
+
+local HOVER_FADE_TICK_INTERVAL = 0.04
+local HOVER_POLL_TICK_INTERVAL = 0.06
+
+-- Every frame with an installed hover-fade controller, keyed by itself.
+local hoverFadeFrames = {}
+
+-- Clamps to the 0-10s hover-fade duration range, or nil if not a valid number. Shared by every Set*HoverDuration setter.
+function BTV:ClampHoverDuration(duration)
+	duration = tonumber(duration)
+
+	if not duration then
+		return nil
+	end
+
+	if duration < 0 then
+		duration = 0
+	end
+
+	if duration > 10 then
+		duration = 10
+	end
+
+	return duration
+end
+
+-- Mirrors DefaultBars.lua's file-local helper of the same name (not reachable from here).
+local function GetCursorPositionUIScale()
+	local scale = UIParent:GetEffectiveScale()
+	local x, y = GetCursorPosition()
+	return x / scale, y / scale
+end
+
+-- Bounds check against an already-known cursor position, shared across all registered frames per tick.
+local function IsPointOverFrame(x, y, frame)
+	local left, right, top, bottom = frame:GetLeft(), frame:GetRight(), frame:GetTop(), frame:GetBottom()
+
+	if not left or not right or not top or not bottom then
+		return false
+	end
+
+	return x >= left and x <= right and y >= bottom and y <= top
+end
+
+-- One-off single-frame check, used only for ApplyHoverOnlyState's initial state.
+local function IsCursorOverFrame(frame)
+	local x, y = GetCursorPositionUIScale()
+
+	return IsPointOverFrame(x, y, frame)
+end
+
+local hoverPollTicker = nil
+
+-- Single shared ticker for every registered hover-only frame, started lazily on first registration.
+local function StartHoverPollTicker()
+	if hoverPollTicker or not C_Timer or not C_Timer.NewTicker then
+		return
+	end
+
+	hoverPollTicker = C_Timer.NewTicker(HOVER_POLL_TICK_INTERVAL, function()
+		if BTV:IsEditMode() or BTV:IsHoverBindMode() then
+			return
+		end
+
+		local x, y = GetCursorPositionUIScale()
+		local frame
+
+		for frame in pairs(hoverFadeFrames) do
+			if frame.btvHoverOnlyEnabled then
+				local hovering = IsPointOverFrame(x, y, frame)
+
+				if hovering and not frame.btvHoverOnlyHovering then
+					BTV:CancelHoverFadeTicker(frame)
+					frame:SetAlpha(1)
+				elseif not hovering and frame.btvHoverOnlyHovering then
+					BTV:StartHoverFadeTicker(frame, frame.btvHoverOnlyGetDuration and frame.btvHoverOnlyGetDuration() or 3)
+				end
+
+				frame.btvHoverOnlyHovering = hovering
+			end
+		end
+	end)
+end
+
+-- Cancel()-and-nil, same convention as Button.lua's rangeTicker.
+function BTV:CancelHoverFadeTicker(frame)
+	if frame.btvHoverFadeTicker then
+		frame.btvHoverFadeTicker:Cancel()
+		frame.btvHoverFadeTicker = nil
+	end
+end
+
+-- Full alpha for the first 4/5 of duration, then a linear fade to 0 over the last 1/5. duration <= 0 hides immediately.
+-- Edit Layout/Hoverbind mode force alpha 1 while active, rechecked every tick.
+function BTV:StartHoverFadeTicker(frame, duration)
+	self:CancelHoverFadeTicker(frame)
+
+	duration = tonumber(duration) or 0
+
+	if duration <= 0 or not C_Timer or not C_Timer.NewTicker then
+		frame:SetAlpha(0)
+		return
+	end
+
+	local holdEnd = duration * 0.8
+	local startTime = GetTime()
+
+	frame:SetAlpha(1)
+
+	frame.btvHoverFadeTicker = C_Timer.NewTicker(HOVER_FADE_TICK_INTERVAL, function()
+		if BTV:IsEditMode() or BTV:IsHoverBindMode() then
+			frame:SetAlpha(1)
+			return
+		end
+
+		local elapsed = GetTime() - startTime
+
+		if elapsed >= duration then
+			frame:SetAlpha(0)
+			BTV:CancelHoverFadeTicker(frame)
+			return
+		end
+
+		if elapsed <= holdEnd then
+			frame:SetAlpha(1)
+		else
+			frame:SetAlpha(1 - ((elapsed - holdEnd) / (duration - holdEnd)))
+		end
+	end)
+end
+
+-- Registers `frame` (once, idempotent) into the shared poll registry, starting the poll ticker on first registration.
+function BTV:InstallHoverFadeController(frame)
+	if frame.btvHoverFadeInstalled then
+		return
+	end
+
+	frame.btvHoverFadeInstalled = true
+	hoverFadeFrames[frame] = frame
+
+	StartHoverPollTicker()
+end
+
+-- Central per-frame apply/toggle for every settings-change path that owns a hover-only-eligible frame.
+function BTV:ApplyHoverOnlyState(frame, enabled, getDuration)
+	if not frame then
+		return
+	end
+
+	enabled = enabled and true or false
+
+	-- Stored on the frame so the poll ticker always reads the latest value.
+	frame.btvHoverOnlyEnabled = enabled
+	frame.btvHoverOnlyGetDuration = getDuration
+
+	if not enabled then
+		self:CancelHoverFadeTicker(frame)
+		frame:SetAlpha(1)
+		return
+	end
+
+	frame:EnableMouse(true)
+
+	self:InstallHoverFadeController(frame)
+
+	-- Immediate bounds check so toggling on while the cursor is already over the frame doesn't snap it to hidden.
+	frame.btvHoverOnlyHovering = IsCursorOverFrame(frame)
+
+	if not frame.btvHoverFadeTicker then
+		if self:IsEditMode() or self:IsHoverBindMode() or frame.btvHoverOnlyHovering then
+			frame:SetAlpha(1)
+		else
+			frame:SetAlpha(0)
+		end
+	end
+end
+
+-- Forces every installed hover-fade frame to alpha 1, so hover-only elements stay visible while editing/binding.
+function BTV:ForceHoverFadeFramesVisible()
+	local frame
+
+	for frame in pairs(hoverFadeFrames) do
+		frame:SetAlpha(1)
+	end
+end
+
+-- Snaps every installed hover-fade frame back to its normal hidden-until-hover state, undoing ForceHoverFadeFramesVisible.
+function BTV:RestoreHoverFadeFrames()
+	if self:IsEditMode() or self:IsHoverBindMode() then
+		return
+	end
+
+	local frame
+
+	for frame in pairs(hoverFadeFrames) do
+		if frame.btvHoverOnlyEnabled and not frame.btvHoverFadeTicker and not frame.btvHoverOnlyHovering then
+			frame:SetAlpha(0)
+		end
+	end
 end
 
 -------------------------------------------------------------------------
