@@ -572,32 +572,22 @@ function BTV:RecaptureDefaultBarNativeAnchors()
 	local fresh = seedDefaultBars(self)
 	local i
 
-	-- Updates each existing cfg table IN PLACE rather than replacing
-	-- BTVanillaDB.defaultBars wholesale - a live self.bars[id].config
-	-- (Bar.lua's CreateBarFromConfig, "bar.config = cfg") is the exact same
-	-- table reference captured once at login, so swapping in a brand-new
-	-- table here would silently orphan every already-created bar from its
-	-- own saved config, leaving ApplyBarPosition reading the stale values
-	-- forever. Only anchor/spacing/action-slot fields are copied - enabled,
-	-- grid shape, buttonSize, and every other user-facing setting are left
-	-- untouched, since this is a native-anchor recapture, not a reseed.
+	-- Updates each existing cfg table IN PLACE instead of replacing
+	-- BTVanillaDB.defaultBars wholesale - self.bars[id].config is the same
+	-- table reference captured at login, so swapping the table here would
+	-- orphan every already-created bar from its own saved config. Only
+	-- anchor/spacing/action-slot fields are copied; enabled, grid shape,
+	-- buttonSize, and every other user setting are left untouched.
 	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
 		local id = self.DEFAULT_BAR_IDS[i]
 		local oldCfg = BTVanillaDB.defaultBars[id]
 		local newCfg = fresh[id]
 
 		-- Pet Bar/Stance Bar in native mode reparent their real Blizzard
-		-- buttons into TrustyBars' own chain-anchored container
-		-- (CreatePetBarNativeContainer/CreateStanceBarContainer) - once
-		-- that's happened this session, GetLeft()/GetTop() on those
-		-- buttons reports OUR OWN last-applied container position back,
-		-- not Blizzard's true native one (live-confirmed: PetActionButton1
-		-- GetPoint(1) resolves to BTVanillaPetBarNativeContainer, not a
-		-- real Blizzard frame). Recapturing here would just feed that
-		-- self-referencing value back in as "fresh" - skip these ids
-		-- entirely once their container already exists; only a capture
-		-- from before the container was ever built (this session's first
-		-- EnsureDB call) reflects Blizzard's real anchor.
+		-- buttons into our own container - once that container exists,
+		-- GetLeft()/GetTop() on those buttons reports our own last-applied
+		-- position back, not Blizzard's native one, so skip recapturing
+		-- these ids once their container already exists.
 		local selfReferencing =
 			(id == self.PET_BAR_ID and self.petBarNativeContainer) or
 			(id == self.STANCE_BAR_ID and self.stanceBarContainer)
@@ -644,10 +634,7 @@ function BTV:RecaptureDefaultBarNativeAnchors()
 		self:Print("Live bar positions re-applied from the fresh capture.")
 	end
 
-	-- Pet Bar's own x/y are only ever derived from Bar 3/Bar 1's
-	-- nativeAnchor (SyncPetBarAnchorX/ReflowPetBarForBar3Toggle) - re-derive
-	-- both now in case this recapture just corrected a late
-	-- MainMenuBar-cluster drift on either of them.
+	-- Re-derives Pet Bar's x/y from Bar 3/Bar 1's just-refreshed nativeAnchor.
 	if self.SyncPetBarAnchorX then
 		self:SyncPetBarAnchorX()
 	end
@@ -1641,9 +1628,7 @@ function BTV:EnsureDB()
 		end
 	end
 
-	-- Pet Bar's own default position is set later, in Core.lua's
-	-- SetupPetBarNativeContainer - not here, since it's derived from Bar 3's
-	-- nativeAnchor (seeded above, in this same DEFAULT_BAR_IDS loop).
+	-- Pet Bar's own default position is set later, by SetupPetBarNativeContainer.
 
 	-- Migration-safe: an existing save from before the Stance Bar's styled
 	-- mode existed has no entry for BTV.STANCE_BAR_ID - seed just that one
@@ -2580,82 +2565,46 @@ end
 
 -- Polls ActionButton1's real position until two consecutive reads agree
 -- (or a timeout is hit), since its true native position is not guaranteed
--- final the instant PLAYER_ENTERING_WORLD fires. PetActionButton1/
--- PetActionBarFrame are deliberately NOT watched here or read anywhere in
--- Pet Bar's own setup - live-confirmed across many logins to report a
--- stable but wrong position with no settle behavior at all (not a timing
--- race), so Pet Bar's default anchor is derived from Bar 3's own
--- (reliably-captured) anchor instead - see SetupPetBarNativeContainer.
+-- final the instant PLAYER_ENTERING_WORLD fires.
 local SETTLE_POLL_INTERVAL = 0.1
 local SETTLE_STABLE_READS_REQUIRED = 2
 local SETTLE_TIMEOUT = 3
 
--- Frame globals watched before the login sequence proceeds.
-local SETTLE_WATCH_NAMES = { "ActionButton1" }
-
 local function WaitForNativeBarSettle(callback)
-	local mainRef = getglobal("ActionButton1")
+	local ref = getglobal("ActionButton1")
 
-	if not mainRef or not C_Timer or not C_Timer.NewTicker then
+	if not ref or not C_Timer or not C_Timer.NewTicker then
 		callback(nil, nil, nil, nil, 0)
 		return
 	end
 
-	local watchers = {}
-	local wi
-
-	for wi = 1, table.getn(SETTLE_WATCH_NAMES) do
-		local name = SETTLE_WATCH_NAMES[wi]
-		local ref = getglobal(name)
-
-		if ref then
-			local left, top = ref:GetLeft(), ref:GetTop()
-
-			table.insert(watchers, {
-				name = name,
-				ref = ref,
-				earlyLeft = left,
-				earlyTop = top,
-				lastLeft = left,
-				lastTop = top,
-				stableCount = 0,
-			})
-		end
-	end
-
+	local earlyLeft, earlyTop = ref:GetLeft(), ref:GetTop()
+	local lastLeft, lastTop = earlyLeft, earlyTop
+	local stableCount = 0
 	local elapsed = 0
 
 	local ticker
 	ticker = C_Timer.NewTicker(SETTLE_POLL_INTERVAL, function()
 		elapsed = elapsed + SETTLE_POLL_INTERVAL
 
-		local allSettled = true
-		local wi
+		local left, top = ref:GetLeft(), ref:GetTop()
 
-		for wi = 1, table.getn(watchers) do
-			local w = watchers[wi]
-			local left, top = w.ref:GetLeft(), w.ref:GetTop()
-
-			if left and top and w.lastLeft and w.lastTop
-				and left == w.lastLeft and top == w.lastTop then
-				w.stableCount = w.stableCount + 1
-			else
-				w.stableCount = 0
-			end
-
-			w.lastLeft, w.lastTop = left, top
-
-			if w.stableCount < SETTLE_STABLE_READS_REQUIRED then
-				allSettled = false
-			end
+		if left and top and lastLeft and lastTop
+			and left == lastLeft and top == lastTop then
+			stableCount = stableCount + 1
+		else
+			stableCount = 0
 		end
 
+		lastLeft, lastTop = left, top
+
+		local settled = stableCount >= SETTLE_STABLE_READS_REQUIRED
 		local timedOut = elapsed >= SETTLE_TIMEOUT
 
-		if allSettled or timedOut then
+		if settled or timedOut then
 			ticker:Cancel()
 
-			if timedOut and not allSettled then
+			if timedOut and not settled then
 				BTV:Print(
 					"WARNING: native action bar position did not settle within " ..
 					tostring(SETTLE_TIMEOUT) .. "s - proceeding with its current, " ..
@@ -2663,59 +2612,28 @@ local function WaitForNativeBarSettle(callback)
 				)
 			end
 
-			local mainEarlyLeft, mainEarlyTop, mainLeft, mainTop = nil, nil, nil, nil
-
-			for wi = 1, table.getn(watchers) do
-				local w = watchers[wi]
-
-				if w.name == "ActionButton1" then
-					mainEarlyLeft, mainEarlyTop = w.earlyLeft, w.earlyTop
-					mainLeft, mainTop = w.lastLeft, w.lastTop
-				else
-					BTV:Print(string.format(
-						"Anchor capture (%s): left early=%.2f settled=%.2f, top early=%.2f settled=%.2f",
-						w.name, w.earlyLeft or -1, w.lastLeft or -1, w.earlyTop or -1, w.lastTop or -1
-					))
-				end
-			end
-
-			callback(mainEarlyLeft, mainEarlyTop, mainLeft, mainTop, elapsed)
+			callback(earlyLeft, earlyTop, lastLeft, lastTop, elapsed)
 		end
 	end)
 end
 
--- Safety net for a real, live-confirmed gap in WaitForNativeBarSettle: two
--- 0.1s-apart reads agreeing only proves ActionButton1 hasn't moved
--- recently, not that Blizzard's own MainMenuBar-cluster recenter pass has
--- truly finished (a fresh install stresses client init harder than a
--- /reload, giving this more room to happen). Re-checks ActionButton1 and,
--- only if it genuinely drifted from what was captured, silently
--- recaptures/reapplies via the same (in-place-updating)
--- RecaptureDefaultBarNativeAnchors - a no-op whenever the original capture
--- was already correct.
+-- Re-checks ActionButton1 once fully settled and, only if it drifted from
+-- what was captured, silently recaptures/reapplies via
+-- RecaptureDefaultBarNativeAnchors - a no-op if the original capture was
+-- already correct. A fresh install can still recenter the MainMenuBar
+-- cluster after WaitForNativeBarSettle's own poll already reported stable.
 local DRIFT_TOLERANCE = 1
 
--- Runs the check above only once ActionButton1 has been genuinely stable
--- for a full second (10 reads, 0.1s apart - stricter than
--- WaitForNativeBarSettle's own 2-read requirement, which has already been
--- observed to plateau early once), rather than after a flat guessed delay.
--- Resolves almost immediately on a normal login/reload (already stable),
--- and keeps waiting past any fixed duration on a slow fresh install
--- instead of checking once at an arbitrary point.
+-- Stricter than WaitForNativeBarSettle's own 2-read requirement (which has
+-- plateaued early before) - a full second of stable reads before the drift
+-- check above runs, instead of a flat guessed delay.
 local POST_LOGIN_SETTLE_STABLE_READS = 10
 local POST_LOGIN_SETTLE_TIMEOUT = 10
 
 -- Copies Bar 3's (or Bar 1's) current nativeAnchor.x into Pet Bar's own
--- cfg.x. PetActionButton1/PetActionBarFrame's own real screen position is
--- never read for this - live-confirmed across many logins to report a
--- stable but wrong value with no settle behavior at all, so no amount of
--- waiting or polling fixes it; Pet Bar's anchor is only ever a copy of a
--- sibling bar's, never captured independently (same approach
--- ReflowPetBarForBar3Toggle already uses for y). Callable any time either
--- reference bar's anchor may have just been refreshed (initial login, and
--- again after VerifyDefaultBarAnchorsSettled/RecaptureDefaultBarNativeAnchors
--- corrects a late MainMenuBar-cluster drift) - reapplies live if the
--- container already exists.
+-- cfg.x - PetActionButton1/PetActionBarFrame's own position is never read
+-- for this (unreliable on this client, unrelated to bar state or timing).
+-- Reapplies live if the container already exists.
 function BTV:SyncPetBarAnchorX()
 	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
 	local cfg = defaults and defaults[BTV.PET_BAR_ID]
