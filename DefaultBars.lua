@@ -2934,52 +2934,6 @@ function BTV:CaptureStanceBarNativeGap()
 	BTVanillaDB.stanceBarNativeGap = gap
 end
 
--- ShapeshiftButtonN's native NormalTexture ("UI-Quickslot2", real vanilla's
--- gold quickslot border) is drawn centered but oversized relative to the
--- button frame itself (confirmed live: a 30x30 button's NormalTexture is
--- 50x50) - the same overhanging-border trait Button.lua's own vanilla-
--- style border replicates via BTV.BORDER_RATIO for custom buttons, just
--- at a different, client-specific ratio for this native template. Captured
--- once (not hardcoded) so SetStanceBarSpacing's floor stays correct
--- against whatever this client's real button/texture sizes actually are,
--- rather than guessing a fixed pixel count - same "capture, don't guess"
--- rule as CaptureStanceBarNativeGap above. The required minimum spacing to
--- keep two adjacent buttons' border art from overlapping is the full
--- overhang (texture size minus button size), not half of it - each
--- button's half-overhang eats into the gap from its own side.
-function BTV:CaptureStanceBarBorderOverhang()
-	if BTVanillaDB.stanceBarBorderOverhang then
-		return
-	end
-
-	local buttons = self:GetStanceBarButtons()
-	local btn = buttons and buttons[1]
-	local normalTex = btn and btn:GetNormalTexture()
-
-	if not btn or not normalTex then
-		return
-	end
-
-	local btnWidth = btn:GetWidth()
-	local texWidth = normalTex:GetWidth()
-
-	if not btnWidth or not texWidth then
-		return
-	end
-
-	local overhang = math.floor((texWidth - btnWidth) + 0.5)
-
-	-- A real overhang here is never negative (the border texture is never
-	-- smaller than the button it frames) - an implausible read is
-	-- discarded rather than persisted, same guard as
-	-- CaptureStanceBarNativeGap's own gap<=0 check.
-	if overhang <= 0 then
-		return
-	end
-
-	BTVanillaDB.stanceBarBorderOverhang = overhang
-end
-
 -- ShapeshiftBarFrame keeps its own native end-cap/middle background
 -- textures (ShapeshiftBarEnds/ShapeshiftBarMiddle) even after every
 -- ShapeshiftButtonN has been reparented out of it into the synthetic
@@ -3043,7 +2997,6 @@ function BTV:CreateStanceBarContainer()
 	-- CaptureStanceBarNativeGap's own comment) - this call is a harmless
 	-- no-op safety net, guarded on stanceBarNativeGap already being set.
 	self:CaptureStanceBarNativeGap()
-	self:CaptureStanceBarBorderOverhang()
 
 	SortButtonsByNativeLeft(buttons)
 
@@ -3456,20 +3409,11 @@ function BTV:ApplyStanceBarBorderStyle()
 	end
 end
 
--- Mirrors SetBagBarSpacing's clamp/write/reapply template, except for the
--- floor: unlike Bag Bar/Micro Menu's own buttons, ShapeshiftButtonN uses
--- the same overhanging native border art as default bars 1-5 (real
--- vanilla's UI-Quickslot2 - see ApplyStanceBarBorderStyle above), which
--- visually overlaps between adjacent buttons below the real measured
--- overhang (BTVanillaDB.stanceBarBorderOverhang, captured live by
--- CaptureStanceBarBorderOverhang - confirmed live at 20px for this
--- client's 30px stance buttons, nowhere near generic BTV.VANILLA_SPACING_FLOOR's
--- 4px, which was tuned for 36px custom-bar buttons instead). Only
--- enforced in vanilla style; modern style hides that native border
--- entirely (ApplyStanceBarBorderStyle). Falls back to
--- VANILLA_SPACING_FLOOR only if the real capture hasn't run yet.
--- maxSpacing widens past the usual 20 cap whenever the real overhang
--- itself exceeds 20, so the floor can never be clamped below itself.
+-- Mirrors SetPetBarNativeSpacing's exact clamp/write/reapply template -
+-- plain 0 to 20, same as Pet Bar. An earlier version enforced a vanilla-
+-- border-style floor (the real overhang measures exactly 20 on this
+-- client, collapsing the slider's whole range to one value) - the border
+-- never actually overlaps at spacing 0 in either style, so it was dropped.
 function BTV:SetStanceBarSpacing(spacing)
 	self:EnsureDB()
 
@@ -3481,18 +3425,12 @@ function BTV:SetStanceBarSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	local minSpacing = self:IsVanillaBorderStyle()
-		and (BTVanillaDB.stanceBarBorderOverhang or self.VANILLA_SPACING_FLOOR)
-		or 0
-
-	local maxSpacing = minSpacing > 20 and minSpacing or 20
-
-	if spacing < minSpacing then
-		spacing = minSpacing
+	if spacing < 0 then
+		spacing = 0
 	end
 
-	if spacing > maxSpacing then
-		spacing = maxSpacing
+	if spacing > 20 then
+		spacing = 20
 	end
 
 	BTVanillaDB.stanceBarSpacing = spacing

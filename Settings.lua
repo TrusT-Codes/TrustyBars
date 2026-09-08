@@ -612,7 +612,6 @@ local function CreateSettingSlider(parent, name, width)
 	return slider
 end
 
-
 -------------------------------------------------------------------------
 -- Only show on hover - shared checkbox + slider
 --
@@ -2032,13 +2031,6 @@ function BTV:GetOrCreateBarPage(barId)
 
 	xSlider:SetValueStep(1)
 
-	-- The slider's built-in label just names the control; the live numeric
-	-- value lives in xValueText below instead.
-	SetSliderLabel(
-		xSlider,
-		"X"
-	)
-
 	-- Live numeric readout, centered below the slider. Placeholder only:
 	-- RefreshBarSettingsPage overwrites this with the real %.2f-formatted
 	-- value from cfg.x before this page is shown.
@@ -2130,13 +2122,6 @@ function BTV:GetOrCreateBarPage(barId)
 	)
 
 	ySlider:SetValueStep(1)
-
-	-- The slider's own built-in label just names the control now - see the
-	-- X slider's matching comment above.
-	SetSliderLabel(
-		ySlider,
-		"Y"
-	)
 
 	-- Live numeric readout, centered below the slider - see the X slider's
 	-- matching xValueText above.
@@ -2242,13 +2227,6 @@ function BTV:GetOrCreateBarPage(barId)
 	-- Exactly the same 2-pixel increments as the mouse wheel.
 	buttonSizeSlider:SetValueStep(
 		BUTTON_SIZE_STEP
-	)
-
-	-- The slider's built-in label just names the control; the live numeric
-	-- value lives in buttonSizeValueText below instead.
-	SetSliderLabel(
-		buttonSizeSlider,
-		"Button Size"
 	)
 
 	-- UISliderTemplate/OptionsSliderTemplate creates these min/max end
@@ -2393,11 +2371,6 @@ function BTV:GetOrCreateBarPage(barId)
 
 		spacingSlider:SetValueStep(
 			SPACING_STEP
-		)
-
-		SetSliderLabel(
-			spacingSlider,
-			"Spacing"
 		)
 
 		local spacingSliderLow = getglobal(
@@ -2797,8 +2770,6 @@ function BTV:GetOrCreateBarPage(barId)
 
 		pageIndicatorSlider:SetMinMaxValues(0.5, 2.0)
 		pageIndicatorSlider:SetValueStep(0.1)
-
-		SetSliderLabel(pageIndicatorSlider, "Scale")
 
 		local pageIndicatorValueText = page:CreateFontString(
 			nil,
@@ -3629,8 +3600,6 @@ local function CreateSimpleBarPage(key)
 	xSlider:SetMinMaxValues(minX, maxX)
 	xSlider:SetValueStep(1)
 
-	SetSliderLabel(xSlider, "X")
-
 	local xValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
 	xValueText:SetPoint("TOP", xSlider, "BOTTOM", 0, -2)
@@ -3681,8 +3650,6 @@ local function CreateSimpleBarPage(key)
 	ySlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, ySliderY)
 	ySlider:SetMinMaxValues(minY, maxY)
 	ySlider:SetValueStep(1)
-
-	SetSliderLabel(ySlider, "Y")
 
 	local yValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -3761,8 +3728,6 @@ local function CreateSimpleBarPage(key)
 		spacingSlider:SetMinMaxValues(spacingMin, SPACING_MAX)
 		spacingSlider:SetValueStep(SPACING_STEP)
 
-		SetSliderLabel(spacingSlider, "Spacing")
-
 		local spacingSliderLow = getglobal(spacingSlider:GetName() .. "Low")
 
 		if spacingSliderLow then
@@ -3835,8 +3800,6 @@ local function CreateSimpleBarPage(key)
 		scaleSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, scaleSliderY)
 		scaleSlider:SetMinMaxValues(0.5, 2.0)
 		scaleSlider:SetValueStep(0.1)
-
-		SetSliderLabel(scaleSlider, "Scale")
 
 		local scaleSliderLow = getglobal(scaleSlider:GetName() .. "Low")
 
@@ -4028,8 +3991,6 @@ local function CreateSimpleBarPage(key)
 		fontSizeSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, fontSizeSliderY)
 		fontSizeSlider:SetMinMaxValues(FONT_SIZE_MIN, FONT_SIZE_MAX)
 		fontSizeSlider:SetValueStep(FONT_SIZE_STEP)
-
-		SetSliderLabel(fontSizeSlider, "Overlay Text Size")
 
 		local fontSizeSliderLow = getglobal(fontSizeSlider:GetName() .. "Low")
 
@@ -4274,8 +4235,6 @@ local function CreateSimpleBarPage(key)
 		pulseIntervalSlider:SetMinMaxValues(0.5, 5.0)
 		pulseIntervalSlider:SetValueStep(0.1)
 
-		SetSliderLabel(pulseIntervalSlider, "Pulse Interval")
-
 		local pulseIntervalSliderLow = getglobal(pulseIntervalSlider:GetName() .. "Low")
 
 		if pulseIntervalSliderLow then
@@ -4402,8 +4361,6 @@ local function CreateSimpleBarPage(key)
 		keyRingScaleSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, keyRingScaleSliderY)
 		keyRingScaleSlider:SetMinMaxValues(0.5, 2.0)
 		keyRingScaleSlider:SetValueStep(0.1)
-
-		SetSliderLabel(keyRingScaleSlider, "Key Ring Scale")
 
 		local keyRingScaleSliderLow = getglobal(keyRingScaleSlider:GetName() .. "Low")
 
@@ -5635,8 +5592,6 @@ local function ApplySettingsHeightFromCandidates(candidateList, scrollFrame, scr
 	return measuredContentHeight
 end
 
-
-
 -- Bars view: combines the current bar page's own controls with the bar
 -- list's rows - both are visible side by side in this view, so the
 -- window has to be tall enough for whichever of the two is actually
@@ -6845,8 +6800,6 @@ function BTV:GetOrCreateGeneralPanel()
 
 	macroSlider:SetValueStep(FONT_SIZE_STEP)
 
-	SetSliderLabel(macroSlider, "Macro Text Size")
-
 	local macroSliderLow = getglobal(macroSlider:GetName() .. "Low")
 
 	if macroSliderLow then
@@ -6945,10 +6898,10 @@ function BTV:GetOrCreateGeneralPanel()
 	--
 	-- Global, not per-button (Button.lua's hasCapturedFontDefaults comment)
 	-- - one setting governs every button's hotkey/count text on every bar.
-	-- Mirrors a bar page's Button Size slider exactly: built-in label just
-	-- names the control, a live centered value readout below it, integer
-	-- min/max end captions, OnValueChanged applies immediately (no Apply-
-	-- button gating, matching the rest of this rebuilt Settings UI). A
+	-- Mirrors a bar page's Button Size slider exactly: a live centered
+	-- value readout below it, integer min/max end captions, OnValueChanged
+	-- applies immediately (no Apply-button gating, matching the rest of
+	-- this rebuilt Settings UI). A
 	-- "Reset to Default" button sits to the right of each slider, restoring
 	-- the captured native size (Button.lua's BTV.NATIVE_HOTKEY_FONT/
 	-- NATIVE_COUNT_FONT).
@@ -7004,8 +6957,6 @@ function BTV:GetOrCreateGeneralPanel()
 	)
 
 	hotkeySlider:SetValueStep(FONT_SIZE_STEP)
-
-	SetSliderLabel(hotkeySlider, "Hotkey Text Size")
 
 	local hotkeySliderLow = getglobal(hotkeySlider:GetName() .. "Low")
 
@@ -7166,8 +7117,6 @@ function BTV:GetOrCreateGeneralPanel()
 	)
 
 	countSlider:SetValueStep(FONT_SIZE_STEP)
-
-	SetSliderLabel(countSlider, "Item Count Text Size")
 
 	local countSliderLow = getglobal(countSlider:GetName() .. "Low")
 
@@ -7409,7 +7358,6 @@ function BTV:GetOrCreateGeneralPanel()
 	)
 
 	globalSpacingSlider:SetValueStep(SPACING_STEP)
-	SetSliderLabel(globalSpacingSlider, "Global Spacing")
 
 	local globalSpacingSliderLow = getglobal(globalSpacingSlider:GetName() .. "Low")
 	local globalSpacingSliderHigh = getglobal(globalSpacingSlider:GetName() .. "High")
@@ -7537,7 +7485,6 @@ function BTV:GetOrCreateGeneralPanel()
 
 	globalButtonSizeSlider:SetMinMaxValues(BUTTON_SIZE_MIN, BUTTON_SIZE_MAX)
 	globalButtonSizeSlider:SetValueStep(1)
-	SetSliderLabel(globalButtonSizeSlider, "Global Button Size")
 
 	local globalButtonSizeSliderLow = getglobal(globalButtonSizeSlider:GetName() .. "Low")
 
@@ -8246,7 +8193,6 @@ function BTV:GetOrCreateEditModePanel()
 
 	customGridSizeSlider:SetMinMaxValues(0, 55)
 	customGridSizeSlider:SetValueStep(1)
-	SetSliderLabel(customGridSizeSlider, "Grid Size")
 
 	local customGridSizeSliderLow = getglobal(customGridSizeSlider:GetName() .. "Low")
 
