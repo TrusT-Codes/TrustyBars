@@ -569,12 +569,62 @@ end
 function BTV:RecaptureDefaultBarNativeAnchors()
 	self:EnsureDB()
 
-	BTVanillaDB.defaultBars = nil
-	BTVanillaDB.defaultBars = seedDefaultBars(self)
+	local fresh = seedDefaultBars(self)
+	local i
+
+	-- Updates each existing cfg table IN PLACE rather than replacing
+	-- BTVanillaDB.defaultBars wholesale - a live self.bars[id].config
+	-- (Bar.lua's CreateBarFromConfig, "bar.config = cfg") is the exact same
+	-- table reference captured once at login, so swapping in a brand-new
+	-- table here would silently orphan every already-created bar from its
+	-- own saved config, leaving ApplyBarPosition reading the stale values
+	-- forever. Only anchor/spacing/action-slot fields are copied - enabled,
+	-- grid shape, buttonSize, and every other user-facing setting are left
+	-- untouched, since this is a native-anchor recapture, not a reseed.
+	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
+		local id = self.DEFAULT_BAR_IDS[i]
+		local oldCfg = BTVanillaDB.defaultBars[id]
+		local newCfg = fresh[id]
+
+		-- Pet Bar/Stance Bar in native mode reparent their real Blizzard
+		-- buttons into TrustyBars' own chain-anchored container
+		-- (CreatePetBarNativeContainer/CreateStanceBarContainer) - once
+		-- that's happened this session, GetLeft()/GetTop() on those
+		-- buttons reports OUR OWN last-applied container position back,
+		-- not Blizzard's true native one (live-confirmed: PetActionButton1
+		-- GetPoint(1) resolves to BTVanillaPetBarNativeContainer, not a
+		-- real Blizzard frame). Recapturing here would just feed that
+		-- self-referencing value back in as "fresh" - skip these ids
+		-- entirely once their container already exists; only a capture
+		-- from before the container was ever built (this session's first
+		-- EnsureDB call) reflects Blizzard's real anchor.
+		local selfReferencing =
+			(id == self.PET_BAR_ID and self.petBarNativeContainer) or
+			(id == self.STANCE_BAR_ID and self.stanceBarContainer)
+
+		if selfReferencing then
+			-- Leave oldCfg's anchor/spacing untouched.
+		elseif oldCfg and newCfg then
+			oldCfg.point = newCfg.point
+			oldCfg.relativePoint = newCfg.relativePoint
+			oldCfg.x = newCfg.x
+			oldCfg.y = newCfg.y
+			oldCfg.spacing = newCfg.spacing
+			oldCfg.nativeAnchor = newCfg.nativeAnchor
+			oldCfg.nativeSpacing = newCfg.nativeSpacing
+
+			if newCfg.fixedActionSlots then
+				oldCfg.fixedActionSlots = newCfg.fixedActionSlots
+			end
+		elseif newCfg then
+			-- No existing cfg for this id at all (e.g. a save from before
+			-- the Pet Bar existed) - nothing to preserve, so the fresh
+			-- table becomes the real one.
+			BTVanillaDB.defaultBars[id] = newCfg
+		end
+	end
 
 	self:Print("Recapture complete. New cfg.x/cfg.y per default bar:")
-
-	local i
 
 	for i = 1, table.getn(self.DEFAULT_BAR_IDS) do
 		local id = self.DEFAULT_BAR_IDS[i]
@@ -1578,6 +1628,10 @@ function BTV:EnsureDB()
 		end
 	end
 
+	-- Pet Bar's own default position is set later, in Core.lua's
+	-- SetupPetBarNativeContainer - not here, since it's derived from Bar 3's
+	-- nativeAnchor (seeded above, in this same DEFAULT_BAR_IDS loop).
+
 	-- Migration-safe: an existing save from before the Stance Bar's styled
 	-- mode existed has no entry for BTV.STANCE_BAR_ID - seed just that one
 	-- id, same treatment as the Pet Bar migration above. This is purely
@@ -2513,46 +2567,82 @@ end
 
 -- Polls ActionButton1's real position until two consecutive reads agree
 -- (or a timeout is hit), since its true native position is not guaranteed
--- final the instant PLAYER_ENTERING_WORLD fires.
+-- final the instant PLAYER_ENTERING_WORLD fires. PetActionButton1/
+-- PetActionBarFrame are deliberately NOT watched here or read anywhere in
+-- Pet Bar's own setup - live-confirmed across many logins to report a
+-- stable but wrong position with no settle behavior at all (not a timing
+-- race), so Pet Bar's default anchor is derived from Bar 3's own
+-- (reliably-captured) anchor instead - see SetupPetBarNativeContainer.
 local SETTLE_POLL_INTERVAL = 0.1
 local SETTLE_STABLE_READS_REQUIRED = 2
 local SETTLE_TIMEOUT = 3
 
-local function WaitForNativeBarSettle(callback)
-	local ref = getglobal("ActionButton1")
+-- Frame globals watched before the login sequence proceeds.
+local SETTLE_WATCH_NAMES = { "ActionButton1" }
 
-	if not ref or not C_Timer or not C_Timer.NewTicker then
+local function WaitForNativeBarSettle(callback)
+	local mainRef = getglobal("ActionButton1")
+
+	if not mainRef or not C_Timer or not C_Timer.NewTicker then
 		callback(nil, nil, nil, nil, 0)
 		return
 	end
 
-	local earlyLeft, earlyTop = ref:GetLeft(), ref:GetTop()
-	local lastLeft, lastTop = earlyLeft, earlyTop
-	local stableCount = 0
+	local watchers = {}
+	local wi
+
+	for wi = 1, table.getn(SETTLE_WATCH_NAMES) do
+		local name = SETTLE_WATCH_NAMES[wi]
+		local ref = getglobal(name)
+
+		if ref then
+			local left, top = ref:GetLeft(), ref:GetTop()
+
+			table.insert(watchers, {
+				name = name,
+				ref = ref,
+				earlyLeft = left,
+				earlyTop = top,
+				lastLeft = left,
+				lastTop = top,
+				stableCount = 0,
+			})
+		end
+	end
+
 	local elapsed = 0
 
 	local ticker
 	ticker = C_Timer.NewTicker(SETTLE_POLL_INTERVAL, function()
 		elapsed = elapsed + SETTLE_POLL_INTERVAL
 
-		local left, top = ref:GetLeft(), ref:GetTop()
+		local allSettled = true
+		local wi
 
-		if left and top and lastLeft and lastTop
-			and left == lastLeft and top == lastTop then
-			stableCount = stableCount + 1
-		else
-			stableCount = 0
+		for wi = 1, table.getn(watchers) do
+			local w = watchers[wi]
+			local left, top = w.ref:GetLeft(), w.ref:GetTop()
+
+			if left and top and w.lastLeft and w.lastTop
+				and left == w.lastLeft and top == w.lastTop then
+				w.stableCount = w.stableCount + 1
+			else
+				w.stableCount = 0
+			end
+
+			w.lastLeft, w.lastTop = left, top
+
+			if w.stableCount < SETTLE_STABLE_READS_REQUIRED then
+				allSettled = false
+			end
 		end
 
-		lastLeft, lastTop = left, top
-
-		local settled = stableCount >= SETTLE_STABLE_READS_REQUIRED
 		local timedOut = elapsed >= SETTLE_TIMEOUT
 
-		if settled or timedOut then
+		if allSettled or timedOut then
 			ticker:Cancel()
 
-			if timedOut and not settled then
+			if timedOut and not allSettled then
 				BTV:Print(
 					"WARNING: native action bar position did not settle within " ..
 					tostring(SETTLE_TIMEOUT) .. "s - proceeding with its current, " ..
@@ -2560,9 +2650,95 @@ local function WaitForNativeBarSettle(callback)
 				)
 			end
 
-			callback(earlyLeft, earlyTop, lastLeft, lastTop, elapsed)
+			local mainEarlyLeft, mainEarlyTop, mainLeft, mainTop = nil, nil, nil, nil
+
+			for wi = 1, table.getn(watchers) do
+				local w = watchers[wi]
+
+				if w.name == "ActionButton1" then
+					mainEarlyLeft, mainEarlyTop = w.earlyLeft, w.earlyTop
+					mainLeft, mainTop = w.lastLeft, w.lastTop
+				else
+					BTV:Print(string.format(
+						"Anchor capture (%s): left early=%.2f settled=%.2f, top early=%.2f settled=%.2f",
+						w.name, w.earlyLeft or -1, w.lastLeft or -1, w.earlyTop or -1, w.lastTop or -1
+					))
+				end
+			end
+
+			callback(mainEarlyLeft, mainEarlyTop, mainLeft, mainTop, elapsed)
 		end
 	end)
+end
+
+-- Safety net for a real, live-confirmed gap in WaitForNativeBarSettle: two
+-- 0.1s-apart reads agreeing only proves ActionButton1 hasn't moved
+-- recently, not that Blizzard's own MainMenuBar-cluster recenter pass has
+-- truly finished (a fresh install stresses client init harder than a
+-- /reload, giving this more room to happen). Re-reads ActionButton1 a few
+-- seconds after login and, only if it genuinely drifted from what was
+-- captured, silently recaptures/reapplies via the same (now in-place-
+-- updating) RecaptureDefaultBarNativeAnchors - a no-op whenever the
+-- original capture was already correct.
+local DRIFT_RECHECK_DELAY = 5
+local DRIFT_TOLERANCE = 1
+
+-- Builds Pet Bar's native container and sets its default position.
+-- PetActionBarFrame/PetActionButton1's own real screen position is never
+-- read for this - live-confirmed across many logins to report a stable
+-- but wrong value with no settle behavior at all, so no amount of waiting
+-- or polling fixes it. Instead the default anchor is derived from Bar 3's
+-- own (reliably-captured, every login) nativeAnchor.x, falling back to
+-- Bar 1's if Bar 3 was never captured - same "derive from a sibling bar"
+-- approach ReflowPetBarForBar3Toggle already uses for y.
+local function SetupPetBarNativeContainer()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
+
+	if not cfg or BTV.petBarNativeContainer then
+		return
+	end
+
+	if BTVanillaDB.useDefaultLayout ~= false then
+		local defaults = BTVanillaDB.defaultBars
+		local bar3Anchor = defaults[3] and defaults[3].nativeAnchor
+		local bar1Anchor = defaults[1] and defaults[1].nativeAnchor
+		local anchor = bar3Anchor or bar1Anchor
+
+		if anchor then
+			cfg.point = "TOPLEFT"
+			cfg.relativePoint = "BOTTOMLEFT"
+			cfg.x = anchor.x
+			cfg.nativeAnchor = cfg.nativeAnchor or {}
+			cfg.nativeAnchor.point = "TOPLEFT"
+			cfg.nativeAnchor.relativePoint = "BOTTOMLEFT"
+			cfg.nativeAnchor.x = anchor.x
+		end
+	end
+
+	BTV:CreatePetBarNativeContainer()
+
+	if BTVanillaDB.useDefaultLayout ~= false then
+		local bar3Cfg = BTVanillaDB.defaultBars[3]
+		BTV:ReflowPetBarForBar3Toggle(bar3Cfg and bar3Cfg.enabled)
+	end
+end
+
+local function VerifyDefaultBarAnchorsSettled()
+	local cfg = BTVanillaDB and BTVanillaDB.defaultBars and BTVanillaDB.defaultBars[1]
+	local liveAnchor = cfg and CaptureNativeAnchor(BTV, 1)
+
+	if not cfg or not cfg.nativeAnchor or not liveAnchor then
+		return
+	end
+
+	if math.abs(liveAnchor.x - cfg.nativeAnchor.x) > DRIFT_TOLERANCE
+		or math.abs(liveAnchor.y - cfg.nativeAnchor.y) > DRIFT_TOLERANCE then
+		BTV:Print(
+			"Native action bar position drifted after login settle - " ..
+			"recapturing automatically."
+		)
+		BTV:RecaptureDefaultBarNativeAnchors()
+	end
 end
 
 -- Full login sequence, run once WaitForNativeBarSettle confirms the
@@ -2611,7 +2787,7 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	end
 
 	BTV:CreateBagBarAndMicroMenu()
-	BTV:CreatePetBarNativeContainer()
+	SetupPetBarNativeContainer()
 
 	BTV:CreatePageIndicatorContainer()
 
@@ -2644,6 +2820,10 @@ local function RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wa
 	if BTV.pendingFirstLoginDialog then
 		BTV.pendingFirstLoginDialog = nil
 		BTV:ShowFirstLoginDialog()
+	end
+
+	if C_Timer and C_Timer.After then
+		C_Timer.After(DRIFT_RECHECK_DELAY, VerifyDefaultBarAnchorsSettled)
 	end
 end
 
