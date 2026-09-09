@@ -1820,8 +1820,14 @@ local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 		end
 	end
 
+	-- container.overlayTopFudge (Micro Menu only, BTV.MICRO_MENU_OVERLAY_TOP_FUDGE
+	-- - Core.lua) is the same extra top trim the edit-mode overlay's own
+	-- anchor applies beyond GetHitRectInsets() - folded in here too so row
+	-- pitch lines up with where the overlay actually shows the button ending.
+	local rowTopInset = topInset + (container.overlayTopFudge or 0)
+
 	local colStep = cellWidth - leftInset - rightInset + spacing
-	local rowStep = cellHeight - topInset - bottomInset + spacing
+	local rowStep = cellHeight - rowTopInset - bottomInset + spacing
 
 	for i = 1, shownCount do
 		local col, row = ButtonIndexToGridPos(i, cols)
