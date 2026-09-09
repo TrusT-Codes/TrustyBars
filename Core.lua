@@ -66,7 +66,7 @@ BTV.BORDER_TEXTURE_FUDGE = 12
 -- EnsureContainerOverlay/ApplyGridAnchoredShape) and the grid layout's
 -- row-to-row spacing (ApplyGridAnchoredShape), so both stay in sync off one
 -- value.
-BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 0
+BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 2
 
 -- "Snap to Adjacent Elements": how close (real screen pixels) a dragged
 -- edge must get to another edge before it snaps.

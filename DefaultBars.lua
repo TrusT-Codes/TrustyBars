@@ -1816,7 +1816,13 @@ local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 			shownCount = shownCount + 1
 			shown[shownCount] = buttons[i]
 		else
+			-- Flag consumed by InstallReanchorGuard (installed on every
+			-- Micro Menu button in CreateBagBarAndMicroMenu) - lets our own
+			-- ClearAllPoints through while swallowing anything else that
+			-- touches this frame.
+			buttons[i].btvApplyingMicroMenuPosition = true
 			buttons[i]:ClearAllPoints()
+			buttons[i].btvApplyingMicroMenuPosition = nil
 		end
 	end
 
@@ -1834,8 +1840,11 @@ local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 		local xOff = col * colStep
 		local yOff = -row * rowStep
 
+		-- Same flag/reasoning as the hidden-button branch above.
+		shown[i].btvApplyingMicroMenuPosition = true
 		shown[i]:ClearAllPoints()
 		PixelSetPoint(shown[i], "TOPLEFT", container, "TOPLEFT", xOff, yOff)
+		shown[i].btvApplyingMicroMenuPosition = nil
 	end
 
 	local totalWidth = cellWidth + ((cols - 1) * colStep) - rightInset
@@ -2681,6 +2690,20 @@ function BTV:CreateBagBarAndMicroMenu()
 
 			self.microMenuContainer = container
 			self.microMenuButtons = buttons
+
+			-- Same external-re-anchor bug class as the Cast Bar/Latency Bar
+			-- (InstallReanchorGuard's own comment above) - live-confirmed on
+			-- QuestLogMicroButton stretching from its Micro Menu position up
+			-- toward its native default one. Every one of these 8 real
+			-- buttons is a native frame native code could re-anchor, so all
+			-- 8 get guarded, not just the one that's been seen so far.
+			do
+				local guardIndex
+
+				for guardIndex = 1, table.getn(buttons) do
+					InstallReanchorGuard(buttons[guardIndex], "btvApplyingMicroMenuPosition")
+				end
+			end
 
 			-- Extra top-only overlay trim beyond the buttons' own real
 			-- GetHitRectInsets() - see BTV.MICRO_MENU_OVERLAY_TOP_FUDGE's
