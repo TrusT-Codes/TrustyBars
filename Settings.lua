@@ -46,6 +46,15 @@ local PET_BAR_GRID_PRESETS = {
 	{ rows = 10, cols = 1  },
 }
 
+-- Micro Menu always has exactly 8 fixed named buttons - its own preset set
+-- totals 8 cells instead of GRID_PRESETS' 12.
+local MICRO_MENU_GRID_PRESETS = {
+	{ rows = 1, cols = 8 },
+	{ rows = 2, cols = 4 },
+	{ rows = 4, cols = 2 },
+	{ rows = 8, cols = 1 },
+}
+
 -- Stance Bar's usable form count varies per class/talent/session (commonly
 -- 0-4, but not hardcoded to that range) - unlike Pet Bar's fixed 10, its
 -- preset list can't be a static table. Returns every exact factor-pair
@@ -75,6 +84,10 @@ end
 local function GetGridPresetsForBar(barId)
 	if barId == BTV.PET_BAR_ID then
 		return PET_BAR_GRID_PRESETS
+	end
+
+	if barId == "micromenu" then
+		return MICRO_MENU_GRID_PRESETS
 	end
 
 	if barId == BTV.STANCE_BAR_ID then
@@ -907,7 +920,13 @@ local function GridSwatch_OnClick()
 
 	local barId = page.barId
 
-	if page.isDefault then
+	if barId == "micromenu" then
+		-- page.isDefault is unconditionally true for every simple page
+		-- (CreateSimpleBarPage, unrelated profile-lock-gating reuse of that
+		-- field name) - must be checked before the page.isDefault branch
+		-- below or this would wrongly call BTV:SetDefaultBarLayout.
+		BTV:SetMicroMenuLayout(this.cols, this.rows)
+	elseif page.isDefault then
 		-- BTV:SetDefaultBarLayout (DefaultBars.lua) handles both bar 1 and
 		-- bars 2-5, delegating to Bar.lua's SetBarLayout for bars 2-5.
 		BTV:SetDefaultBarLayout(barId, this.cols, this.rows)
@@ -3761,7 +3780,12 @@ local function CreateSimpleBarPage(key)
 				spacingValueText:SetText(tostring(value))
 
 				if not this.suppressApply then
-					config.setSpacing(value)
+					-- Micro Menu displays value - uiOffset as the actual
+					-- stored/applied spacing (config.spacingUiOffset); every
+					-- other hasSpacing page has no offset (defaults to 0).
+					local uiOffset = config.spacingUiOffset or 0
+
+					config.setSpacing(value - uiOffset)
 				end
 			end
 		)
@@ -3847,46 +3871,51 @@ local function CreateSimpleBarPage(key)
 	end
 
 	-------------------------------------------------------------------------
-	-- Orientation (Bag Bar/Micro Menu only - config.hasOrientation). A
-	-- simple "Vertical Layout" checkbox rather than the 6-preset grid
-	-- swatch picker real bars use - these clusters have a fixed button
-	-- count and only two possible layouts (horizontal/vertical), so a
-	-- checkbox is the right control here.
+	-- Grid Layout (Micro Menu only - config.hasGrid). Fixed preset swatch
+	-- picker, same mechanism as the full grid pages (GetOrCreateBarPage),
+	-- reusing RebuildGridSwatches/RefreshGridSwatchSelection directly.
 	-------------------------------------------------------------------------
 
-	if config.hasOrientation then
-		local orientationCheckbox = CreateFrame(
-			"CheckButton",
-			"BTVanillaSimplePage" .. key .. "OrientationCheckbox",
-			page,
-			"UICheckButtonTemplate"
-		)
+	if config.hasGrid then
+		local gridTitleY = cursorY
+		local swatchY = gridTitleY - 26
 
-		orientationCheckbox:SetWidth(24)
-		orientationCheckbox:SetHeight(24)
+		local gridTitle = page:CreateFontString(nil, "OVERLAY", "GameFontNormal")
 
-		orientationCheckbox:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, cursorY)
+		gridTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, gridTitleY)
+		gridTitle:SetText("Grid Layout")
 
-		orientationCheckbox:SetScript(
-			"OnClick",
-			function()
-				local checked = this:GetChecked() and true or false
+		page.gridSwatchY = swatchY
 
-				config.setOrientation(checked)
+		RebuildGridSwatches(page, key, swatchY)
+
+		-- Grid Layout can't just be added to page.hoverOnlyReflowRows - its
+		-- swatches are a dynamic array, repositioned in place instead.
+		page.hoverOnlyExtraReflow = function(offset)
+			gridTitle:ClearAllPoints()
+			gridTitle:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_SECTION, gridTitleY - offset)
+
+			page.gridSwatchY = swatchY - offset
+
+			if page.gridSwatches then
+				local xOffset = INDENT_CONTROL
+				local i
+
+				for i = 1, table.getn(page.gridSwatches) do
+					local swatch = page.gridSwatches[i]
+
+					swatch:ClearAllPoints()
+					swatch:SetPoint("TOPLEFT", page, "TOPLEFT", xOffset, page.gridSwatchY)
+
+					xOffset = xOffset + SWATCH_SIZE + SWATCH_GAP
+				end
 			end
-		)
-
-		local orientationLabel = getglobal(orientationCheckbox:GetName() .. "Text")
-
-		if orientationLabel then
-			orientationLabel:SetText("Vertical Layout")
 		end
 
-		page.orientationCheckbox = orientationCheckbox
-
-		BTV:AddHoverOnlyReflowRow(page, orientationCheckbox, INDENT_SECTION, cursorY)
-
-		cursorY = cursorY - 24 - 14
+		-- Same swatch-height-plus-caption-plus-gap arithmetic as
+		-- GetOrCreateBarPage's own button-count-row positioning below its
+		-- Grid Layout section.
+		cursorY = swatchY - SWATCH_SIZE - 14 - 14
 	end
 
 	-------------------------------------------------------------------------
@@ -4551,7 +4580,10 @@ function BTV:RefreshSimpleBarPage(key)
 	-------------------------------------------------------------------------
 
 	if page.spacingSlider and config.getSpacing then
-		local spacing = config.getSpacing() or 0
+		-- Displayed slider value = actual stored spacing + uiOffset
+		-- (Micro Menu only - see config.spacingUiOffset).
+		local uiOffset = config.spacingUiOffset or 0
+		local spacing = (config.getSpacing() or 0) + uiOffset
 		local spacingMin = config.spacingMin or SPACING_MIN
 
 		if spacing < spacingMin then
@@ -4593,6 +4625,12 @@ function BTV:RefreshSimpleBarPage(key)
 
 	if page.orientationCheckbox and config.getOrientation then
 		page.orientationCheckbox:SetChecked(config.getOrientation() == true)
+	end
+
+	if page.gridSwatches and config.getGridLayout then
+		local cols, rows = config.getGridLayout()
+
+		RefreshGridSwatchSelection(page, cols, rows)
 	end
 
 	if config.hasHoverOnly then
@@ -4924,14 +4962,20 @@ simpleBarPageConfigs["micromenu"] = {
 	-- BTV:SetMicroMenuSpacing's own comment (DefaultBars.lua) and
 	-- CreateSimpleBarPage's spacingMin handling above.
 	spacingMin = -10,
+	-- Displayed slider value = actual stored spacing + 4 (native button art
+	-- padding makes an actual spacing of 0 look like a visible gap) - see
+	-- BTV:SetMicroMenuSpacing's own comment (DefaultBars.lua).
+	spacingUiOffset = 4,
 	getSpacing = function() return BTVanillaDB.microMenuSpacing end,
 	setSpacing = function(v) BTV:SetMicroMenuSpacing(v) end,
 	hasScale = true,
 	getScale = function() return BTVanillaDB.microMenuScale end,
 	setScale = function(v) BTV:SetMicroMenuScale(v) end,
-	hasOrientation = true,
-	getOrientation = function() return BTVanillaDB.microMenuOrientation end,
-	setOrientation = function(v) BTV:SetMicroMenuOrientation(v) end,
+	hasGrid = true,
+	-- GridSwatch_OnClick calls BTV:SetMicroMenuLayout directly (barId ==
+	-- "micromenu" branch), not through a config setter - only getGridLayout
+	-- is needed here, to sync swatch selection on refresh.
+	getGridLayout = function() return BTVanillaDB.microMenuCols or 8, BTVanillaDB.microMenuRows or 1 end,
 	hasHoverOnly = true,
 	getHoverOnly = function() return BTVanillaDB.microMenuHoverOnly end,
 	setHoverOnly = function(v) BTV:SetMicroMenuHoverOnly(v) end,

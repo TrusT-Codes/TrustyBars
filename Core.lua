@@ -61,8 +61,11 @@ BTV.BORDER_Y_OFFSET = 1
 -- side (transparent padding baked into the border texture asset).
 BTV.BORDER_TEXTURE_FUDGE = 12
 
--- Extra top-only trim applied to the Micro Menu's edit-mode overlay,
--- beyond GetHitRectInsets().
+-- Extra top-only trim applied on top of GetHitRectInsets() for Micro Menu -
+-- shared by the edit-mode overlay's own top anchor (DefaultBars.lua's
+-- EnsureContainerOverlay/ApplyGridAnchoredShape) and the grid layout's
+-- row-to-row spacing (ApplyGridAnchoredShape), so both stay in sync off one
+-- value.
 BTV.MICRO_MENU_OVERLAY_TOP_FUDGE = 2
 
 -- "Snap to Adjacent Elements": how close (real screen pixels) a dragged
@@ -1512,11 +1515,17 @@ function BTV:EnsureDB()
 	if BTVanillaDB.bagBarOrientation == nil then
 		BTVanillaDB.bagBarOrientation = false
 	end
-	if BTVanillaDB.microMenuOrientation == nil then
-		BTVanillaDB.microMenuOrientation = false
-	end
 	if BTVanillaDB.stanceBarOrientation == nil then
 		BTVanillaDB.stanceBarOrientation = false
+	end
+
+	-- Micro Menu uses a fixed grid (cols x rows) instead of an
+	-- orientation flag - default is one row of 8, same look as before.
+	if BTVanillaDB.microMenuCols == nil then
+		BTVanillaDB.microMenuCols = 8
+	end
+	if BTVanillaDB.microMenuRows == nil then
+		BTVanillaDB.microMenuRows = 1
 	end
 
 	-- bagBarSpacing/microMenuSpacing/stanceBarSpacing (+ native snapshots)
