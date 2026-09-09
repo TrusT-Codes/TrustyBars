@@ -1512,11 +1512,17 @@ function BTV:EnsureDB()
 	if BTVanillaDB.bagBarOrientation == nil then
 		BTVanillaDB.bagBarOrientation = false
 	end
-	if BTVanillaDB.microMenuOrientation == nil then
-		BTVanillaDB.microMenuOrientation = false
-	end
 	if BTVanillaDB.stanceBarOrientation == nil then
 		BTVanillaDB.stanceBarOrientation = false
+	end
+
+	-- Micro Menu uses a fixed grid (cols x rows) instead of an
+	-- orientation flag - default is one row of 8, same look as before.
+	if BTVanillaDB.microMenuCols == nil then
+		BTVanillaDB.microMenuCols = 8
+	end
+	if BTVanillaDB.microMenuRows == nil then
+		BTVanillaDB.microMenuRows = 1
 	end
 
 	-- bagBarSpacing/microMenuSpacing/stanceBarSpacing (+ native snapshots)

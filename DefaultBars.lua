@@ -1490,10 +1490,12 @@ local function BuildChainAnchoredContainer(frameName, buttons)
 	return container, nativeX, nativeY, nativeSpacing
 end
 
--- Re-chain-anchors a Bag Bar/Micro Menu container's buttons from its
+-- Re-chain-anchors a Bag Bar/Stance Bar container's buttons from its
 -- current spacing/orientation, and applies its current scale - shared by
--- BTV:ApplyBagBarShape/ApplyMicroMenuShape below, since both elements use
+-- BTV:ApplyBagBarShape/ApplyStanceBarShape below, since both elements use
 -- the same chain-anchoring technique BuildChainAnchoredContainer sets up.
+-- Micro Menu uses the separate fixed-grid ApplyGridAnchoredShape instead
+-- (below) - it has no compaction/skip-hidden concept.
 --
 -- horizontal (orientation == false, native default): each button's
 -- TOPLEFT anchors to the previous button's TOPRIGHT, offset by `spacing`.
@@ -1504,11 +1506,8 @@ end
 --
 -- Chains only currently-shown buttons, filtered live via IsShown() on
 -- every call rather than cached once at container-build time - a hidden
--- button (e.g. TalentMicroButton, natively hidden below level 10) must
--- not reserve a slot in the chain, and shown state can change mid-session
--- (leveling past 10 unlocks Talent) - see the UpdateMicroButtons hook
--- further below, which re-runs ApplyMicroMenuShape exactly when Blizzard's
--- own code re-evaluates that.
+-- button (e.g. a stance form not currently available) must not reserve a
+-- slot in the chain, and shown state can change mid-session.
 
 -- Finds the first and last currently-shown button in a chain (shared by
 -- ApplyChainAnchoredShape below and EnsureContainerOverlay's own initial
@@ -1740,6 +1739,79 @@ local function ApplyChainAnchoredShape(container, spacing, orientation, scale, f
 		container.btvOverlay:ClearAllPoints()
 		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
 		container.btvOverlay:SetPoint("BOTTOMRIGHT", prevBtn, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
+	end
+end
+
+-- Converts a 1-based button index into a 0-based (col, row) grid position.
+-- Lua 5.0 has no % operator: remainder = i - (math.floor(i / cols) * cols).
+-- Ported from Bar.lua's own ButtonIndexToGridPos (separate local, no
+-- cross-file import in Lua 5.0).
+local function ButtonIndexToGridPos(index, cols)
+	local i = index - 1
+	local row = math.floor(i / cols)
+	local col = i - (row * cols)
+	return col, row
+end
+
+-- Fixed-grid layout for Micro Menu only (Bag Bar/Stance Bar keep using
+-- ApplyChainAnchoredShape). Every one of container.chainButtons gets a
+-- permanent cell by its own array index - no IsShown()/skip-hidden logic,
+-- since Micro Menu's 8 named buttons are a fixed set, not a chain to compact.
+local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
+	if not container or not container.chainButtons then
+		return
+	end
+
+	local buttons = container.chainButtons
+	local widths = container.chainWidths
+	local heights = container.chainHeights
+
+	spacing = spacing or 0
+
+	-- Uniform cell size (largest button on each axis) - a fixed grid has no
+	-- compaction to do, so per-button hit-rect trimming isn't needed here.
+	local cellWidth = 0
+	local cellHeight = 0
+	local i
+
+	for i = 1, table.getn(buttons) do
+		if (widths[i] or 0) > cellWidth then
+			cellWidth = widths[i]
+		end
+
+		if (heights[i] or 0) > cellHeight then
+			cellHeight = heights[i]
+		end
+	end
+
+	for i = 1, table.getn(buttons) do
+		local col, row = ButtonIndexToGridPos(i, cols)
+		local xOff = col * (cellWidth + spacing)
+		local yOff = -row * (cellHeight + spacing)
+
+		buttons[i]:ClearAllPoints()
+		PixelSetPoint(buttons[i], "TOPLEFT", container, "TOPLEFT", xOff, yOff)
+	end
+
+	local totalWidth = (cellWidth * cols) + ((cols - 1) * spacing)
+	local totalHeight = (cellHeight * rows) + ((rows - 1) * spacing)
+
+	PixelSetSize(container, totalWidth, totalHeight)
+	container:SetScale(scale or 1)
+
+	if container.btvOverlay then
+		local first = buttons[1]
+		local last = buttons[table.getn(buttons)]
+
+		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
+		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(last)
+		local firstRatio = ScaleRatio(first, container.btvOverlay)
+		local lastRatio = ScaleRatio(last, container.btvOverlay)
+		local topFudge = container.overlayTopFudge or 0
+
+		container.btvOverlay:ClearAllPoints()
+		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
+		container.btvOverlay:SetPoint("BOTTOMRIGHT", last, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
 	end
 end
 
@@ -2323,14 +2395,16 @@ function BTV:SetMicroMenuHoverDuration(duration)
 	self:ApplyMicroMenuPosition()
 end
 
--- Mirrors BTV:ApplyBagBarShape exactly - see its own comment above.
+-- Unlike Bag Bar/Stance Bar, Micro Menu lays out via the fixed-grid function -
+-- see ApplyGridAnchoredShape's own comment above.
 function BTV:ApplyMicroMenuShape()
 	self:EnsureDB()
 
-	ApplyChainAnchoredShape(
+	ApplyGridAnchoredShape(
 		self.microMenuContainer,
+		BTVanillaDB.microMenuCols or 8,
+		BTVanillaDB.microMenuRows or 1,
 		BTVanillaDB.microMenuSpacing or 0,
-		BTVanillaDB.microMenuOrientation == true,
 		BTVanillaDB.microMenuScale or 1
 	)
 end
@@ -2346,23 +2420,55 @@ function BTV:SetMicroMenuSpacing(spacing)
 
 	spacing = math.floor(spacing + 0.5)
 
-	-- Floor is -10, not 0, unlike every other chain-anchored container's
-	-- spacing setter: Micro Menu's real native buttons have a measured
-	-- native gap of 0 but still show a small visible gap at spacing=0,
-	-- since the buttons' own native art has padding inside their nominal
-	-- frame bounds that spacing alone can't remove - only a slight overlap
-	-- (negative spacing) compensates for that.
-	if spacing < -10 then
-		spacing = -10
+	-- Actual range is [-14, 16], shifted -4 from the slider's own displayed
+	-- [-10, 20] range - Settings.lua's Micro Menu spacing slider applies a
+	-- +4 display offset on top of this (see simpleBarPageConfigs["micromenu"]'s
+	-- spacingUiOffset) to compensate for native button art padding that
+	-- makes an actual spacing of 0 look like a visible gap.
+	if spacing < -14 then
+		spacing = -14
 	end
 
-	if spacing > 20 then
-		spacing = 20
+	if spacing > 16 then
+		spacing = 16
 	end
 
 	BTVanillaDB.microMenuSpacing = spacing
 
 	self:ApplyMicroMenuShape()
+end
+
+-- Modeled on Bar.lua's BTV:SetBarLayout, simplified (no buttonCount concept -
+-- Micro Menu's grid always shows all 8 named buttons).
+function BTV:SetMicroMenuLayout(cols, rows)
+	self:EnsureDB()
+
+	cols = tonumber(cols)
+	rows = tonumber(rows)
+
+	if not cols or not rows then
+		return false
+	end
+
+	cols = math.floor(cols)
+	rows = math.floor(rows)
+
+	if cols < 1 or rows < 1 then
+		return false
+	end
+
+	if cols * rows > table.getn(self.MICRO_MENU_BUTTON_NAMES) then
+		self:Print("Micro Menu layout cannot exceed " ..
+			tostring(table.getn(self.MICRO_MENU_BUTTON_NAMES)) .. " buttons.")
+		return false
+	end
+
+	BTVanillaDB.microMenuCols = cols
+	BTVanillaDB.microMenuRows = rows
+
+	self:ApplyMicroMenuShape()
+
+	return true
 end
 
 function BTV:SetMicroMenuScale(scale)
@@ -2389,22 +2495,15 @@ function BTV:SetMicroMenuScale(scale)
 	self:ApplyMicroMenuShape()
 end
 
-function BTV:SetMicroMenuOrientation(vertical)
-	self:EnsureDB()
-
-	BTVanillaDB.microMenuOrientation = vertical and true or false
-
-	self:ApplyMicroMenuShape()
-end
-
 -- Settings.lua's Micro Menu page reset flow calls this alongside
 -- ResetMicroMenuPosition (simpleBarPageConfigs["micromenu"].reset).
 function BTV:ResetMicroMenuLayout()
 	self:EnsureDB()
 
-	BTVanillaDB.microMenuSpacing = BTVanillaDB.microMenuNativeSpacing or 0
+	BTVanillaDB.microMenuSpacing = -3
 	BTVanillaDB.microMenuScale = 1
-	BTVanillaDB.microMenuOrientation = false
+	BTVanillaDB.microMenuCols = 8
+	BTVanillaDB.microMenuRows = 1
 
 	self:ApplyMicroMenuShape()
 end
@@ -2566,8 +2665,11 @@ function BTV:CreateBagBarAndMicroMenu()
 				BTVanillaDB.microMenuNativeSpacing = nativeSpacing
 			end
 
+			-- Fixed default of -3 (slider position 1, see the +4 display
+			-- offset in simpleBarPageConfigs["micromenu"]) rather than the
+			-- measured native gap - see BTV:SetMicroMenuSpacing's own comment.
 			if not BTVanillaDB.microMenuSpacing then
-				BTVanillaDB.microMenuSpacing = nativeSpacing
+				BTVanillaDB.microMenuSpacing = -3
 			end
 
 			self:ApplyMicroMenuShape()
@@ -2893,12 +2995,11 @@ end
 -- UpdateMicroButtons is real vanilla FrameXML's own global function
 -- (MainMenuBarMicroButtons.lua) that decides TalentMicroButton's (and any
 -- other conditionally-hidden micro button's) Show()/Hide() state.
--- Hooking it directly, rather than each individual native event, means
--- this addon reacts at exactly the moment Blizzard's own code changes a
--- button's shown state. hooksecurefunc runs after the native handler has
--- already called Show()/Hide(), so ApplyMicroMenuShape's IsShown() checks
--- see the new state immediately. No-ops if microMenuContainer hasn't been
--- built yet this session.
+-- ApplyMicroMenuShape's fixed grid gives every button a permanent cell
+-- regardless of IsShown(), so a newly-unlocked Talent button needs no
+-- repositioning - this hook just keeps the shape re-applied in case a
+-- future change ever makes it matter again. No-ops if microMenuContainer
+-- hasn't been built yet this session.
 if hooksecurefunc and UpdateMicroButtons then
 	hooksecurefunc("UpdateMicroButtons", function()
 		BTV:ApplyMicroMenuShape()
