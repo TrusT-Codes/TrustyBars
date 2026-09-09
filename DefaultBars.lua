@@ -1495,7 +1495,8 @@ end
 -- BTV:ApplyBagBarShape/ApplyStanceBarShape below, since both elements use
 -- the same chain-anchoring technique BuildChainAnchoredContainer sets up.
 -- Micro Menu uses the separate fixed-grid ApplyGridAnchoredShape instead
--- (below) - it has no compaction/skip-hidden concept.
+-- (below) - same skip-hidden idea, but compacting into fixed cols x rows
+-- cells instead of a single-axis chain.
 --
 -- horizontal (orientation == false, native default): each button's
 -- TOPLEFT anchors to the previous button's TOPRIGHT, offset by `spacing`.
@@ -1754,9 +1755,13 @@ local function ButtonIndexToGridPos(index, cols)
 end
 
 -- Fixed-grid layout for Micro Menu only (Bag Bar/Stance Bar keep using
--- ApplyChainAnchoredShape). Every one of container.chainButtons gets a
--- permanent cell by its own array index - no IsShown()/skip-hidden logic,
--- since Micro Menu's 8 named buttons are a fixed set, not a chain to compact.
+-- ApplyChainAnchoredShape). cols x rows stays exactly as configured - a
+-- currently-hidden button (e.g. TalentMicroButton below level 10) does not
+-- reserve its own cell though: every currently-shown button compacts back
+-- to fill grid cells in order, same "collapse empty slots" idea as the Pet
+-- Bar's condense option, leaving any leftover cells empty at the end of the
+-- grid instead of resizing cols/rows. Re-run by the UpdateMicroButtons hook
+-- below whenever Blizzard shows/hides a button.
 local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 	if not container or not container.chainButtons then
 		return
@@ -1768,10 +1773,16 @@ local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 
 	spacing = spacing or 0
 
-	-- Uniform cell size (largest button on each axis) - a fixed grid has no
-	-- compaction to do, so per-button hit-rect trimming isn't needed here.
-	local cellWidth = 0
-	local cellHeight = 0
+	-- Uniform cell size (largest button on each axis), plus each axis' own
+	-- hit-rect inset (GetHitInsets' comment above explains why: Micro Menu's
+	-- real button frames are much taller than their visible content) - the
+	-- row/column pitch below is measured edge-to-edge on real visible
+	-- content, not raw frame size, or vertical spacing would show a big
+	-- empty gap sized by that invisible padding.
+	local cellWidth, cellHeight = 0, 0
+	local leftInset, rightInset, topInset, bottomInset = 0, 0, 0, 0
+	local shown = {}
+	local shownCount = 0
 	local i
 
 	for i = 1, table.getn(buttons) do
@@ -1782,36 +1793,66 @@ local function ApplyGridAnchoredShape(container, cols, rows, spacing, scale)
 		if (heights[i] or 0) > cellHeight then
 			cellHeight = heights[i]
 		end
+
+		local btnLeft, btnRight, btnTop, btnBottom = GetHitInsets(buttons[i])
+
+		if btnLeft > leftInset then
+			leftInset = btnLeft
+		end
+
+		if btnRight > rightInset then
+			rightInset = btnRight
+		end
+
+		if btnTop > topInset then
+			topInset = btnTop
+		end
+
+		if btnBottom > bottomInset then
+			bottomInset = btnBottom
+		end
+
+		if buttons[i]:IsShown() then
+			shownCount = shownCount + 1
+			shown[shownCount] = buttons[i]
+		else
+			buttons[i]:ClearAllPoints()
+		end
 	end
 
-	for i = 1, table.getn(buttons) do
+	local colStep = cellWidth - leftInset - rightInset + spacing
+	local rowStep = cellHeight - topInset - bottomInset + spacing
+
+	for i = 1, shownCount do
 		local col, row = ButtonIndexToGridPos(i, cols)
-		local xOff = col * (cellWidth + spacing)
-		local yOff = -row * (cellHeight + spacing)
+		local xOff = col * colStep
+		local yOff = -row * rowStep
 
-		buttons[i]:ClearAllPoints()
-		PixelSetPoint(buttons[i], "TOPLEFT", container, "TOPLEFT", xOff, yOff)
+		shown[i]:ClearAllPoints()
+		PixelSetPoint(shown[i], "TOPLEFT", container, "TOPLEFT", xOff, yOff)
 	end
 
-	local totalWidth = (cellWidth * cols) + ((cols - 1) * spacing)
-	local totalHeight = (cellHeight * rows) + ((rows - 1) * spacing)
+	local totalWidth = cellWidth + ((cols - 1) * colStep) - rightInset
+	local totalHeight = cellHeight + ((rows - 1) * rowStep) - bottomInset
 
 	PixelSetSize(container, totalWidth, totalHeight)
 	container:SetScale(scale or 1)
 
 	if container.btvOverlay then
-		local first = buttons[1]
-		local last = buttons[table.getn(buttons)]
+		local first = shown[1]
+		local last = shown[shownCount]
 
-		local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
-		local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(last)
-		local firstRatio = ScaleRatio(first, container.btvOverlay)
-		local lastRatio = ScaleRatio(last, container.btvOverlay)
-		local topFudge = container.overlayTopFudge or 0
+		if first and last then
+			local firstLeft, firstRight, firstTop, firstBottom = GetHitInsets(first)
+			local lastLeft, lastRight, lastTop, lastBottom = GetHitInsets(last)
+			local firstRatio = ScaleRatio(first, container.btvOverlay)
+			local lastRatio = ScaleRatio(last, container.btvOverlay)
+			local topFudge = container.overlayTopFudge or 0
 
-		container.btvOverlay:ClearAllPoints()
-		container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
-		container.btvOverlay:SetPoint("BOTTOMRIGHT", last, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
+			container.btvOverlay:ClearAllPoints()
+			container.btvOverlay:SetPoint("TOPLEFT", first, "TOPLEFT", firstLeft * firstRatio, -(firstTop + topFudge) * firstRatio)
+			container.btvOverlay:SetPoint("BOTTOMRIGHT", last, "BOTTOMRIGHT", -lastRight * lastRatio, lastBottom * lastRatio)
+		end
 	end
 end
 
@@ -2995,11 +3036,14 @@ end
 -- UpdateMicroButtons is real vanilla FrameXML's own global function
 -- (MainMenuBarMicroButtons.lua) that decides TalentMicroButton's (and any
 -- other conditionally-hidden micro button's) Show()/Hide() state.
--- ApplyMicroMenuShape's fixed grid gives every button a permanent cell
--- regardless of IsShown(), so a newly-unlocked Talent button needs no
--- repositioning - this hook just keeps the shape re-applied in case a
--- future change ever makes it matter again. No-ops if microMenuContainer
--- hasn't been built yet this session.
+-- Hooking it directly, rather than each individual native event, means
+-- this addon reacts at exactly the moment Blizzard's own code changes a
+-- button's shown state. hooksecurefunc runs after the native handler has
+-- already called Show()/Hide(), so ApplyMicroMenuShape's grid-compaction
+-- loop (ApplyGridAnchoredShape) sees the new state immediately - a
+-- newly-unlocked Talent button reclaims a cell instead of staying
+-- collapsed out. No-ops if microMenuContainer hasn't been built yet this
+-- session.
 if hooksecurefunc and UpdateMicroButtons then
 	hooksecurefunc("UpdateMicroButtons", function()
 		BTV:ApplyMicroMenuShape()
