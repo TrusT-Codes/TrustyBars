@@ -605,6 +605,10 @@ function BTV:SetDefaultBarEnabled(id, enabled)
 		self:ReflowStanceBarForBar2Toggle(enabled)
 	end
 
+	if id == 3 and enabled ~= wasEnabled and BTVanillaDB.useDefaultLayout ~= false then
+		self:ReflowPetBarForBar3Toggle(enabled)
+	end
+
 	-- Matches native's own dependency (bar 5 requires bar 4 - see
 	-- FixRightActionBar2Checkbox) - user can opt out via the General tab.
 	if id == 4 then
@@ -669,6 +673,13 @@ local function RefreshPetBarVisibility()
 
 	if cfg then
 		BTV:SetDefaultBarEnabled(BTV.PET_BAR_ID, cfg.enabled)
+	end
+
+	-- Re-chain-anchors the real buttons back into our container - native
+	-- code re-anchors them directly on these same events, same as
+	-- RebuildStanceBarContainer's treatment of ShapeshiftBar_Update.
+	if BTV.petBarNativeContainer then
+		BTV:ApplyPetBarNativeShape()
 	end
 end
 
@@ -2590,6 +2601,70 @@ end
 -- cfg.scale is new (custom mode has no equivalent, using buttonSize
 -- instead).
 -------------------------------------------------------------------------
+
+-- Fixed vertical clearance between Pet Bar and whichever default bar (1 or
+-- 3) is topmost - PetActionBarFrame's own GetBottom() is never read for
+-- this (unreliable on this client). Value taken from a manually-verified
+-- layout.
+BTV.PET_BAR_NATIVE_GAP = 14
+
+-- referenceY is bar 3's nativeAnchor.y if bar 3 is enabled, else bar 1's -
+-- mirrors GetStanceBarBaselineY for Bar 3 instead of Bar 2.
+-- baselineY = referenceBar.top + gap + height.
+function BTV:GetPetBarBaselineY(bar3Enabled)
+	local defaults = BTVanillaDB and BTVanillaDB.defaultBars
+	local cfg1 = defaults and defaults[1]
+	local cfg3 = defaults and defaults[3]
+
+	local referenceY = cfg1 and cfg1.nativeAnchor and cfg1.nativeAnchor.y
+
+	if bar3Enabled and cfg3 and cfg3.nativeAnchor then
+		referenceY = cfg3.nativeAnchor.y
+	end
+
+	if not referenceY then
+		return nil
+	end
+
+	local container = self.petBarNativeContainer
+
+	if not container then
+		return nil
+	end
+
+	return referenceY + self.PET_BAR_NATIVE_GAP + container:GetHeight()
+end
+
+-- Re-stacks Pet Bar vertically off Bar 3's toggle state - mirrors
+-- ReflowStanceBarForBar2Toggle for Bar 3 instead of Bar 2. Only y is
+-- touched; only call while useDefaultLayout ~= false, or this fights the
+-- user's own manually dragged position.
+function BTV:ReflowPetBarForBar3Toggle(bar3Enabled)
+	local cfg = BTVanillaDB.defaultBars[self.PET_BAR_ID]
+	local container = self.petBarNativeContainer
+
+	if not cfg or not container then
+		return
+	end
+
+	local y = self:GetPetBarBaselineY(bar3Enabled)
+
+	if not y then
+		return
+	end
+
+	cfg.y = y
+
+	if cfg.nativeAnchor then
+		cfg.nativeAnchor.y = y
+	end
+
+	self:ApplyPetBarNativePosition()
+
+	if self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage(self.PET_BAR_ID)
+	end
+end
 
 function BTV:CreatePetBarNativeContainer()
 	self:EnsureDB()
