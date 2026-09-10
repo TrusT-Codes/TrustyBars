@@ -625,6 +625,235 @@ local function CreateSettingSlider(parent, name, width)
 	return slider
 end
 
+-- Sets an OptionsSliderTemplate slider's auto-created end labels
+-- (its "$parentLow"/"$parentHigh" FontStrings).
+local function SetSliderEndLabels(slider, lowText, highText)
+	local low = getglobal(slider:GetName() .. "Low")
+
+	if low then
+		low:SetText(lowText)
+	end
+
+	local high = getglobal(slider:GetName() .. "High")
+
+	if high then
+		high:SetText(highText)
+	end
+end
+
+-------------------------------------------------------------------------
+-- Position slider stepper buttons + click-to-edit value readout
+--
+-- Shared by every X/Y position slider (custom/default bar pages and the
+-- native-frame simple pages). All three input paths - drag, stepper
+-- click, typed edit - funnel through slider:SetValue(), so the slider's
+-- own OnValueChanged handler is what actually applies the change and
+-- refreshes the value readout; these helpers never apply a position
+-- themselves.
+-------------------------------------------------------------------------
+
+-- CONFIRMED (live diagnostic + reading Bar.lua's PixelSetPoint):
+-- ApplyBarPosition sends every X/Y through ClassicAPI's
+-- PixelUtil.SetPoint, which rounds the given offset to the nearest whole
+-- PHYSICAL SCREEN PIXEL using UIParent:GetEffectiveScale() - standard
+-- Blizzard "pixel-perfect" positioning, not a bug. One screen pixel is
+-- therefore 1/scale position units, NOT 1 unit - at a 0.9 scale that's
+-- ~1.11 units, so a flat 0.5-unit step can land inside the same physical
+-- pixel as before and produce no visible change. GetPixelStep() returns
+-- that real, always-visible amount, read live so it stays correct if the
+-- user changes their UI Scale without reloading Settings.
+local function GetPixelStep()
+	local scale = UIParent:GetEffectiveScale()
+
+	if not scale or scale <= 0 then
+		scale = 1
+	end
+
+	return 1 / scale
+end
+
+-- Nearest multiple of `step` to `value` (round-half-up). Used only to
+-- snap DRAG-driven changes onto the pixel grid - never applied to a
+-- stepper-button or typed-edit value, which must move/land exactly
+-- where the user asked.
+local function RoundToStep(value, step)
+	return math.floor(value / step + 0.5) * step
+end
+
+-- CONFIRMED (live diagnostic): Slider:SetValueStep(step) doesn't just
+-- change how future drags snap - it immediately re-snaps whatever value
+-- the slider currently holds to the nearest point on the grid
+-- `min + n*step`. GetScreenCoordinateRange's min is rarely a whole
+-- number (e.g. -1365.3334 at some resolutions), so that grid isn't
+-- aligned to integers either - toggling the step back on after setting
+-- an exact value silently re-snapped it to a nearby, wrong number. Fix:
+-- these X/Y sliders stay continuous (step 0) permanently (set once at
+-- creation, see xSlider/ySlider:SetValueStep(0) below); dragging is
+-- snapped to the 1-pixel grid (GetPixelStep) manually instead, in each
+-- slider's own OnValueChanged (guarded by `this.suppressSnap`, set by
+-- the code below around every stepper/edit-box SetValue call so THEIR
+-- exact values never get re-snapped).
+
+-- Bumped on every call so each set of stepper buttons gets unique frame names.
+local positionStepperCounter = 0
+
+-- Sets `slider`'s value without the drag-snap-to-0.5 logic in its
+-- OnValueChanged handler touching it - used by every stepper/edit-box
+-- commit so their exact target value sticks.
+local function SetSliderValueUnsnapped(slider, value)
+	slider.suppressSnap = true
+	slider:SetValue(value)
+	slider.suppressSnap = nil
+end
+
+-- Adds "--"/"-"/"+"/"++" buttons flanking `slider` (stepping by 10 and 1
+-- real screen pixels respectively - see GetPixelStep), anchored to it
+-- directly so they track any later reflow of the slider itself without
+-- separate registration. namePrefix should already be unique to the
+-- owning page. Returns bigMinus, minus, plus, bigPlus.
+function BTV:CreatePositionStepperButtons(page, slider, namePrefix)
+	positionStepperCounter = positionStepperCounter + 1
+
+	local suffix = tostring(positionStepperCounter)
+
+	-- pixels: how many real screen pixels this button shifts the
+	-- slider's current value by, per click (converted to position units
+	-- live via GetPixelStep, so it stays correct if UI Scale changes),
+	-- clamped to the slider's own min/max. width: forced button width -
+	-- "++"/"--" need more room than "+"/"-" to render centered rather
+	-- than clipped/overflowing a width sized for a single character.
+	local function MakeStepButton(name, label, pixels, width)
+		local button = CreateFrame("Button", namePrefix .. name .. suffix, page)
+
+		button:SetHeight(20)
+		BTV:StyleModernButton(button, width, width)
+		button:SetText(label)
+
+		button:SetScript("OnClick", function()
+			local min, max = slider:GetMinMaxValues()
+			local target = slider:GetValue() + (pixels * GetPixelStep())
+
+			if target < min then
+				target = min
+			elseif target > max then
+				target = max
+			end
+
+			SetSliderValueUnsnapped(slider, target)
+		end)
+
+		return button
+	end
+
+	local minus = MakeStepButton("StepperMinus", "-", -1, 20)
+
+	minus:SetPoint("RIGHT", slider, "LEFT", -4, 0)
+
+	local plus = MakeStepButton("StepperPlus", "+", 1, 20)
+
+	plus:SetPoint("LEFT", slider, "RIGHT", 4, 0)
+
+	local bigMinus = MakeStepButton("StepperBigMinus", "--", -10, 26)
+
+	bigMinus:SetPoint("RIGHT", minus, "LEFT", -2, 0)
+
+	local bigPlus = MakeStepButton("StepperBigPlus", "++", 10, 26)
+
+	bigPlus:SetPoint("LEFT", plus, "RIGHT", 2, 0)
+
+	return bigMinus, minus, plus, bigPlus
+end
+
+-- Bumped on every call so each EditBox gets a unique frame name.
+local positionEditBoxCounter = 0
+
+-- Turns `valueText` (the slider's plain FontString live-value readout)
+-- into a click-to-edit control. A FontString can't receive clicks on its
+-- own, so this overlays an invisible click-catcher Button on top of it,
+-- centered on the text itself and padded generously so it stays easy to
+-- hit; clicking swaps both out for an EditBox pre-filled with the
+-- slider's current value. Enter parses and applies the exact typed
+-- number (clamped to the slider's own min/max, but not otherwise
+-- rounded), Escape or losing focus cancels without applying. Returns the
+-- click-catcher (for lock-gating) and the EditBox.
+function BTV:MakePositionValueEditable(page, valueText, slider, namePrefix)
+	positionEditBoxCounter = positionEditBoxCounter + 1
+
+	local suffix = tostring(positionEditBoxCounter)
+
+	local clickCatcher = CreateFrame(
+		"Button",
+		namePrefix .. "ValueClick" .. suffix,
+		page
+	)
+
+	clickCatcher:SetWidth(76)
+	clickCatcher:SetHeight(22)
+	clickCatcher:SetPoint("CENTER", valueText, "CENTER", 0, 0)
+	clickCatcher:SetHighlightTexture("Interface\\Buttons\\UI-Common-MouseHilight", "ADD")
+
+	-- The next axis's slider sits close below this readout and defaults to
+	-- the same frame level (both are plain children of `page`) - without
+	-- outranking it explicitly, that neighboring slider's hit region can
+	-- win the mouse hit-test over this one whenever they're close enough
+	-- to overlap, silently swallowing clicks meant for this button.
+	clickCatcher:SetFrameLevel(slider:GetFrameLevel() + 5)
+
+	local editBox = CreateFrame(
+		"EditBox",
+		namePrefix .. "ValueEditBox" .. suffix,
+		page,
+		"InputBoxTemplate"
+	)
+
+	editBox:SetWidth(50)
+	editBox:SetHeight(14)
+	editBox:SetAutoFocus(true)
+	editBox:SetJustifyH("CENTER")
+	editBox:SetPoint("TOP", slider, "BOTTOM", 0, -2)
+	editBox:SetFrameLevel(slider:GetFrameLevel() + 5)
+	editBox:Hide()
+
+	local function HideEditBox()
+		editBox:Hide()
+		valueText:Show()
+		clickCatcher:Show()
+	end
+
+	local function CommitEdit()
+		local parsed = tonumber(editBox:GetText())
+
+		if parsed then
+			local min, max = slider:GetMinMaxValues()
+
+			if parsed < min then
+				parsed = min
+			elseif parsed > max then
+				parsed = max
+			end
+
+			SetSliderValueUnsnapped(slider, parsed)
+		end
+
+		editBox:ClearFocus()
+	end
+
+	editBox:SetScript("OnEnterPressed", CommitEdit)
+	editBox:SetScript("OnEscapePressed", function() editBox:ClearFocus() end)
+	editBox:SetScript("OnEditFocusLost", HideEditBox)
+
+	clickCatcher:SetScript("OnClick", function()
+		editBox:SetText(string.format("%.2f", slider:GetValue()))
+		valueText:Hide()
+		clickCatcher:Hide()
+		editBox:Show()
+		editBox:SetFocus()
+		editBox:HighlightText()
+	end)
+
+	return clickCatcher, editBox
+end
+
 -------------------------------------------------------------------------
 -- Only show on hover - shared checkbox + slider
 --
@@ -798,6 +1027,13 @@ end
 -- 1024)" caption is a static FontString set at build time.
 -------------------------------------------------------------------------
 
+-- Elements anchor at various corners (TOPLEFT-TOPLEFT, CENTER-CENTER,
+-- etc. - see ApplyBarPosition/DefaultBars.lua's per-frame anchors), so
+-- depending on which corner pair a given element uses, its offset from
+-- UIParent can need to span up to a full screen dimension just to reach
+-- the opposite edge, plus some room to drag it fully off-screen in
+-- either direction. Doubling UIParent's own size comfortably covers
+-- every anchor-corner combination in use, with room to spare.
 local function GetScreenCoordinateRange()
 	local width = UIParent:GetWidth()
 	local height = UIParent:GetHeight()
@@ -810,7 +1046,7 @@ local function GetScreenCoordinateRange()
 		height = 768
 	end
 
-	return -width, width, -height, height
+	return -width * 2, width * 2, -height * 2, height * 2
 end
 
 -------------------------------------------------------------------------
@@ -2048,7 +2284,28 @@ function BTV:GetOrCreateBarPage(barId)
 		maxX
 	)
 
-	xSlider:SetValueStep(1)
+	-- Continuous, not stepped - Slider:SetValueStep re-snaps whatever
+	-- value the slider currently holds to the nearest min+n*step grid
+	-- line the moment it's called, and GetScreenCoordinateRange's min
+	-- isn't a whole number at every resolution, so a nonzero step here
+	-- would silently corrupt typed/stepped positions.
+	xSlider:SetValueStep(0)
+
+	SetSliderEndLabels(xSlider, "Left", "Right")
+
+	-- Anchored to xSlider itself, not registered in the hover-only reflow
+	-- list - they track any reflow of the slider automatically since their
+	-- anchor targets it directly.
+	local xStepperBigMinus, xStepperMinus, xStepperPlus, xStepperBigPlus = self:CreatePositionStepperButtons(
+		page,
+		xSlider,
+		"BTVanillaBar" .. tostring(barId) .. "X"
+	)
+
+	page.xStepperBigMinus = xStepperBigMinus
+	page.xStepperMinus = xStepperMinus
+	page.xStepperPlus = xStepperPlus
+	page.xStepperBigPlus = xStepperBigPlus
 
 	-- Live numeric readout, centered below the slider. Placeholder only:
 	-- RefreshBarSettingsPage overwrites this with the real %.2f-formatted
@@ -2073,6 +2330,13 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.xValueText = xValueText
 
+	page.xValueClick, page.xValueEditBox = self:MakePositionValueEditable(
+		page,
+		xValueText,
+		xSlider,
+		"BTVanillaBar" .. tostring(barId) .. "X"
+	)
+
 	xSlider:SetScript(
 		"OnValueChanged",
 		function()
@@ -2082,11 +2346,23 @@ function BTV:GetOrCreateBarPage(barId)
 				return
 			end
 
-			-- Display-only rounding; the slider's raw GetValue() keeps full
-			-- precision, which ApplyLiveBarPosition below reads directly and
-			-- passes through unrounded.
+			-- Only a real mouse drag reaches this un-snapped - every
+			-- stepper/edit-box commit sets suppressSnap around its own
+			-- SetValue() so its exact value passes through untouched.
+			-- Snapping only the CACHED applied value (not calling
+			-- slider:SetValue() here) - forcing the slider's own value
+			-- mid-drag was tried and broke native dragging, since it
+			-- desyncs the widget's own drag-tracking the moment it fires.
+			local applied = value
+
+			if not this.suppressSnap then
+				applied = RoundToStep(value, GetPixelStep())
+			end
+
+			page.xAppliedValue = applied
+
 			xValueText:SetText(
-				string.format("%.2f", value)
+				string.format("%.2f", applied)
 			)
 
 			if not this.suppressApply then
@@ -2140,7 +2416,22 @@ function BTV:GetOrCreateBarPage(barId)
 		maxY
 	)
 
-	ySlider:SetValueStep(1)
+	-- Continuous - see the X slider's matching SetValueStep(0) above.
+	ySlider:SetValueStep(0)
+
+	SetSliderEndLabels(ySlider, "Down", "Up")
+
+	-- Anchored to ySlider itself - see the X slider's matching steppers above.
+	local yStepperBigMinus, yStepperMinus, yStepperPlus, yStepperBigPlus = self:CreatePositionStepperButtons(
+		page,
+		ySlider,
+		"BTVanillaBar" .. tostring(barId) .. "Y"
+	)
+
+	page.yStepperBigMinus = yStepperBigMinus
+	page.yStepperMinus = yStepperMinus
+	page.yStepperPlus = yStepperPlus
+	page.yStepperBigPlus = yStepperBigPlus
 
 	-- Live numeric readout, centered below the slider - see the X slider's
 	-- matching xValueText above.
@@ -2164,6 +2455,13 @@ function BTV:GetOrCreateBarPage(barId)
 
 	page.yValueText = yValueText
 
+	page.yValueClick, page.yValueEditBox = self:MakePositionValueEditable(
+		page,
+		yValueText,
+		ySlider,
+		"BTVanillaBar" .. tostring(barId) .. "Y"
+	)
+
 	ySlider:SetScript(
 		"OnValueChanged",
 		function()
@@ -2173,10 +2471,18 @@ function BTV:GetOrCreateBarPage(barId)
 				return
 			end
 
-			-- Display-only rounding - see the X slider's OnValueChanged
-			-- comment above.
+			-- Snaps only the cached applied value - see the X slider's
+			-- OnValueChanged comment above.
+			local applied = value
+
+			if not this.suppressSnap then
+				applied = RoundToStep(value, GetPixelStep())
+			end
+
+			page.yAppliedValue = applied
+
 			yValueText:SetText(
-				string.format("%.2f", value)
+				string.format("%.2f", applied)
 			)
 
 			if not this.suppressApply then
@@ -2889,8 +3195,16 @@ end
 -------------------------------------------------------------------------
 
 function BTV:ApplyLiveBarPosition(page)
-	local x = page.xSlider:GetValue()
-	local y = page.ySlider:GetValue()
+	-- Reads the cached applied value (xAppliedValue/yAppliedValue, kept
+	-- current by each slider's own OnValueChanged), not slider:GetValue()
+	-- directly - during an active drag those can differ, since the
+	-- pixel-snap is applied to the cache only. Calling slider:SetValue()
+	-- from inside OnValueChanged to force the snap onto the slider itself
+	-- was tried and reverted: it desyncs the native widget's own
+	-- drag-tracking the moment it fires mid-drag, breaking further
+	-- dragging for the rest of that gesture.
+	local x = page.xAppliedValue or page.xSlider:GetValue()
+	local y = page.yAppliedValue or page.ySlider:GetValue()
 
 	if not x or not y then
 		return
@@ -3071,7 +3385,9 @@ end
 -- enable/disable to stay the one available option even while everything
 -- else on the page is locked.
 local PROFILE_LOCK_CONTROL_NAMES = {
-	"xSlider", "ySlider", "buttonSizeSlider", "spacingSlider",
+	"xSlider", "ySlider", "xStepperBigMinus", "xStepperMinus", "xStepperPlus", "xStepperBigPlus",
+	"yStepperBigMinus", "yStepperMinus", "yStepperPlus", "yStepperBigPlus", "xValueClick", "yValueClick",
+	"buttonSizeSlider", "spacingSlider",
 	"scaleSlider", "resetPositionButton", "enableCheckbox",
 	"buttonCountMinus", "buttonCountPlus", "pageIndicatorSlider",
 	"orientationCheckbox", "keyRingCheckbox", "keyRingScaleSlider",
@@ -3189,6 +3505,32 @@ local function ApplyDefaultLayoutGating(page, interactive)
 	if page.ySlider then
 		page.ySlider:EnableMouse(interactive)
 		page.ySlider:SetAlpha(alpha)
+	end
+
+	-- Stepper buttons and the click-to-edit value readouts gate the same
+	-- way the sliders they flank do - Buttons additionally need
+	-- Disable()/Enable(), see LockControl's comment above.
+	local positionButtonNames = {
+		"xStepperBigMinus", "xStepperMinus", "xStepperPlus", "xStepperBigPlus",
+		"yStepperBigMinus", "yStepperMinus", "yStepperPlus", "yStepperBigPlus",
+		"xValueClick", "yValueClick",
+	}
+
+	local pi
+
+	for pi = 1, table.getn(positionButtonNames) do
+		local control = page[positionButtonNames[pi]]
+
+		if control then
+			control:EnableMouse(interactive)
+			control:SetAlpha(alpha)
+
+			if interactive then
+				control:Enable()
+			else
+				control:Disable()
+			end
+		end
 	end
 
 	if page.buttonSizeSlider then
@@ -3617,7 +3959,25 @@ local function CreateSimpleBarPage(key)
 
 	xSlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, xSliderY)
 	xSlider:SetMinMaxValues(minX, maxX)
-	xSlider:SetValueStep(1)
+
+	-- Continuous, not stepped - see GetOrCreateBarPage's matching X slider comment.
+	xSlider:SetValueStep(0)
+
+	SetSliderEndLabels(xSlider, "Left", "Right")
+
+	-- Anchored to xSlider itself, not registered in the hover-only reflow
+	-- list - they track any reflow of the slider automatically since their
+	-- anchor targets it directly.
+	local xStepperBigMinus, xStepperMinus, xStepperPlus, xStepperBigPlus = BTV:CreatePositionStepperButtons(
+		page,
+		xSlider,
+		"BTVanillaSimplePage" .. key .. "X"
+	)
+
+	page.xStepperBigMinus = xStepperBigMinus
+	page.xStepperMinus = xStepperMinus
+	page.xStepperPlus = xStepperPlus
+	page.xStepperBigPlus = xStepperBigPlus
 
 	local xValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -3625,6 +3985,13 @@ local function CreateSimpleBarPage(key)
 	xValueText:SetText(string.format("%.2f", 0))
 
 	page.xValueText = xValueText
+
+	page.xValueClick, page.xValueEditBox = BTV:MakePositionValueEditable(
+		page,
+		xValueText,
+		xSlider,
+		"BTVanillaSimplePage" .. key .. "X"
+	)
 
 	xSlider:SetScript(
 		"OnValueChanged",
@@ -3635,12 +4002,22 @@ local function CreateSimpleBarPage(key)
 				return
 			end
 
-			xValueText:SetText(string.format("%.2f", value))
+			-- Snaps only the cached applied value - see GetOrCreateBarPage's
+			-- X slider OnValueChanged comment.
+			local applied = value
+
+			if not this.suppressSnap then
+				applied = RoundToStep(value, GetPixelStep())
+			end
+
+			page.xAppliedValue = applied
+
+			xValueText:SetText(string.format("%.2f", applied))
 
 			if not this.suppressApply then
-				local y = page.ySlider:GetValue()
+				local y = page.yAppliedValue or page.ySlider:GetValue()
 
-				config.setPosition(value, y)
+				config.setPosition(applied, y)
 			end
 		end
 	)
@@ -3668,7 +4045,23 @@ local function CreateSimpleBarPage(key)
 
 	ySlider:SetPoint("TOPLEFT", page, "TOPLEFT", INDENT_INPUT, ySliderY)
 	ySlider:SetMinMaxValues(minY, maxY)
-	ySlider:SetValueStep(1)
+
+	-- Continuous, not stepped - see GetOrCreateBarPage's matching X slider comment.
+	ySlider:SetValueStep(0)
+
+	SetSliderEndLabels(ySlider, "Down", "Up")
+
+	-- Anchored to ySlider itself - see the X slider's matching steppers above.
+	local yStepperBigMinus, yStepperMinus, yStepperPlus, yStepperBigPlus = BTV:CreatePositionStepperButtons(
+		page,
+		ySlider,
+		"BTVanillaSimplePage" .. key .. "Y"
+	)
+
+	page.yStepperBigMinus = yStepperBigMinus
+	page.yStepperMinus = yStepperMinus
+	page.yStepperPlus = yStepperPlus
+	page.yStepperBigPlus = yStepperBigPlus
 
 	local yValueText = page:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
 
@@ -3676,6 +4069,13 @@ local function CreateSimpleBarPage(key)
 	yValueText:SetText(string.format("%.2f", 0))
 
 	page.yValueText = yValueText
+
+	page.yValueClick, page.yValueEditBox = BTV:MakePositionValueEditable(
+		page,
+		yValueText,
+		ySlider,
+		"BTVanillaSimplePage" .. key .. "Y"
+	)
 
 	ySlider:SetScript(
 		"OnValueChanged",
@@ -3686,12 +4086,22 @@ local function CreateSimpleBarPage(key)
 				return
 			end
 
-			yValueText:SetText(string.format("%.2f", value))
+			-- Snaps only the cached applied value - see GetOrCreateBarPage's
+			-- X slider OnValueChanged comment.
+			local applied = value
+
+			if not this.suppressSnap then
+				applied = RoundToStep(value, GetPixelStep())
+			end
+
+			page.yAppliedValue = applied
+
+			yValueText:SetText(string.format("%.2f", applied))
 
 			if not this.suppressApply then
-				local x = page.xSlider:GetValue()
+				local x = page.xAppliedValue or page.xSlider:GetValue()
 
-				config.setPosition(x, value)
+				config.setPosition(x, applied)
 			end
 		end
 	)
@@ -4502,15 +4912,25 @@ function BTV:RefreshSimpleBarPage(key)
 
 	page.xSlider.suppressApply = true
 	page.ySlider.suppressApply = true
+	page.xSlider.suppressSnap = true
+	page.ySlider.suppressSnap = true
 
 	page.xSlider:SetValue(pos.x or 0)
 	page.ySlider:SetValue(pos.y or 0)
+
+	-- Explicit, not just relying on OnValueChanged: it doesn't fire (and
+	-- so wouldn't refresh xAppliedValue/yAppliedValue) when pos.x/y equals
+	-- whatever the slider was already sitting at.
+	page.xAppliedValue = pos.x or 0
+	page.yAppliedValue = pos.y or 0
 
 	page.xValueText:SetText(string.format("%.2f", pos.x or 0))
 	page.yValueText:SetText(string.format("%.2f", pos.y or 0))
 
 	page.xSlider.suppressApply = nil
 	page.ySlider.suppressApply = nil
+	page.xSlider.suppressSnap = nil
+	page.ySlider.suppressSnap = nil
 
 	if page.enableCheckbox and config.getEnabled then
 		page.enableCheckbox:SetChecked(config.getEnabled() ~= false)
@@ -5040,6 +5460,8 @@ function BTV:RefreshBarSettingsPage(barId)
 	page.xSlider.suppressApply = true
 	page.ySlider.suppressApply = true
 	page.buttonSizeSlider.suppressApply = true
+	page.xSlider.suppressSnap = true
+	page.ySlider.suppressSnap = true
 
 	if page.spacingSlider then
 		page.spacingSlider.suppressApply = true
@@ -5060,10 +5482,13 @@ function BTV:RefreshBarSettingsPage(barId)
 	-- actually CHANGES - if cfg.x/y equals whatever the slider was already
 	-- sitting at (e.g. the page's initial unformatted "0.00" placeholder
 	-- text from GetOrCreateBarPage, or a value unchanged since the last
-	-- refresh), that handler never runs and xValueText/yValueText would
-	-- keep showing stale/unrounded text. Setting them explicitly here
-	-- guarantees the same %.2f formatting on every refresh regardless of
-	-- whether the value changed.
+	-- refresh), that handler never runs and xValueText/yValueText (and
+	-- xAppliedValue/yAppliedValue) would keep showing/holding stale
+	-- values. Setting them explicitly here guarantees they're current on
+	-- every refresh regardless of whether the value changed.
+	page.xAppliedValue = x
+	page.yAppliedValue = y
+
 	page.xValueText:SetText(
 		string.format("%.2f", x)
 	)
@@ -5136,6 +5561,8 @@ function BTV:RefreshBarSettingsPage(barId)
 	page.xSlider.suppressApply = nil
 	page.ySlider.suppressApply = nil
 	page.buttonSizeSlider.suppressApply = nil
+	page.xSlider.suppressSnap = nil
+	page.ySlider.suppressSnap = nil
 
 	if page.spacingSlider then
 		page.spacingSlider.suppressApply = nil
