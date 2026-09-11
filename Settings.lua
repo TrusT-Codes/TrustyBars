@@ -753,11 +753,11 @@ function BTV:CreatePositionStepperButtons(page, slider, namePrefix)
 
 	plus:SetPoint("LEFT", slider, "RIGHT", 4, 0)
 
-	local bigMinus = MakeStepButton("StepperBigMinus", "--", -10, 26)
+	local bigMinus = MakeStepButton("StepperBigMinus", "--", -10, 20)
 
 	bigMinus:SetPoint("RIGHT", minus, "LEFT", -2, 0)
 
-	local bigPlus = MakeStepButton("StepperBigPlus", "++", 10, 26)
+	local bigPlus = MakeStepButton("StepperBigPlus", "++", 10, 20)
 
 	bigPlus:SetPoint("LEFT", plus, "RIGHT", 2, 0)
 
@@ -1047,6 +1047,133 @@ local function GetScreenCoordinateRange()
 	end
 
 	return -width * 2, width * 2, -height * 2, height * 2
+end
+
+-------------------------------------------------------------------------
+-- Action-bar-specific X/Y position clamp range
+--
+-- Unlike the generic screen-relative range above (used for the
+-- native/simple pages), an action bar's on-screen footprint depends on
+-- its own buttonSize/buttonCount/border style, so its clamp range is
+-- computed per-bar and kept live via RefreshPositionSliderRange below.
+--
+-- Bars anchor TOPLEFT-to-UIParent's-BOTTOMLEFT (Core.lua) with y=0 at
+-- the screen's bottom, increasing upward.
+--
+-- CONFIRMED (three rounds of live diagnostics): UIParent:GetWidth()/
+-- GetHeight() do NOT reflect the true screen edges in cfg.x/y's own
+-- coordinate convention, even though UIParent:GetLeft()/GetBottom() are
+-- 0 (matching the working X min=0/Y-relative-to-bottom convention).
+-- UIParent itself has a non-1 self-scale, so its OWN GetWidth()/
+-- GetHeight() (a "local/pre-scale" size) differs from GetRight()/
+-- GetTop() (measured in the same space cfg.x/y/buttonSize/spacing/
+-- bar:GetWidth() already share) - and GetRight()/GetTop() are exactly
+-- equal to GetScreenWidth()/GetScreenHeight(). Using UIParent:GetWidth/
+-- Height() (an earlier version of this function's mistake, itself a
+-- correction of an even earlier GetPhysicalScreenSize()/effectiveScale
+-- mistake) undershoots the real max on both axes. GetScreenWidth()/
+-- GetScreenHeight() are the correct screen-bounds reference.
+--
+-- xMin = 0
+-- xMax = GetScreenWidth() - barWidth - borderSize
+-- yMin = barHeight + borderSize
+-- yMax = GetScreenHeight()
+-- (barWidth/barHeight include inter-button spacing)
+--
+-- cols/rows (the bar's actual grid shape), not buttonCount - a
+-- multi-row bar (e.g. 3 rows x 4 cols) is only 4 buttons WIDE and 3
+-- buttons TALL, not 12 wide, so the per-axis grid dimension is what
+-- actually determines how much width/height to keep on-screen.
+
+-- 4-unit vanilla action-button border vs. 1-unit modern/minimal border.
+local function GetActionBarBorderSize()
+	return BTV:IsVanillaBorderStyle() and 4 or 1
+end
+
+local function GetActionBarCoordinateRange(cfg)
+	-- CONFIRMED (live diagnostic): UIParent:GetWidth()/GetHeight() do NOT
+	-- reflect the true screen bounds in cfg.x/y's own coordinate
+	-- convention - UIParent:GetLeft()==0 matches that convention (and
+	-- matches the working X min=0), but UIParent:GetRight() is a LARGER,
+	-- DIFFERENT number than UIParent:GetWidth() (own quirk of UIParent
+	-- having a non-1 self-scale), and it's THAT number - which exactly
+	-- equals GetScreenWidth() - that matches the real right edge. Use
+	-- GetScreenWidth()/GetScreenHeight() for the screen-bounds terms.
+	local screenWidthUnits = GetScreenWidth()
+	local screenHeightUnits = GetScreenHeight()
+
+	if not screenWidthUnits or screenWidthUnits <= 0 then
+		screenWidthUnits = 1024
+	end
+
+	if not screenHeightUnits or screenHeightUnits <= 0 then
+		screenHeightUnits = 768
+	end
+
+	local buttonSize = (cfg and cfg.buttonSize) or BTV.BUTTON_SIZE
+	local cols = (cfg and cfg.cols) or 1
+	local rows = (cfg and cfg.rows) or 1
+	local spacing = (cfg and cfg.spacing) or 0
+	local borderSize = GetActionBarBorderSize()
+
+	local barWidth = (cols * buttonSize) + ((cols - 1) * spacing)
+	local barHeight = (rows * buttonSize) + ((rows - 1) * spacing)
+
+	local minX = 0
+	local maxX = screenWidthUnits - barWidth - borderSize
+
+	local minY = barHeight + borderSize
+	local maxY = screenHeightUnits
+
+	-- Never feed SetMinMaxValues a backwards span (max < min) if an
+	-- oversized bar/border combination would otherwise invert it.
+	if maxX < minX then
+		maxX = minX
+	end
+
+	if maxY < minY then
+		maxY = minY
+	end
+
+	return minX, maxX, minY, maxY
+end
+
+-- Recomputes and re-applies an action-bar page's X/Y slider clamp range
+-- from its CURRENT buttonSize/buttonCount/cols/rows and border style -
+-- call whenever any of those change live (button size drag, button
+-- count stepper, grid preset pick), since GetActionBarCoordinateRange
+-- depends on them. Also re-clamps the current value, in case a
+-- shrinking range no longer contains it.
+function BTV:RefreshPositionSliderRange(page)
+	if not page or not page.xSlider or not page.ySlider or not page.barId then
+		return
+	end
+
+	local cfg = GetBarConfig(page.barId)
+
+	if not cfg then
+		return
+	end
+
+	local minX, maxX, minY, maxY = GetActionBarCoordinateRange(cfg)
+
+	page.xSlider:SetMinMaxValues(minX, maxX)
+	page.ySlider:SetMinMaxValues(minY, maxY)
+
+	local x = page.xSlider:GetValue()
+	local y = page.ySlider:GetValue()
+
+	if x < minX then
+		SetSliderValueUnsnapped(page.xSlider, minX)
+	elseif x > maxX then
+		SetSliderValueUnsnapped(page.xSlider, maxX)
+	end
+
+	if y < minY then
+		SetSliderValueUnsnapped(page.ySlider, minY)
+	elseif y > maxY then
+		SetSliderValueUnsnapped(page.ySlider, maxY)
+	end
 end
 
 -------------------------------------------------------------------------
@@ -2234,14 +2361,17 @@ function BTV:GetOrCreateBarPage(barId)
 	-------------------------------------------------------------------------
 	-- Position section
 	--
-	-- GetScreenCoordinateRange's min/max feed the sliders' SetMinMaxValues.
+	-- GetActionBarCoordinateRange's min/max (built from this bar's own
+	-- buttonSize/buttonCount/border style) feed the sliders'
+	-- SetMinMaxValues - kept live afterwards by RefreshPositionSliderRange
+	-- wherever those change (button size, button count, grid preset).
 	-- Live current X/Y values show as a centered FontString under each
 	-- slider (xValueText/yValueText), the same way Button Size shows its
 	-- own live value.
 	-------------------------------------------------------------------------
 
 	local minX, maxX, minY, maxY =
-		GetScreenCoordinateRange()
+		GetActionBarCoordinateRange(GetBarConfig(barId))
 
 	-------------------------------------------------------------------------
 	-- X slider
@@ -2626,6 +2756,9 @@ function BTV:GetOrCreateBarPage(barId)
 					end
 				end
 			end
+
+			-- Button size feeds the X/Y clamp range (GetActionBarCoordinateRange) - keep it current.
+			BTV:RefreshPositionSliderRange(page)
 		end
 	)
 
@@ -2770,6 +2903,9 @@ function BTV:GetOrCreateBarPage(barId)
 						end
 					end
 				end
+
+				-- Spacing feeds the X/Y clamp range (GetActionBarCoordinateRange) - keep it current.
+				BTV:RefreshPositionSliderRange(page)
 			end
 		)
 
@@ -3018,6 +3154,9 @@ function BTV:GetOrCreateBarPage(barId)
 				BTV:SetBarButtonCount(bar, count)
 
 				RefreshButtonCountStepperVisual()
+
+				-- Button count feeds the X/Y clamp range - keep it current.
+				BTV:RefreshPositionSliderRange(page)
 			end
 		)
 
@@ -3036,6 +3175,9 @@ function BTV:GetOrCreateBarPage(barId)
 				BTV:SetBarButtonCount(bar, count)
 
 				RefreshButtonCountStepperVisual()
+
+				-- Button count feeds the X/Y clamp range - keep it current.
+				BTV:RefreshPositionSliderRange(page)
 			end
 		)
 
@@ -5450,6 +5592,23 @@ function BTV:RefreshBarSettingsPage(barId)
 	end
 
 	self:RefreshHoverOnlyControls(page, cfg.hoverOnly, cfg.hoverDuration)
+
+	-------------------------------------------------------------------------
+	-- X/Y clamp range - recomputed from this bar's CURRENT
+	-- buttonSize/buttonCount/cols/rows before syncing the value below, so
+	-- a grid-preset pick or "Reset to Blizzard Default" (both of which
+	-- route here) always re-clamps against the up to date range. Just
+	-- SetMinMaxValues, not the full RefreshPositionSliderRange (which also
+	-- re-clamps the CURRENT value) - SetValue(x) right below already
+	-- re-syncs the value from cfg, the actual source of truth here.
+	-------------------------------------------------------------------------
+
+	do
+		local minX, maxX, minY, maxY = GetActionBarCoordinateRange(cfg)
+
+		page.xSlider:SetMinMaxValues(minX, maxX)
+		page.ySlider:SetMinMaxValues(minY, maxY)
+	end
 
 	-------------------------------------------------------------------------
 	-- Suppress OnValueChanged re-application while we're just syncing the
