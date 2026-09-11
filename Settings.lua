@@ -1177,6 +1177,195 @@ function BTV:RefreshPositionSliderRange(page)
 end
 
 -------------------------------------------------------------------------
+-- Native/simple-element X/Y position clamp range (Bag Bar, Micro Menu,
+-- Stance Bar native mode, Pet Bar native mode, Experience Bar, Cast Bar
+-- - NOT Latency Bar, whose overlay hitbox is currently oversized
+-- relative to its real visual footprint, a separate known issue).
+--
+-- Unlike action bars, these elements' on-screen footprint isn't
+-- reconstructible from a buttonSize/cols/rows formula (native frames,
+-- or TrustyBars' own chain-anchored containers whose shape depends on
+-- scale/spacing/orientation) - read the real rendered size instead.
+--
+-- Two things this has to account for that action bars don't:
+--
+-- 1. Hit-rect padding: the container/frame's own GetWidth()/GetHeight()
+--    can be noticeably bigger than what's actually drawn (confirmed on
+--    Micro Menu - see ApplyChainAnchoredShape's own "58 vs the real 40"
+--    comment). Each of these elements already has a `.btvOverlay`
+--    (EnsureContainerOverlay, DefaultBars.lua) built specifically to
+--    track the trimmed, real visual footprint for drag/click purposes -
+--    prefer that over the raw frame for measurement.
+--
+-- 2. Scale: these elements set their OWN :SetScale() directly (Bag Bar/
+--    Micro Menu/Stance Bar/Pet Bar native containers, and the Cast/Exp
+--    Bar native frames). pos.x/pos.y (the raw SetPoint offset actually
+--    stored in SavedVariables) is in the SCALED element's own
+--    pre-multiplication units, so it needs dividing by that scale to
+--    land in the same "real on-screen" units screenWidth/screenHeight
+--    and frameWidth/frameHeight (both already post-scale - see
+--    measureFrame's own comment above) are already in: real right edge
+--    = (x*scale) + frameWidth <= screenWidth, i.e.
+--    x <= (screenWidth - frameWidth)/scale. Action bars need none of
+--    this since they never call :SetScale() at all.
+--    (DefaultBars.lua's Set*Scale functions separately compensate x/y
+--    on every scale CHANGE so the element's bottom-left corner stays
+--    put - that's about not drifting when scale changes, and doesn't
+--    remove the need for this clamp to know the CURRENT scale.)
+--
+-- extraMaxYPixels (optional): a few elements' visual footprint has a
+-- sliver of dead space at an edge the user may want to be able to hide
+-- off-screen (Experience Bar's Y max, per its config) - adds that many
+-- real screen pixels (GetPixelStep()) of extra headroom before the
+-- scale division, same as everything else here.
+-------------------------------------------------------------------------
+
+local function GetSimpleElementCoordinateRange(frame, extraMaxYPixels)
+	local screenWidthUnits = GetScreenWidth()
+	local screenHeightUnits = GetScreenHeight()
+
+	if not screenWidthUnits or screenWidthUnits <= 0 then
+		screenWidthUnits = 1024
+	end
+
+	if not screenHeightUnits or screenHeightUnits <= 0 then
+		screenHeightUnits = 768
+	end
+
+	-- frame:GetWidth()/GetHeight() are the container's raw, scale-
+	-- independent declared size (confirmed live: unaffected by the
+	-- container's own SetScale) - multiplying by the container's own
+	-- scale converts them into the same "real, comparable to
+	-- screenWidthUnits" space frame:GetLeft()*scale uses below. The
+	-- overlay's own GetWidth()/GetHeight() looked like a natural
+	-- "already on-screen size" shortcut but measures noticeably smaller
+	-- than the true footprint once scale isn't 1 (confirmed live on
+	-- Experience Bar) - only used below for the small leftInset/topInset
+	-- correction, never as the base size.
+	local overlay = frame and frame.btvOverlay
+
+	local scale = (frame and frame:GetScale()) or 1
+
+	if not scale or scale <= 0 then
+		scale = 1
+	end
+
+	-- Some elements' overlay is trimmed inward from the CONTAINER's own
+	-- raw anchor corner (confirmed on Micro Menu - its grid overlay
+	-- applies a topFudge/hit-rect trim that puts its own top edge a
+	-- measured 20 units below the container's raw top, so a cfg.y that
+	-- puts the CONTAINER's top at the screen edge still leaves the
+	-- trimmed overlay's top visibly short of it). Measuring the
+	-- container-vs-overlay offset directly (rather than hardcoding any
+	-- element-specific constant) keeps this correct regardless of which
+	-- element/inset is involved, and is a no-op (0) for elements whose
+	-- overlay is SetAllPoints(container) with no trim at all.
+	local leftInset, topInset = 0, 0
+
+	if overlay and frame then
+		-- frame:GetLeft()/GetTop() are in the CONTAINER's own local unit
+		-- system (its own SetScale multiplies how far they resolve into
+		-- UIParent's space), while the overlay's own scale is always 1 -
+		-- so its GetLeft()/GetTop() are already directly comparable to
+		-- screenWidthUnits/screenHeightUnits. Must multiply the
+		-- container's edge by its own scale before diffing against the
+		-- overlay's edge, or this inset silently picks up a
+		-- position-dependent error whenever scale isn't 1.
+		local containerLeft = frame:GetLeft()
+		local overlayLeft = overlay:GetLeft()
+		local containerTop = frame:GetTop()
+		local overlayTop = overlay:GetTop()
+
+		if containerLeft and overlayLeft then
+			leftInset = overlayLeft - (containerLeft * scale)
+		end
+
+		if containerTop and overlayTop then
+			topInset = (containerTop * scale) - overlayTop
+		end
+	end
+
+	local extraY = 0
+
+	if extraMaxYPixels and extraMaxYPixels ~= 0 then
+		extraY = extraMaxYPixels * GetPixelStep()
+	end
+
+	-- frameWidth/frameHeight: the container's raw size converted into the
+	-- same "real, comparable to screenWidthUnits" space as leftInset/
+	-- topInset above. Real right edge: (x*scale) + leftInset +
+	-- frameWidth*scale <= screenWidth, i.e.
+	-- x <= (screenWidth - leftInset)/scale - frameWidth. Real top edge:
+	-- (x*scale) - topInset <= screenHeight+extra, i.e.
+	-- x <= (screenHeight + extra + topInset)/scale - the height term
+	-- cancels the /scale entirely since minY's frameHeight is also
+	-- multiplied by scale on the real-edge side.
+	local frameWidth = (frame and frame:GetWidth()) or 0
+	local frameHeight = (frame and frame:GetHeight()) or 0
+
+	local minX = 0
+	local maxX = (screenWidthUnits - leftInset) / scale - frameWidth
+
+	local minY = frameHeight
+	local maxY = (screenHeightUnits + extraY + topInset) / scale
+
+	if maxX < minX then
+		maxX = minX
+	end
+
+	if maxY < minY then
+		maxY = minY
+	end
+
+	return minX, maxX, minY, maxY
+end
+
+-- Recomputes and re-applies a simple-page element's X/Y slider clamp
+-- range from its CURRENT rendered size - call whenever anything that
+-- can change that size happens live (scale drag, spacing drag, grid
+-- preset pick). No-ops for pages without config.getElementFrame (i.e.
+-- Latency Bar, deliberately left on the generic screen-relative range).
+-- Also re-clamps the current value, in case a shrinking range no longer
+-- contains it.
+function BTV:RefreshSimplePositionSliderRange(page, key)
+	if not page or not page.xSlider or not page.ySlider then
+		return
+	end
+
+	local config = simpleBarPageConfigs[key]
+
+	if not config or not config.getElementFrame then
+		return
+	end
+
+	local frame = config.getElementFrame()
+
+	if not frame then
+		return
+	end
+
+	local minX, maxX, minY, maxY = GetSimpleElementCoordinateRange(frame, config.extraMaxYPixels)
+
+	page.xSlider:SetMinMaxValues(minX, maxX)
+	page.ySlider:SetMinMaxValues(minY, maxY)
+
+	local x = page.xSlider:GetValue()
+	local y = page.ySlider:GetValue()
+
+	if x < minX then
+		SetSliderValueUnsnapped(page.xSlider, minX)
+	elseif x > maxX then
+		SetSliderValueUnsnapped(page.xSlider, maxX)
+	end
+
+	if y < minY then
+		SetSliderValueUnsnapped(page.ySlider, minY)
+	elseif y > maxY then
+		SetSliderValueUnsnapped(page.ySlider, maxY)
+	end
+end
+
+-------------------------------------------------------------------------
 -- Grid preset swatches
 --
 -- Small preview frames built from WHITE8X8-textured squares, matching the
@@ -4075,7 +4264,17 @@ local function CreateSimpleBarPage(key)
 		topY = topY - 24 - 14
 	end
 
-	local minX, maxX, minY, maxY = GetScreenCoordinateRange()
+	-- Elements with a real measurable frame (config.getElementFrame) use
+	-- that frame's own current size for the clamp range (kept live by
+	-- RefreshSimplePositionSliderRange below); Latency Bar and any page
+	-- without one falls back to the generic screen-relative range.
+	local minX, maxX, minY, maxY
+
+	if config.getElementFrame then
+		minX, maxX, minY, maxY = GetSimpleElementCoordinateRange(config.getElementFrame(), config.extraMaxYPixels)
+	else
+		minX, maxX, minY, maxY = GetScreenCoordinateRange()
+	end
 
 	local xLabelY = topY
 	local xSliderY = xLabelY + 4
@@ -4339,6 +4538,9 @@ local function CreateSimpleBarPage(key)
 
 					config.setSpacing(value - uiOffset)
 				end
+
+				-- Spacing feeds this element's rendered footprint - keep the X/Y clamp range current.
+				BTV:RefreshSimplePositionSliderRange(page, key)
 			end
 		)
 
@@ -4411,6 +4613,23 @@ local function CreateSimpleBarPage(key)
 
 				if not this.suppressApply then
 					config.setScale(value)
+
+					-- Scale changing also compensates the stored x/y
+					-- (DefaultBars.lua's Set*Scale, keeping the element's
+					-- bottom-left corner fixed) - a full page refresh, not
+					-- just RefreshSimplePositionSliderRange, is required
+					-- here specifically: it re-syncs the X/Y sliders'
+					-- OWN displayed value from that new true position
+					-- before re-clamping. Without this, the sliders keep
+					-- showing their pre-compensation value, so the
+					-- min/max recompute below reclamps against a STALE
+					-- value instead of where the element actually now
+					-- sits - producing a spurious jump even when the
+					-- element was nowhere near the real edge.
+					BTV:RefreshSimpleBarPage(key)
+				else
+					-- Feeds this element's rendered footprint - keep the X/Y clamp range current.
+					BTV:RefreshSimplePositionSliderRange(page, key)
 				end
 			end
 		)
@@ -5050,6 +5269,43 @@ function BTV:RefreshSimpleBarPage(key)
 		return
 	end
 
+	-- X/Y clamp range - recomputed from this element's CURRENT rendered
+	-- size before syncing the value below, so scale/spacing changes,
+	-- grid-preset picks, and "Reset to Blizzard Default" (all of which
+	-- route here) always re-clamp against the up to date footprint.
+	if config.getElementFrame then
+		local frame = config.getElementFrame()
+
+		if frame then
+			local minX, maxX, minY, maxY = GetSimpleElementCoordinateRange(frame, config.extraMaxYPixels)
+
+			page.xSlider:SetMinMaxValues(minX, maxX)
+			page.ySlider:SetMinMaxValues(minY, maxY)
+
+			-- A scale increase keeps the bottom-left corner fixed and grows
+			-- toward the top-right, so a position that was valid before can
+			-- push the far edge off-screen after the footprint grows -
+			-- clamp and persist here (not just SetMinMaxValues, which only
+			-- clamps the slider's DISPLAYED value, not the saved position)
+			-- so the stored position never silently drifts off-screen.
+			local rawPos = config.getPosition()
+
+			if rawPos and config.setPosition then
+				local clampedX = rawPos.x or 0
+				local clampedY = rawPos.y or 0
+
+				if clampedX < minX then clampedX = minX end
+				if clampedX > maxX then clampedX = maxX end
+				if clampedY < minY then clampedY = minY end
+				if clampedY > maxY then clampedY = maxY end
+
+				if clampedX ~= rawPos.x or clampedY ~= rawPos.y then
+					config.setPosition(clampedX, clampedY)
+				end
+			end
+		end
+	end
+
 	local pos = config.getPosition() or { x = 0, y = 0 }
 
 	page.xSlider.suppressApply = true
@@ -5333,9 +5589,13 @@ simpleBarPageConfigs[BTV.STANCE_BAR_ID] = {
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.stanceBarPosition end,
 	setPosition = function(x, y) BTV:SetStanceBarPosition(x, y) end,
+	getElementFrame = function() return BTV.stanceBarContainer end,
 	reset = function()
-		BTV:ResetStanceBarPosition()
+		-- Layout first: it writes scale directly to the DB without
+		-- reapplying position, so applying position after settles it
+		-- under the final scale instead of the stale pre-reset one.
 		BTV:ResetStanceBarLayout()
+		BTV:ResetStanceBarPosition()
 	end,
 	getEnabled = function() return BTVanillaDB.stanceBarEnabled end,
 	setEnabled = function(v) BTV:SetStanceBarEnabled(v) end,
@@ -5370,9 +5630,13 @@ simpleBarPageConfigs["bagbar"] = {
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.bagBarPosition end,
 	setPosition = function(x, y) BTV:SetBagBarPosition(x, y) end,
+	getElementFrame = function() return BTV.bagBarContainer end,
 	reset = function()
-		BTV:ResetBagBarPosition()
+		-- Layout first: it writes scale directly to the DB without
+		-- reapplying position, so applying position after settles it
+		-- under the final scale instead of the stale pre-reset one.
 		BTV:ResetBagBarLayout()
+		BTV:ResetBagBarPosition()
 
 		-- Key Ring lives on this same page (see CreateSimpleBarPage's
 		-- `if key == "bagbar"` block), so its position resets here too
@@ -5410,6 +5674,7 @@ simpleBarPageConfigs[BTV.PET_BAR_ID] = {
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.defaultBars[BTV.PET_BAR_ID] end,
 	setPosition = function(x, y) BTV:SetPetBarNativePosition(x, y) end,
+	getElementFrame = function() return BTV.petBarNativeContainer end,
 	reset = function() BTV:ResetPetBarNativeLayout() end,
 	getEnabled = function()
 		local cfg = BTVanillaDB.defaultBars[BTV.PET_BAR_ID]
@@ -5480,6 +5745,15 @@ simpleBarPageConfigs["expbar"] = {
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.expBarPosition end,
 	setPosition = function(x, y) BTV:SetExpBarPosition(x, y) end,
+	getElementFrame = function() return getglobal(BTV.EXP_BAR_FRAME_NAME) end,
+	-- Extra headroom on Y max: users may want to hide the top sliver of
+	-- this frame off-screen. In real screen pixels (GetPixelStep(),
+	-- applied before the /scale division in GetSimpleElementCoordinateRange
+	-- so the on-screen effect stays exactly this many pixels regardless of
+	-- the frame's own current scale) - not a raw position-value amount,
+	-- since a given change in x/y doesn't always move the element by a
+	-- matching amount on screen.
+	extraMaxYPixels = 2,
 	reset = function()
 		BTV:ResetExpBarLayout()
 	end,
@@ -5500,6 +5774,7 @@ simpleBarPageConfigs["castbar"] = {
 	title = "Cast Bar",
 	getPosition = function() return BTVanillaDB.castBarPosition end,
 	setPosition = function(x, y) BTV:SetCastBarPosition(x, y) end,
+	getElementFrame = function() return getglobal(BTV.CAST_BAR_FRAME_NAME) end,
 	reset = function()
 		BTV:ResetCastBarLayout()
 	end,
@@ -5513,9 +5788,14 @@ simpleBarPageConfigs["micromenu"] = {
 	hasEnable = true,
 	getPosition = function() return BTVanillaDB.microMenuPosition end,
 	setPosition = function(x, y) BTV:SetMicroMenuPosition(x, y) end,
+	getElementFrame = function() return BTV.microMenuContainer end,
+	extraMaxYPixels = 4,
 	reset = function()
-		BTV:ResetMicroMenuPosition()
+		-- Layout first: it writes scale directly to the DB without
+		-- reapplying position, so applying position after settles it
+		-- under the final scale instead of the stale pre-reset one.
 		BTV:ResetMicroMenuLayout()
+		BTV:ResetMicroMenuPosition()
 	end,
 	getEnabled = function() return BTVanillaDB.microMenuEnabled end,
 	setEnabled = function(v) BTV:SetMicroMenuEnabled(v) end,

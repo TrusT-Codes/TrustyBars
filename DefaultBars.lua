@@ -1577,6 +1577,34 @@ local function ScaleRatio(frame, overlay)
 	return frameScale / overlayScale
 end
 
+-- A frame's SetPoint offset is multiplied by its OWN :SetScale() when
+-- resolved against its parent - so for a TOPLEFT-point/BOTTOMLEFT-
+-- relativePoint element (every element this addon positions), a fixed
+-- pos.x/pos.y visibly drifts toward the top-right as scale increases,
+-- since the SAME stored offset now resolves to a bigger on-screen
+-- displacement. Called BEFORE writing a changed scale to `pos`'s owning
+-- SetXXXScale function, this adjusts pos.x/pos.y so the element's
+-- BOTTOM-LEFT corner's on-screen position stays exactly where it was -
+-- growing scale then only extends the element up and to the right from
+-- that fixed corner, never moves it. `localHeight` is the element's own
+-- scale-invariant design height (frame:GetHeight(), read before or
+-- after the scale change - unaffected either way).
+local function CompensateScaleKeepingBottomLeftFixed(pos, oldScale, newScale, localHeight)
+	if not pos or not oldScale or not newScale then
+		return
+	end
+
+	if oldScale == newScale or oldScale <= 0 or newScale <= 0 then
+		return
+	end
+
+	local ratio = oldScale / newScale
+	localHeight = localHeight or 0
+
+	pos.x = (pos.x or 0) * ratio
+	pos.y = localHeight + ((pos.y or 0) - localHeight) * ratio
+end
+
 -- forceAllShown (Pet Bar native container, condense off) skips every
 -- IsShown() check below so all 10 slots stay chained at a fixed position
 -- regardless of whether a pet ability is currently assigned to them.
@@ -2284,9 +2312,20 @@ function BTV:SetBagBarScale(scale)
 		scale = 2.0
 	end
 
+	local oldScale = BTVanillaDB.bagBarScale or 1
+	local pos = BTVanillaDB.bagBarPosition
+
+	if pos and self.bagBarContainer then
+		CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.bagBarContainer:GetHeight())
+	end
+
 	BTVanillaDB.bagBarScale = scale
 
 	self:ApplyBagBarShape()
+
+	if pos then
+		self:ApplyBagBarPosition()
+	end
 end
 
 -- Orientation is a plain boolean toggle (true = vertical/swapped) - no
@@ -2546,9 +2585,20 @@ function BTV:SetMicroMenuScale(scale)
 		scale = 2.0
 	end
 
+	local oldScale = BTVanillaDB.microMenuScale or 1
+	local pos = BTVanillaDB.microMenuPosition
+
+	if pos and self.microMenuContainer then
+		CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.microMenuContainer:GetHeight())
+	end
+
 	BTVanillaDB.microMenuScale = scale
 
 	self:ApplyMicroMenuShape()
+
+	if pos then
+		self:ApplyMicroMenuPosition()
+	end
 end
 
 -- Settings.lua's Micro Menu page reset flow calls this alongside
@@ -2983,9 +3033,16 @@ function BTV:SetPetBarNativeScale(scale)
 		scale = 2.0
 	end
 
+	local oldScale = cfg.scale or 1
+
+	if self.petBarNativeContainer then
+		CompensateScaleKeepingBottomLeftFixed(cfg, oldScale, scale, self.petBarNativeContainer:GetHeight())
+	end
+
 	cfg.scale = scale
 
 	self:ApplyPetBarNativeShape()
+	self:ApplyPetBarNativePosition()
 end
 
 -- Settings.lua's Pet Bar native page "Only show on hover" checkbox/slider - writes the same cfg.hoverOnly/cfg.hoverDuration fields the styled grid uses.
@@ -3707,9 +3764,20 @@ function BTV:SetStanceBarScale(scale)
 		scale = 2.0
 	end
 
+	local oldScale = BTVanillaDB.stanceBarScale or 1
+	local pos = BTVanillaDB.stanceBarPosition
+
+	if pos and self.stanceBarContainer then
+		CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.stanceBarContainer:GetHeight())
+	end
+
 	BTVanillaDB.stanceBarScale = scale
 
 	self:ApplyStanceBarShape()
+
+	if pos then
+		self:ApplyStanceBarPosition()
+	end
 end
 
 -- Orientation is a plain boolean toggle (true = vertical/swapped) - no
@@ -4458,12 +4526,22 @@ function BTV:SetCastBarScale(scale)
 		scale = 2.0
 	end
 
-	BTVanillaDB.castBarScale = scale
-
+	local oldScale = BTVanillaDB.castBarScale or 1
+	local pos = BTVanillaDB.castBarPosition
 	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
+
+	if pos and frame then
+		CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, frame:GetHeight())
+	end
+
+	BTVanillaDB.castBarScale = scale
 
 	if frame then
 		frame:SetScale(scale)
+	end
+
+	if pos then
+		self:ApplyCastBarPosition()
 	end
 end
 
@@ -4846,12 +4924,22 @@ function BTV:SetExpBarScale(scale)
 		scale = 2.0
 	end
 
-	BTVanillaDB.expBarScale = scale
-
+	local oldScale = BTVanillaDB.expBarScale or 1
+	local pos = BTVanillaDB.expBarPosition
 	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
+
+	if pos and frame then
+		CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, frame:GetHeight())
+	end
+
+	BTVanillaDB.expBarScale = scale
 
 	if frame then
 		frame:SetScale(scale)
+	end
+
+	if pos then
+		self:ApplyExpBarPosition()
 	end
 end
 
