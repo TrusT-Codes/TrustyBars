@@ -2,7 +2,7 @@
 -- Experience Bar subsystem: position/enable/scale, bar-fill colors, the
 -- custom rested-XP overlay/tick/glow-pulse ticker, and the "Better
 -- Experience Bar" text overlay. Built on the shared single-native-frame
--- EnsureContainerOverlay/PixelSetPoint/CompensateScaleKeepingBottomLeftFixed/
+-- EnsureContainerOverlay/PixelSetPoint/CompensateScaleKeepingCornerFixed/
 -- ResolveNativeAnchorToAbsolute engine defined in DefaultBars.lua - this
 -- file must load after DefaultBars.lua.
 
@@ -322,7 +322,7 @@ function ACAB:SetExpBarScale(scale)
 	local frame = getglobal(self.EXP_BAR_FRAME_NAME)
 
 	if pos and frame then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, frame:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, frame:GetHeight())
 	end
 
 	ACABDB.expBarScale = scale

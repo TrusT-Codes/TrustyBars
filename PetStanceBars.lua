@@ -223,7 +223,7 @@ function ACAB:SetPetBarNativeScale(scale)
 	local oldScale = cfg.scale or 1
 
 	if self.petBarNativeContainer then
-		self:CompensateScaleKeepingBottomLeftFixed(cfg, oldScale, scale, self.petBarNativeContainer:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(cfg, oldScale, scale, "BOTTOMLEFT", nil, self.petBarNativeContainer:GetHeight())
 	end
 
 	cfg.scale = scale
@@ -905,7 +905,7 @@ function ACAB:SetStanceBarScale(scale)
 	local pos = ACABDB.stanceBarPosition
 
 	if pos and self.stanceBarContainer then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.stanceBarContainer:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, self.stanceBarContainer:GetHeight())
 	end
 
 	ACABDB.stanceBarScale = scale

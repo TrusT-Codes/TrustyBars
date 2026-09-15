@@ -108,6 +108,7 @@ local SIMPLE_BAR_NAMES = {
 	latencybar = "Latency Bar",
 	expbar = "Experience Bar",
 	castbar = "Cast Bar",
+	tooltip = "Tooltip",
 }
 
 
@@ -1990,6 +1991,53 @@ local function CreateSimpleBarPage(key)
 		topY = topY - 24 - 14
 	end
 
+	-- Tooltip Grows From (Tooltip page only) - which corner of GameTooltip
+	-- anchors to this box's matching corner.
+	if key == "tooltip" then
+		local row = CreateFrame("Frame", nil, page)
+
+		row:SetWidth(500)
+		row:SetHeight(32)
+		row:SetPoint("TOPLEFT", page, "TOPLEFT", ACAB.INDENT_SECTION, topY)
+
+		local label = row:CreateFontString(nil, "OVERLAY", "GameFontNormalSmall")
+
+		label:SetPoint("LEFT", row, "LEFT", 0, 0)
+		label:SetWidth(180)
+		label:SetJustifyH("LEFT")
+		label:SetText("Tooltip Grows From")
+
+		local dropdown = ACAB:CreateInlineDropdown(row, 180, "ACABTooltipAnchorCornerDropdown")
+
+		dropdown:SetPoint("LEFT", label, "RIGHT", -8, -2)
+		dropdown:SetOptions({
+			{ text = "Bottom Right (Default)", value = "BOTTOMRIGHT" },
+			{ text = "Bottom Left", value = "BOTTOMLEFT" },
+			{ text = "Top Right", value = "TOPRIGHT" },
+			{ text = "Top Left", value = "TOPLEFT" },
+		})
+
+		local function RefreshTooltipAnchorCorner()
+			dropdown:SetSelected(ACABDB.tooltipAnchorCorner or "BOTTOMRIGHT")
+		end
+
+		dropdown.onSelect = function(value)
+			ACAB:SetTooltipAnchorCorner(value)
+			RefreshTooltipAnchorCorner()
+		end
+
+		RefreshTooltipAnchorCorner()
+
+		-- Exposed for RefreshSimpleBarPage's own refresh and
+		-- ApplyProfileLockGating's generic assignmentRows lock sweep -
+		-- this page never otherwise uses assignmentRows.
+		row.dropdown = dropdown
+		page.tooltipAnchorCornerRow = row
+		page.assignmentRows = { row }
+
+		topY = topY - 32 - 14
+	end
+
 	-- Elements with a real measurable frame (config.getElementFrame) use
 	-- that frame's own current size for the clamp range (kept live by
 	-- RefreshSimplePositionSliderRange below); any page without one falls
@@ -2861,6 +2909,10 @@ function ACAB:RefreshSimpleBarPage(key)
 		self:RefreshHoverOnlyControls(page, config.getHoverOnly(), config.getHoverDuration())
 	end
 
+	if page.tooltipAnchorCornerRow and page.tooltipAnchorCornerRow.dropdown then
+		page.tooltipAnchorCornerRow.dropdown:SetSelected(ACABDB.tooltipAnchorCorner or "BOTTOMRIGHT")
+	end
+
 	-------------------------------------------------------------------------
 	-- "Better Experience Bar" + its 5 text toggles + Font Size slider +
 	-- 3 color swatches (Experience Bar page only) - independent of
@@ -2959,7 +3011,7 @@ function ACAB:RefreshSimpleBarPage(key)
 	-- regardless (DefaultBars.lua's ApplyDefaultLayoutEditVisual), so
 	-- their own Settings page must stay editable the same way. Every
 	-- other simple page keeps the normal layout lock.
-	local skipLayoutLock = key == ACAB.PET_BAR_ID or key == ACAB.STANCE_BAR_ID or key == "castbar"
+	local skipLayoutLock = key == ACAB.PET_BAR_ID or key == ACAB.STANCE_BAR_ID or key == "castbar" or key == "tooltip"
 
 	-- Same gating window as bar 1 (CanDragDefaultLayout's underlying
 	-- rule) - the enable checkbox and Reset button are deliberately
@@ -3219,6 +3271,25 @@ ACAB.simpleBarPageConfigs["castbar"] = {
 	hasScale = true,
 	getScale = function() return ACABDB.castBarScale end,
 	setScale = function(v) ACAB:SetCastBarScale(v) end,
+}
+
+-- Tooltip: repositions only the fixed-position GameTooltip (quest log,
+-- NPC hover, Micro Menu buttons, etc) - widget-relative tooltips are
+-- untouched. See NativeElements.lua's HookGameTooltipDefaultAnchor.
+ACAB.simpleBarPageConfigs["tooltip"] = {
+	title = "Tooltip",
+	hasEnable = true,
+	getPosition = function() return ACABDB.tooltipPosition end,
+	setPosition = function(x, y) ACAB:SetTooltipPosition(x, y) end,
+	getElementFrame = function() return ACAB.tooltipFrame end,
+	reset = function()
+		ACAB:ResetTooltipLayout()
+	end,
+	getEnabled = function() return ACABDB.tooltipEnabled end,
+	setEnabled = function(v) ACAB:SetTooltipEnabled(v) end,
+	hasScale = true,
+	getScale = function() return ACABDB.tooltipScale end,
+	setScale = function(v) ACAB:SetTooltipScale(v) end,
 }
 
 ACAB.simpleBarPageConfigs["micromenu"] = {
@@ -4500,7 +4571,7 @@ function ACAB:RefreshBarList()
 	-- instead, keyed by its own numeric id.
 	-------------------------------------------------------------------------
 
-	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
+	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar", "tooltip" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do
@@ -4524,6 +4595,8 @@ function ACAB:RefreshBarList()
 			exists = getglobal(ACAB.CAST_BAR_FRAME_NAME) ~= nil
 		elseif key == "expbar" then
 			exists = getglobal(ACAB.EXP_BAR_FRAME_NAME) ~= nil
+		elseif key == "tooltip" then
+			exists = ACAB.tooltipFrame ~= nil
 		end
 
 		if exists then

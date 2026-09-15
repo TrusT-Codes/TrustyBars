@@ -180,7 +180,7 @@ function ACAB:SetBagBarScale(scale)
 	local pos = ACABDB.bagBarPosition
 
 	if pos and self.bagBarContainer then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.bagBarContainer:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, self.bagBarContainer:GetHeight())
 	end
 
 	ACABDB.bagBarScale = scale
@@ -428,7 +428,7 @@ function ACAB:SetMicroMenuScale(scale)
 	local pos = ACABDB.microMenuPosition
 
 	if pos and self.microMenuContainer then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, self.microMenuContainer:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, self.microMenuContainer:GetHeight())
 	end
 
 	ACABDB.microMenuScale = scale
@@ -823,26 +823,33 @@ function ACAB:SetKeyRingPosition(x, y)
 end
 
 function ACAB:ResetKeyRingPosition()
-	local native = ACABDB.keyRingNativeAnchor
+	self:EnsureDB()
+
 	local frame = getglobal(self.KEYRING_BUTTON_NAME)
+
+	-- Direct write, not SetKeyRingScale(1) - that setter compensates the
+	-- stored position using the OLD scale to keep the bottom-left corner
+	-- fixed, which would inflate the native position resolved below
+	-- instead of leaving it alone. Set BEFORE resolving the native anchor,
+	-- so that resolution is measured under the same scale=1 this reset is
+	-- restoring to. Mirrors ResetLatencyBarLayout's own exact structure.
+	ACABDB.keyRingScale = 1
+
+	if frame then
+		frame:SetScale(1)
+	end
+
+	local native = ACABDB.keyRingNativeAnchor
 	local resolved = self:ResolveNativeAnchorToAbsolute(frame, native)
 
 	if resolved then
 		ACABDB.keyRingPosition = resolved
-
-		self:ApplyKeyRingPosition()
 	end
 
-	-- Scale is folded into this same reset entry point rather than a
-	-- separate ResetKeyRingScale - every caller of ResetKeyRingPosition
-	-- (Settings.lua's bagbar page reset button and its "Use Default
-	-- Blizzard Layout" re-enable flow) expects one call to fully restore
-	-- Key Ring to its native/default state, mirroring
-	-- ResetLatencyBarLayout's own position+scale bundling.
-	self:SetKeyRingScale(1)
+	self:ApplyKeyRingPosition()
 end
 
--- Mirrors SetLatencyBarScale's exact clamp/write/apply template.
+-- Mirrors SetLatencyBarScale's exact clamp/compensate/write/apply template.
 function ACAB:SetKeyRingScale(scale)
 	self:EnsureDB()
 
@@ -852,12 +859,22 @@ function ACAB:SetKeyRingScale(scale)
 		return
 	end
 
-	ACABDB.keyRingScale = scale
-
+	local oldScale = ACABDB.keyRingScale or 1
+	local pos = ACABDB.keyRingPosition
 	local frame = getglobal(self.KEYRING_BUTTON_NAME)
+
+	if pos and frame then
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, frame:GetHeight())
+	end
+
+	ACABDB.keyRingScale = scale
 
 	if frame then
 		frame:SetScale(scale)
+	end
+
+	if pos then
+		self:ApplyKeyRingPosition()
 	end
 end
 
@@ -1049,7 +1066,7 @@ function ACAB:SetLatencyBarScale(scale)
 	local frame = getglobal(self.LATENCY_BAR_FRAME_NAME)
 
 	if pos and frame then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, frame:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, frame:GetHeight())
 	end
 
 	ACABDB.latencyBarScale = scale
@@ -1271,7 +1288,7 @@ function ACAB:SetCastBarScale(scale)
 	local frame = getglobal(self.CAST_BAR_FRAME_NAME)
 
 	if pos and frame then
-		self:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, scale, frame:GetHeight())
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, "BOTTOMLEFT", nil, frame:GetHeight())
 	end
 
 	ACABDB.castBarScale = scale
@@ -1833,5 +1850,231 @@ function ACAB:StopPageIndicatorDrag()
 	if self.RefreshBarSettingsPage then
 		self:RefreshBarSettingsPage(1)
 	end
+end
+
+-------------------------------------------------------------------------
+-- Tooltip (synthetic container, redirects the fixed-position GameTooltip)
+--
+-- No real Blizzard frame to wrap - like Page Indicator, this is a bare
+-- CreateFrame with a representative size, moved/scaled through the same
+-- position/scale/enable/drag family every other native element uses.
+-- Repositions ONLY the fixed-position GameTooltip (quest log rows, NPC
+-- hover, exp bar, reputation/friends/guild rows, Micro Menu buttons) via
+-- a hooksecurefunc on GameTooltip_SetDefaultAnchor - widget-relative
+-- tooltips (action bar buttons, bag items, character item slots) never
+-- call that function and stay untouched.
+-------------------------------------------------------------------------
+
+ACAB.TOOLTIP_FRAME_WIDTH = 200
+ACAB.TOOLTIP_FRAME_HEIGHT = 100
+
+-- Creates the synthetic frame once and lazily seeds ACABDB.tooltipPosition
+-- from the real native corner GameTooltip_SetDefaultAnchor always ends up
+-- at (BOTTOMRIGHT of UIParent, -103/125), converted to this addon's
+-- TOPLEFT-of-frame/BOTTOMLEFT-of-UIParent convention.
+function ACAB:EnsureTooltipFrame()
+	self:EnsureDB()
+
+	if self.tooltipFrame then
+		return
+	end
+
+	local frame = CreateFrame("Frame", "ACABTooltipFrame", UIParent)
+
+	self:PixelSetSize(frame, self.TOOLTIP_FRAME_WIDTH, self.TOOLTIP_FRAME_HEIGHT)
+
+	self.tooltipFrame = frame
+
+	if not ACABDB.tooltipPosition then
+		local screenWidth = GetScreenWidth() or 1024
+
+		ACABDB.tooltipPosition = {
+			point = "TOPLEFT",
+			relativePoint = "BOTTOMLEFT",
+			x = screenWidth - 103 - self.TOOLTIP_FRAME_WIDTH,
+			y = 125 + self.TOOLTIP_FRAME_HEIGHT,
+		}
+	end
+end
+
+-- Applies ACABDB.tooltipPosition to the synthetic frame and ensures its
+-- drag/right-click overlay exists.
+function ACAB:ApplyTooltipPosition()
+	self:EnsureTooltipFrame()
+
+	local pos = ACABDB.tooltipPosition
+	local frame = self.tooltipFrame
+
+	if not pos or not frame then
+		return
+	end
+
+	frame:ClearAllPoints()
+	self:PixelSetPoint(
+		frame,
+		pos.point or "TOPLEFT",
+		UIParent,
+		pos.relativePoint or "BOTTOMLEFT",
+		pos.x or 0,
+		pos.y or 0
+	)
+
+	self:EnsureContainerOverlay(frame, self.StartTooltipDrag, self.StopTooltipDrag, "tooltip", self.SetTooltipScale, nil, "Tooltip")
+end
+
+-- Settings.lua's Tooltip page X/Y sliders write through this.
+function ACAB:SetTooltipPosition(x, y)
+	x = tonumber(x)
+	y = tonumber(y)
+
+	if not x or not y or not ACABDB.tooltipPosition then
+		return
+	end
+
+	ACABDB.tooltipPosition.x = x
+	ACABDB.tooltipPosition.y = y
+
+	self:ApplyTooltipPosition()
+end
+
+-- Mirrors SetLatencyBarScale's clamp/compensate/write/apply template, but
+-- compensates whichever corner ACABDB.tooltipAnchorCorner currently
+-- selects, not a fixed corner - that's the corner GameTooltip actually
+-- anchors to (HookGameTooltipDefaultAnchor), so it's the one that must
+-- stay visually fixed on screen while scaling.
+function ACAB:SetTooltipScale(scale)
+	self:EnsureDB()
+
+	scale = self:ClampScaleSetting(scale)
+
+	if not scale then
+		return
+	end
+
+	local oldScale = ACABDB.tooltipScale or 1
+	local pos = ACABDB.tooltipPosition
+	local frame = self.tooltipFrame
+
+	if pos and frame then
+		local corner = ACABDB.tooltipAnchorCorner or "BOTTOMRIGHT"
+
+		self:CompensateScaleKeepingCornerFixed(pos, oldScale, scale, corner, frame:GetWidth(), frame:GetHeight())
+	end
+
+	ACABDB.tooltipScale = scale
+
+	if frame then
+		frame:SetScale(scale)
+	end
+
+	if pos then
+		self:ApplyTooltipPosition()
+	end
+end
+
+-- Settings.lua's Tooltip page "Grows From" dropdown. Display preference
+-- only - takes effect the next time a tooltip is shown, no reposition here.
+function ACAB:SetTooltipAnchorCorner(corner)
+	self:EnsureDB()
+
+	if corner ~= "TOPLEFT" and corner ~= "TOPRIGHT" and corner ~= "BOTTOMLEFT" and corner ~= "BOTTOMRIGHT" then
+		return
+	end
+
+	ACABDB.tooltipAnchorCorner = corner
+end
+
+-- Settings.lua's Tooltip page enable checkbox (and its bar-list inline
+-- checkbox).
+function ACAB:SetTooltipEnabled(enabled)
+	self:EnsureDB()
+
+	ACABDB.tooltipEnabled = enabled and true or false
+
+	self:ApplyDefaultLayoutEditVisual()
+end
+
+-- Settings.lua's Tooltip page "Reset to Blizzard Default" button -
+-- recomputes the same native-default conversion EnsureTooltipFrame's lazy
+-- seed uses (screen width may have changed since login), position+scale+
+-- anchor corner, same scope as every other Reset button.
+function ACAB:ResetTooltipLayout()
+	self:EnsureDB()
+
+	-- Direct write, not SetTooltipScale(1) - that setter compensates the
+	-- stored position using the OLD scale to keep the current anchor
+	-- corner fixed, which would shift the fresh default position below
+	-- instead of leaving it alone. Mirrors ResetLatencyBarLayout's own
+	-- established pattern.
+	ACABDB.tooltipScale = 1
+	ACABDB.tooltipAnchorCorner = "BOTTOMRIGHT"
+
+	if self.tooltipFrame then
+		self.tooltipFrame:SetScale(1)
+	end
+
+	local screenWidth = GetScreenWidth() or 1024
+
+	ACABDB.tooltipPosition = {
+		point = "TOPLEFT",
+		relativePoint = "BOTTOMLEFT",
+		x = screenWidth - 103 - self.TOOLTIP_FRAME_WIDTH,
+		y = 125 + self.TOOLTIP_FRAME_HEIGHT,
+	}
+
+	self:ApplyTooltipPosition()
+end
+
+function ACAB:StartTooltipDrag()
+	local pos = ACABDB.tooltipPosition
+
+	if not pos then
+		return
+	end
+
+	self:StartSharedDrag("tooltip", nil, pos.x or 0, pos.y or 0)
+end
+
+function ACAB:StopTooltipDrag()
+	self:StopSharedDrag()
+
+	if self.RefreshBarSettingsPage then
+		self:RefreshBarSettingsPage("tooltip")
+	end
+end
+
+-- Redirects every fixed-position GameTooltip call (quest log, NPC hover,
+-- exp bar, reputation/friends/guild rows, Micro Menu buttons) onto this
+-- addon's own frame. hooksecurefunc on a plain global function fires for
+-- ANY tooltip object calling it (e.g. ItemRefTooltip), not just
+-- GameTooltip, hence the identity guard below. Widget-relative tooltips
+-- (action bar buttons, bag items, character item slots) never call
+-- GameTooltip_SetDefaultAnchor, so they're unaffected.
+function ACAB:HookGameTooltipDefaultAnchor()
+	if self.tooltipDefaultAnchorHooked then
+		return
+	end
+
+	self.tooltipDefaultAnchorHooked = true
+
+	hooksecurefunc("GameTooltip_SetDefaultAnchor", function(tooltip, owner)
+		if tooltip ~= GameTooltip then
+			return
+		end
+
+		if not ACABDB.tooltipEnabled then
+			return
+		end
+
+		if not ACAB.tooltipFrame then
+			return
+		end
+
+		local corner = ACABDB.tooltipAnchorCorner or "BOTTOMRIGHT"
+
+		GameTooltip:ClearAllPoints()
+		GameTooltip:SetPoint(corner, ACAB.tooltipFrame, corner, 0, 0)
+		GameTooltip:SetScale(ACABDB.tooltipScale or 1)
+	end)
 end
 

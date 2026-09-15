@@ -1099,6 +1099,17 @@ function ACAB:DefaultBarDrag_OnUpdate()
 
 			ACAB:ApplyPageIndicatorPosition()
 		end
+	elseif this.dragKind == "tooltip" then
+		local pos = ACABDB.tooltipPosition
+
+		if pos then
+			pos.x = this.dragStartX + dx
+			pos.y = this.dragStartY + dy
+
+			ACAB:ApplyDragSnap(ACAB.tooltipFrame, pos)
+
+			ACAB:ApplyTooltipPosition()
+		end
 	elseif this.dragKind == "petBarNative" then
 		-- Writes straight into the shared ACABDB.defaultBars[PET_BAR_ID]
 		-- cfg (see ACAB:StartPetBarNativeDrag) so position stays in sync with
@@ -1440,11 +1451,14 @@ end
 
 -- A frame's SetPoint offset is multiplied by its own SetScale() when
 -- resolved against its parent, so a fixed pos.x/pos.y would visibly
--- drift toward the top-right as scale increases. Called BEFORE writing a
--- changed scale, this adjusts pos.x/pos.y so the element's bottom-left
--- corner stays exactly where it was. `localHeight` is the element's
--- scale-invariant design height (frame:GetHeight()).
-function ACAB:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, newScale, localHeight)
+-- drift as scale increases. Called BEFORE writing a changed scale, this
+-- adjusts pos.x/pos.y so `corner` (one of TOPLEFT/TOPRIGHT/BOTTOMLEFT/
+-- BOTTOMRIGHT) stays exactly where it was on screen. `localWidth`/
+-- `localHeight` are the frame's scale-invariant design size
+-- (frame:GetWidth()/GetHeight()) - localWidth is only read for a RIGHT
+-- corner, localHeight only for a BOTTOM corner, so either may be omitted
+-- when the caller's corner doesn't need it.
+function ACAB:CompensateScaleKeepingCornerFixed(pos, oldScale, newScale, corner, localWidth, localHeight)
 	if not pos or not oldScale or not newScale then
 		return
 	end
@@ -1454,10 +1468,22 @@ function ACAB:CompensateScaleKeepingBottomLeftFixed(pos, oldScale, newScale, loc
 	end
 
 	local ratio = oldScale / newScale
+	localWidth = localWidth or 0
 	localHeight = localHeight or 0
 
-	pos.x = (pos.x or 0) * ratio
-	pos.y = localHeight + ((pos.y or 0) - localHeight) * ratio
+	local offsetX = 0
+	local offsetY = 0
+
+	if corner == "TOPRIGHT" or corner == "BOTTOMRIGHT" then
+		offsetX = localWidth
+	end
+
+	if corner == "BOTTOMLEFT" or corner == "BOTTOMRIGHT" then
+		offsetY = -localHeight
+	end
+
+	pos.x = ((pos.x or 0) + offsetX) * ratio - offsetX
+	pos.y = ((pos.y or 0) + offsetY) * ratio - offsetY
 end
 
 -- forceAllShown (Pet Bar native container, condense off) skips every
@@ -1854,19 +1880,19 @@ function ACAB:EnsureContainerOverlay(container, startDragFn, stopDragFn, setting
 		end
 	end)
 
-	-- Scroll-to-scale, gated the same way Button.lua's
-	-- ACABButtonMixin.OnMouseWheel gates scroll-to-resize for custom bars
-	-- (edit mode required). This overlay is only ever mouse-enabled during
-	-- that same CanDragDefaultLayout() window (ApplyContainerOverlayVisual
-	-- below), but the explicit check keeps this self-contained rather than
-	-- relying solely on EnableMouse(false) elsewhere.
+	-- Scroll-to-scale. Gated on the overlay's own mouse-enabled state
+	-- (set by ApplyContainerOverlayVisual/ApplyDefaultLayoutEditVisual per
+	-- element - CanDragDefaultLayout() for most elements, edit-mode-only
+	-- for the skipLayoutLock group) instead of hardcoding
+	-- CanDragDefaultLayout(), so drag and scroll always agree on when this
+	-- overlay is actually interactive.
 	overlay:EnableMouseWheel(true)
 	overlay:SetScript("OnMouseWheel", function()
 		if not scaleSetFn then
 			return
 		end
 
-		if not ACAB:CanDragDefaultLayout() then
+		if not overlay:IsMouseEnabled() then
 			return
 		end
 
@@ -2116,6 +2142,10 @@ function ACAB:ApplyDefaultLayoutEditVisual()
 		ACABDB.mainBarPaginationEnabled,
 		show
 	)
+
+	-- Tooltip - independent of action-bar layout mode, same reasoning as
+	-- Cast Bar above (showAlwaysEditable, not show).
+	self:ApplyContainerOverlayVisual(self.tooltipFrame, ACABDB.tooltipEnabled, showAlwaysEditable)
 end
 
 -------------------------------------------------------------------------

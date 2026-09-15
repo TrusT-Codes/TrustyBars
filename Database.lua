@@ -1361,6 +1361,16 @@ function ACAB:EnsureDB()
 		ACABDB.latencyBarScale = 1
 	end
 
+	if ACABDB.tooltipEnabled == nil then
+		ACABDB.tooltipEnabled = false
+	end
+	if ACABDB.tooltipScale == nil then
+		ACABDB.tooltipScale = 1
+	end
+	if ACABDB.tooltipAnchorCorner == nil then
+		ACABDB.tooltipAnchorCorner = "BOTTOMRIGHT"
+	end
+
 	if ACABDB.expBarEnabled == nil then
 		ACABDB.expBarEnabled = true
 	end

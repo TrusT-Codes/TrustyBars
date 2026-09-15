@@ -1573,7 +1573,7 @@ function ACAB:RefreshDefaultLayoutGatingOnAllPages()
 	-- pages need the same live refresh if already built/cached. The Stance
 	-- Bar (like the Pet Bar) is covered by the ACAB.DEFAULT_BAR_IDS loop
 	-- above instead, since it's keyed by its own numeric id now.
-	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar" }
+	local specialKeys = { "bagbar", "micromenu", "latencybar", "expbar", "castbar", "tooltip" }
 	local si
 
 	for si = 1, table.getn(specialKeys) do

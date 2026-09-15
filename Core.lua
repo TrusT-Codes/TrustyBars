@@ -1408,6 +1408,11 @@ function ACAB:RunLoginSequence(earlyLeft, earlyTop, settledLeft, settledTop, wai
 	ACAB:SetCastBarScale(ACABDB.castBarScale or 1)
 	ACAB:ApplyCastBarPosition()
 
+	ACAB:SetTooltipEnabled(ACABDB.tooltipEnabled == true)
+	ACAB:SetTooltipScale(ACABDB.tooltipScale or 1)
+	ACAB:ApplyTooltipPosition()
+	ACAB:HookGameTooltipDefaultAnchor()
+
 	-- Extra Bar 1/2 and Pet Bar are all live by now (CreateAllBars/
 	-- SetupPetBarNativeContainer above) - establishes this session's
 	-- correct stacked Y immediately instead of waiting for the first
@@ -1610,6 +1615,7 @@ local SETTINGS_PAGE_ALIASES = {
 	experience = { page = "expbar" },
 	cast = { page = "castbar" },
 	castbar = { page = "castbar" },
+	tooltip = { page = "tooltip" },
 }
 
 -- Opens the settings window to a specific page by name (/acab settings
@@ -1868,7 +1874,7 @@ local function PrintCommandHelp()
 	ACAB:Print(ColorKeyName("/acab edit") .. " - toggle Configure Layout mode")
 	ACAB:Print(ColorKeyName("/acab bind") .. " - toggle Hoverbind keybind mode")
 	ACAB:Print(ColorKeyName("/acab settings <page>") .. " - jump straight to a settings page")
-	ACAB:Print("  pages: general, bars, profiles, editmode, main, 1-9/extra1-4, pet, stance, bags, keyring, micro, latency, exp, cast")
+	ACAB:Print("  pages: general, bars, profiles, editmode, main, 1-9/extra1-4, pet, stance, bags, keyring, micro, latency, exp, cast, tooltip")
 	ACAB:Print(ColorKeyName("/acab profile") .. " - show current profile and profile commands")
 	ACAB:Print(ColorKeyName("/acab recapture") .. " - force a fresh capture of default bar native anchors")
 	ACAB:Print(ColorKeyName("/acab help") .. " - show this list")
